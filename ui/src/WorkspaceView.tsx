@@ -102,7 +102,7 @@ function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
 function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  if (members.length === 0) return <div className="ws-members empty" />;
+  if (members.length === 0) return <div className="ws-members is-empty" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
   const usage = members.find((m) => m.usage?.five_hour !== undefined)?.usage;
   return (
@@ -142,6 +142,11 @@ function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
   );
 }
 
+const KIND_INFO: Record<AgentKind, { vendor: string; glyph: string; color: string; hint: string }> = {
+  claude: { vendor: "Anthropic", glyph: "✳", color: "#e8714a", hint: "用你登入的 claude 帳號" },
+  codex: { vendor: "OpenAI", glyph: "◎", color: "#3fb8a8", hint: "用你登入的 codex 帳號" },
+};
+
 function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boolean; onDone?: () => void; taken?: string[] }) {
   const [kind, setKind] = useState<AgentKind>("claude");
   const free = (base: string) => {
@@ -151,61 +156,80 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
   const [alias, setAlias] = useState(free("claude"));
   const [touched, setTouched] = useState(false);
   const [model, setModel] = useState("");
+  const id = `${panel}${big ? "-big" : "-pop"}`;
   return (
     <form
-      className={`add-agent${big ? " big" : ""}`}
+      className={`add-card${big ? " big" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
         send({ t: "ws_add_agent", panel, kind, alias, model: model || null });
         onDone?.();
       }}
     >
-      {big && (
-        <>
-          <div className="ws-glyph">✳</div>
-          <h3>加入一個 agent 開始對話</h3>
-          <p className="dim">用你已登入的 claude／codex 帳號。之後隨時可以再加人。</p>
-        </>
-      )}
-      <div className="kind-seg" role="radiogroup" aria-label="agent 種類">
+      <div className="add-head">
+        <h3>{big ? "這個群聊還沒有成員" : "新增 agent"}</h3>
+        {big && <p>加入一個 agent 開始對話，之後隨時可以再加人。</p>}
+      </div>
+      <div className="kind-cards" role="radiogroup" aria-label="agent 種類">
         {(["claude", "codex"] as AgentKind[]).map((k) => (
           <button
             key={k}
             type="button"
             role="radio"
             aria-checked={kind === k}
-            className={kind === k ? "on" : ""}
+            className={`kind-card${kind === k ? " on" : ""}`}
             onClick={() => {
               setKind(k);
               setModel("");
-              if (!touched) setAlias(free(k === "codex" ? "codex" : "claude"));
+              if (!touched) setAlias(free(k));
             }}
           >
-            {KIND_NAME[k]}
+            <span className="kind-glyph" style={{ background: KIND_INFO[k].color }}>
+              {KIND_INFO[k].glyph}
+            </span>
+            <span className="kind-text">
+              <b>{KIND_NAME[k]}</b>
+              <span>{KIND_INFO[k].vendor}</span>
+            </span>
+            <span className="kind-check" aria-hidden="true">
+              ✓
+            </span>
           </button>
         ))}
       </div>
-      <div className="add-row">
-        <label>
-          <span>別名</span>
-          <span className="alias-in">
-            @<input id={`alias-${panel}${big ? "-big" : ""}`} value={alias} onChange={(e) => (setAlias(e.target.value), setTouched(true))} spellCheck={false} autoFocus={!big} />
-          </span>
-        </label>
-        <label>
-          <span>模型</span>
-          <select id={`model-${panel}${big ? "-big" : ""}`} value={model} onChange={(e) => setModel(e.target.value)}>
+      <div className="field">
+        <label htmlFor={`alias-${id}`}>別名</label>
+        <div className="input-wrap">
+          <span className="at">@</span>
+          <input
+            id={`alias-${id}`}
+            value={alias}
+            onChange={(e) => (setAlias(e.target.value), setTouched(true))}
+            spellCheck={false}
+            autoComplete="off"
+            autoFocus={!big}
+          />
+        </div>
+      </div>
+      <div className="field">
+        <label htmlFor={`model-${id}`}>模型</label>
+        <div className="select-wrap">
+          <select id={`model-${id}`} value={model} onChange={(e) => setModel(e.target.value)}>
             {MODELS[kind].map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}
               </option>
             ))}
           </select>
-        </label>
+          <span className="chev" aria-hidden="true">
+            ⌄
+          </span>
+        </div>
       </div>
-      <button className="primary" type="submit">
-        加入 {KIND_NAME[kind]}
+      <button className="add-submit" type="submit" disabled={!alias.trim()}>
+        加入 @{alias.trim() || "…"}
       </button>
+      <p className="add-hint">{KIND_INFO[kind].hint}</p>
     </form>
   );
 }
