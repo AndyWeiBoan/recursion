@@ -122,17 +122,26 @@ export default function App() {
 
   return (
     <div className={`app${sidebar ? "" : " no-sidebar"}`}>
-      <div className="titlebar" data-tauri-drag-region />
-      {sidebar && <Sidebar state={state} />}
+      <div className="corner" data-tauri-drag-region>
+        <button className="icon-btn" title={`側欄（${isMac ? "⌘B" : "Ctrl+Shift+B"}）`} onClick={toggleSidebar} aria-label="顯示或隱藏側欄">
+          <SidebarIcon />
+        </button>
+        <button className="icon-btn" title={`新 session（${isMac ? "⌘⇧N" : "Ctrl+Shift+N"}）`} onClick={newSession} aria-label="新 session">
+          ＋
+        </button>
+      </div>
+      <div className="side-slot" aria-hidden={!sidebar}>
+        <Sidebar state={state} />
+      </div>
       <main className="main">
         {session && window ? (
           <>
-            <Tabs session={session} toggleSidebar={toggleSidebar} sidebar={sidebar} />
+            <Tabs session={session} />
             <LayoutView key={window.id} ctx={{ window, panels: state!.panels, terms, cwd: session.cwd }} />
             <StatusBar session={session} status={status} />
           </>
         ) : (
-          <Empty status={status} error={error} hasState={!!state} toggleSidebar={toggleSidebar} sidebar={sidebar} />
+          <Empty status={status} error={error} hasState={!!state} />
         )}
       </main>
     </div>
@@ -151,11 +160,7 @@ function Sidebar({ state }: { state: State | null }) {
 
   return (
     <aside className="sidebar">
-      <div className="side-top" data-tauri-drag-region>
-        <button className="icon-btn" title={`新 session（${isMac ? "⌘⇧N" : "Ctrl+Shift+N"}）`} onClick={newSession}>
-          ＋
-        </button>
-      </div>
+      <div className="side-top" data-tauri-drag-region />
       <nav className="sessions">
         {groups.map(([group, list]) => (
           <div key={group} className="group">
@@ -223,14 +228,10 @@ function Sidebar({ state }: { state: State | null }) {
   );
 }
 
-function Tabs({ session, toggleSidebar, sidebar }: { session: Session; toggleSidebar: () => void; sidebar: boolean }) {
+function Tabs({ session }: { session: Session }) {
   const [editing, setEditing] = useState<string | null>(null);
   return (
     <div className="tabs" data-tauri-drag-region>
-      {!sidebar && <div className="traffic-space" data-tauri-drag-region />}
-      <button className="icon-btn sidebar-btn" title={`側欄（${isMac ? "⌘B" : "Ctrl+Shift+B"}）`} onClick={toggleSidebar}>
-        ▤
-      </button>
       {session.windows.map((w, i) => (
         <div
           key={w.id}
@@ -256,7 +257,7 @@ function Tabs({ session, toggleSidebar, sidebar }: { session: Session; toggleSid
               }}
             />
           ) : (
-            w.name && <span className="tab-name">{w.name}</span>
+            w.name && w.name !== String(i + 1) && <span className="tab-name">{w.name}</span>
           )}
           <button
             className="tab-x"
@@ -298,26 +299,10 @@ function StatusBar({ session, status }: { session: Session; status: string }) {
   );
 }
 
-function Empty({
-  status,
-  error,
-  hasState,
-  toggleSidebar,
-  sidebar,
-}: {
-  status: string;
-  error: string | null;
-  hasState: boolean;
-  toggleSidebar: () => void;
-  sidebar: boolean;
-}) {
+function Empty({ status, error, hasState }: { status: string; error: string | null; hasState: boolean }) {
   return (
     <div className="empty">
       <div className="tabs" data-tauri-drag-region>
-        {!sidebar && <div className="traffic-space" data-tauri-drag-region />}
-        <button className="icon-btn sidebar-btn" onClick={toggleSidebar}>
-          ▤
-        </button>
         <div className="tabs-fill" data-tauri-drag-region />
       </div>
       <div className="empty-body">
@@ -338,5 +323,14 @@ function Empty({
         )}
       </div>
     </div>
+  );
+}
+
+function SidebarIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M6 2.5v11" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
   );
 }
