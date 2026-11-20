@@ -71,12 +71,14 @@ export type Cmd =
   | { t: "ws_attach"; panel: string }
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null }
   | { t: "ws_remove_agent"; panel: string; member: string }
+  | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
   | { t: "ws_send"; panel: string; text: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
+  | { t: "ws_roster" }
   | { t: "doc_get"; session: string; doc: string };
 
 export type AgentKind = "claude" | "codex";
@@ -92,6 +94,8 @@ export interface Member {
   cost_usd: number;
   status: MemberStatus;
   usage: Record<string, number>;
+  context_used?: number;
+  context_window?: number;
 }
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
@@ -122,6 +126,22 @@ export interface Workspace {
 
 export function leaves(n: Node): string[] {
   return n.type === "leaf" ? [n.panel] : n.children.flatMap(leaves);
+}
+
+export interface Chat {
+  panel: string;
+  /** "群聊 · window 2" style label, for menus and the tree when a session has several chats. */
+  label: string;
+}
+
+/** The chat panels of a session, in window then layout order. */
+export function chatsOf(s: Session, state: State): Chat[] {
+  const out: Chat[] = [];
+  s.windows.forEach((w, wi) => {
+    const ids = leaves(w.root).filter((p) => state.panels[p]?.kind === "workspace");
+    ids.forEach((p, i) => out.push({ panel: p, label: `群聊 · window ${wi + 1}${ids.length > 1 ? ` (${i + 1})` : ""}${w.name && w.name !== String(wi + 1) ? ` ${w.name}` : ""}` }));
+  });
+  return out;
 }
 
 export const KIND_LABEL: Record<PanelKind, string> = {

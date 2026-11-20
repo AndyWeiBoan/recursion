@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { getSnapshot, isMac, pickFolder, send, useSnapshot, useToast } from "./client";
+import { getSnapshot, isMac, pickFolder, send, useRoster, useSnapshot, useToast } from "./client";
 import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
-import { leaves, type Session, type State } from "./types";
+import { SessionTree } from "./SessionTree";
+import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
 
@@ -140,7 +141,7 @@ export default function App() {
         </button>
       </div>
       <div className="side-slot" aria-hidden={!sidebar}>
-        <Sidebar state={state} />
+        <Sidebar state={state} terms={terms} />
       </div>
       <main className="main">
         {session && window ? (
@@ -159,7 +160,17 @@ export default function App() {
   );
 }
 
-function Sidebar({ state }: { state: State | null }) {
+const COLLAPSED_KEY = "recursion.collapsedSessions";
+
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function Sidebar({ state, terms }: { state: State | null; terms: Record<string, TermInfo> }) {
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     state?.sessions.forEach((s) => m.set(s.group, [...(m.get(s.group) ?? []), s]));
@@ -168,6 +179,24 @@ function Sidebar({ state }: { state: State | null }) {
   const [editing, setEditing] = useState<{ id: string; field: "name" | "group" } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const toggle = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      try {
+        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+  const chats = useMemo(() => Object.fromEntries((state?.sessions ?? []).map((s) => [s.id, chatsOf(s, state!)])), [state]);
+  const roster = useRoster(
+    Object.values(chats)
+      .flat()
+      .map((c) => c.panel)
+      .sort()
+      .join(","),
+  );
 
   return (
     <aside className="sidebar">
@@ -180,55 +209,82 @@ function Sidebar({ state }: { state: State | null }) {
               const on = s.id === state?.active_session;
               const edit = editing?.id === s.id ? editing.field : null;
               return (
-                <div key={s.id} className={`sess${on ? " on" : ""}`} onClick={() => send({ t: "session_select", session: s.id })} title={s.cwd}>
-                  <span className="sess-ic">✳</span>
-                  {edit ? (
-                    <input
-                      autoFocus
-                      className="sess-edit"
-                      defaultValue={edit === "name" ? s.name : s.group}
-                      onClick={(e) => e.stopPropagation()}
-                      onBlur={(e) => {
-                        const v = e.target.value.trim();
-                        if (v) send(edit === "name" ? { t: "session_rename", session: s.id, name: v } : { t: "session_group", session: s.id, group: v });
-                        setEditing(null);
+                <div key={s.id} className="sess-block">
+                  <div className={`sess${on ? " on" : ""}`} onClick={() => send({ t: "session_select", session: s.id })} title={s.cwd}>
+                    {s.windows.length > 0 ? (
+                      <button
+                        className={`sess-fold${collapsed.has(s.id) ? " closed" : ""}`}
+                        aria-label={collapsed.has(s.id) ? "展開" : "收合"}
+                        aria-expanded={!collapsed.has(s.id)}
+                        onClick={(e) => (e.stopPropagation(), toggle(s.id))}
+                      >
+                        ›
+                      </button>
+                    ) : (
+                      <span className="sess-fold-space" />
+                    )}
+                    <span className="sess-ic">✳</span>
+                    {edit ? (
+                      <input
+                        autoFocus
+                        className="sess-edit"
+                        defaultValue={edit === "name" ? s.name : s.group}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v) send(edit === "name" ? { t: "session_rename", session: s.id, name: v } : { t: "session_group", session: s.id, group: v });
+                          setEditing(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setEditing(null);
+                        }}
+                      />
+                    ) : (
+                      <span className="sess-name" onDoubleClick={() => setEditing({ id: s.id, field: "name" })}>
+                        {s.name}
+                      </span>
+                    )}
+                    <button
+                      className="sess-more"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(null);
+                          setMenu(menu === s.id ? null : s.id);
                       }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        if (e.key === "Escape") setEditing(null);
-                      }}
-                    />
-                  ) : (
-                    <span className="sess-name" onDoubleClick={() => setEditing({ id: s.id, field: "name" })}>
-                      {s.name}
-                    </span>
-                  )}
-                  <button
-                    className="sess-more"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmDelete(null);
-                      setMenu(menu === s.id ? null : s.id);
-                    }}
-                    aria-label="更多"
-                  >
-                    ⋯
-                  </button>
-                  {menu === s.id && (
-                    <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(null)}>
-                      <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>重新命名</button>
-                      <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>移到其他分組</button>
-                      {confirmDelete === s.id ? (
-                        <button className="danger" onClick={() => (setMenu(null), send({ t: "session_delete", session: s.id }))}>
-                          確定刪除？終端會被關閉
+                      aria-label="更多"
+                    >
+                      ⋯
+                    </button>
+                    {menu === s.id && (
+                      <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(null)}>
+                        <button
+                          onClick={(e) => {
+                            const anchor = e.currentTarget.getBoundingClientRect();
+                            setMenu(null);
+                            requestKind("新 window", anchor, (kind) => {
+                              send({ t: "session_select", session: s.id });
+                              send({ t: "window_create", session: s.id, kind });
+                            });
+                          }}
+                        >
+                          新 window…
                         </button>
-                      ) : (
-                        <button className="danger" onClick={() => setConfirmDelete(s.id)}>
-                          刪除
-                        </button>
-                      )}
-                    </div>
-                  )}
+                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>重新命名</button>
+                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>移到其他分組</button>
+                        {confirmDelete === s.id ? (
+                          <button className="danger" onClick={() => (setMenu(null), send({ t: "session_delete", session: s.id }))}>
+                            確定刪除？終端會被關閉
+                          </button>
+                        ) : (
+                          <button className="danger" onClick={() => setConfirmDelete(s.id)}>
+                            刪除
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {state && !collapsed.has(s.id) && <SessionTree session={s} state={state} terms={terms} roster={roster} />}
                 </div>
               );
             })}

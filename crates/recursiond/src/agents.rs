@@ -156,6 +156,12 @@ impl Hub {
         Ok(list)
     }
 
+    /// Members of every given chat panel (loads transcripts that aren't in memory yet).
+    pub fn roster(&self, panels: &[String]) -> Value {
+        let map: serde_json::Map<String, Value> = panels.iter().map(|p| (p.clone(), self.with_ws(p, |ws| json!(ws.members)))).collect();
+        json!({ "t": "ws_roster", "panels": map })
+    }
+
     /// Close an agent's turn: record what it cost on the turn's first message.
     fn finish_turn(&self, panel: &str, member: &str, usage: Option<TurnUsage>) {
         let first = self.rt(panel, |r| r.turn_first.remove(member));
@@ -315,22 +321,54 @@ impl Hub {
             }
             _ => {}
         }
-        let alias = alias.trim().trim_start_matches('@').to_string();
-        if alias.is_empty() {
-            return Err("別名不能是空的".into());
-        }
-        let dup = self.with_ws(panel, |ws| ws.members.iter().any(|m| m.alias.eq_ignore_ascii_case(&alias)));
-        if dup {
-            return Err(format!("這個群聊已經有 @{alias} 了"));
-        }
-        if alias.chars().any(|c| !(c.is_alphanumeric() || c == '_' || c == '-')) {
-            return Err("別名只能用英數字、中文、底線或連字號".into());
-        }
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), seen: 0 };
+        let alias = self.check_alias(panel, &alias, None)?;
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
         self.system(panel, &member.id, format!("@{alias} 加入了群聊"), false);
+        Ok(())
+    }
+
+    /// Normalize a proposed alias and make sure it is usable in this chat (`except`: the member being renamed).
+    fn check_alias(&self, panel: &str, alias: &str, except: Option<&str>) -> Result<String, String> {
+        let alias = alias.trim().trim_start_matches('@').to_string();
+        if alias.is_empty() {
+            return Err("別名不能是空的".into());
+        }
+        if alias.chars().any(|c| !(c.is_alphanumeric() || c == '_' || c == '-')) {
+            return Err("別名只能用英數字、中文、底線或連字號".into());
+        }
+        let dup = self.with_ws(panel, |ws| ws.members.iter().any(|m| Some(m.id.as_str()) != except && m.alias.eq_ignore_ascii_case(&alias)));
+        if dup {
+            return Err(format!("這個群聊已經有 @{alias} 了"));
+        }
+        Ok(alias)
+    }
+
+    /// Everyone sees the new name from the next round on (the roster is re-sent). An idle agent's
+    /// process is restarted so its own instructions ("You are @…") carry the new name too; its
+    /// conversation is resumed, so nothing is lost.
+    pub async fn rename_agent(&self, panel: &str, member: &str, alias: &str) -> Result<(), String> {
+        let alias = self.check_alias(panel, alias, Some(member))?;
+        let (old, idle) = self
+            .with_ws(panel, |ws| {
+                let m = ws.members.iter_mut().find(|m| m.id == member)?;
+                let old = std::mem::replace(&mut m.alias, alias.clone());
+                Some((old, m.status == MemberStatus::Idle))
+            })
+            .ok_or("找不到這個 agent")?;
+        if old == alias {
+            return Ok(());
+        }
+        if idle {
+            self.kill(panel, member).await;
+        }
+        self.rt(panel, |r| r.roster_version += 1);
+        if let Some(m) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()) {
+            self.emit(json!({ "t": "ws_member", "panel": panel, "member": m }));
+        }
+        self.system(panel, "system", format!("@{old} 改名為 @{alias}"), false);
         Ok(())
     }
 
@@ -852,6 +890,12 @@ impl ClaudeReader {
                 }
             }
             "assistant" => {
+                // What this model call had in context = everything it read plus what it wrote.
+                let u = &v["message"]["usage"];
+                let used = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().map(|k| u[k].as_u64().unwrap_or(0)).sum::<u64>();
+                if used > 0 && v["parent_tool_use_id"].is_null() {
+                    hub.update_member(&panel, &member, |m| m.context_used = used);
+                }
                 let api_id = v["message"]["id"].as_str().unwrap_or("").to_string();
                 let streamed = self.streamed_api_ids.contains(&api_id);
                 for block in v["message"]["content"].as_array().cloned().unwrap_or_default() {
@@ -930,6 +974,15 @@ impl ClaudeReader {
                         m.cost_usd = base + c;
                     }
                 });
+                // modelUsage lists every model the turn used (subagents too); the main one did the most reading.
+                let window = v["modelUsage"].as_object().and_then(|mu| {
+                    mu.values()
+                        .max_by_key(|x| x["inputTokens"].as_u64().unwrap_or(0) + x["cacheReadInputTokens"].as_u64().unwrap_or(0) + x["cacheCreationInputTokens"].as_u64().unwrap_or(0))
+                        .and_then(|x| x["contextWindow"].as_u64())
+                });
+                if let Some(w) = window {
+                    hub.update_member(&panel, &member, |m| m.context_window = w);
+                }
                 let u = &v["usage"];
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
                 let usage = TurnUsage {

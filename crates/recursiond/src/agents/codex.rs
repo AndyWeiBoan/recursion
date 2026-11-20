@@ -390,6 +390,15 @@ impl Reader {
             "thread/tokenUsage/updated" => {
                 let last = &params["tokenUsage"]["last"];
                 let n = |k: &str| last[k].as_u64().unwrap_or(0);
+                let (used, window) = (n("totalTokens"), params["tokenUsage"]["modelContextWindow"].as_u64());
+                hub.update_member(&panel, &member, |m| {
+                    if used > 0 {
+                        m.context_used = used;
+                    }
+                    if let Some(w) = window {
+                        m.context_window = w;
+                    }
+                });
                 self.turn_usage.input += n("inputTokens");
                 self.turn_usage.cached += n("cachedInputTokens");
                 self.turn_usage.output += n("outputTokens");

@@ -83,7 +83,11 @@ export async function connect() {
           console.warn("recursiond:", m.msg);
           toast(m.msg);
           break;
+        case "ws_roster":
+          for (const [panel, members] of Object.entries(m.panels)) rosterSet(panel, members as Member[]);
+          break;
         case "ws_state":
+          rosterSet(m.panel, m.ws.members);
           workspaces.set(m.panel, { ...m.ws, round: m.round });
           wsChanged(m.panel);
           break;
@@ -103,6 +107,7 @@ export async function connect() {
           }));
           break;
         case "ws_member":
+          rosterUpsert(m.panel, m.member as Member);
           wsUpdate(m.panel, (w) => {
             const i = w.members.findIndex((x) => x.id === m.member.id);
             const members = [...w.members];
@@ -125,6 +130,7 @@ export async function connect() {
           setModels(m.kind, { models: m.models, error: m.error ?? null, loading: false });
           break;
         case "ws_member_removed":
+          rosterSet(m.panel, (roster[m.panel] ?? []).filter((x) => x.id !== m.member));
           wsUpdate(m.panel, (w) => ({ ...w, members: w.members.filter((x) => x.id !== m.member) }));
           break;
       }
@@ -294,4 +300,51 @@ export function useDocHtml(session: string, doc: string, rev: number): string | 
     (f) => (docSubs.add(f), () => docSubs.delete(f)),
     () => docHtml.get(key),
   );
+}
+
+// Members of every chat panel, for the sidebar (chats that aren't on screen included).
+// Seeded by `ws_roster`, then kept current by the member events every client receives.
+let roster: Record<string, Member[]> = {};
+const rosterSubs = new Set<() => void>();
+
+function rosterSet(panel: string, members: Member[]) {
+  roster = { ...roster, [panel]: members };
+  rosterSubs.forEach((f) => f());
+}
+
+function rosterUpsert(panel: string, member: Member) {
+  const cur = roster[panel] ?? [];
+  const i = cur.findIndex((x) => x.id === member.id);
+  rosterSet(panel, i >= 0 ? cur.map((x, k) => (k === i ? member : x)) : [...cur, member]);
+}
+
+/** Members per chat panel. Re-requests the list whenever the set of chats (`chatsKey`) changes. */
+export function useRoster(chatsKey: string): Record<string, Member[]> {
+  useEffect(() => {
+    if (snap.status === "open") send({ t: "ws_roster" });
+  }, [chatsKey, snap.status]);
+  return useSyncExternalStore(
+    (f) => (rosterSubs.add(f), () => rosterSubs.delete(f)),
+    () => roster,
+  );
+}
+
+// "Add an agent to this chat" from outside the chat (the sidebar menu).
+const addAgentListeners = new Map<string, () => void>();
+export function onAddAgentRequest(panel: string, f: () => void) {
+  addAgentListeners.set(panel, f);
+  return () => {
+    if (addAgentListeners.get(panel) === f) addAgentListeners.delete(panel);
+  };
+}
+/** Focus the chat panel and open its add-agent form (once it is on screen). */
+export function requestAddAgent(panel: string) {
+  send({ t: "panel_focus", panel });
+  let tries = 0;
+  const tick = () => {
+    const f = addAgentListeners.get(panel);
+    if (f) f();
+    else if (tries++ < 20) setTimeout(tick, 50);
+  };
+  tick();
 }

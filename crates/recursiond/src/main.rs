@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 9;
+pub const PROTOCOL: u32 = 11;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -85,12 +85,14 @@ enum In {
     WsAttach { panel: String },
     WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String> },
     WsRemoveAgent { panel: String, member: String },
+    WsRenameAgent { panel: String, member: String, alias: String },
     WsSend { panel: String, text: String },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
     WsSendNow { panel: String },
     ModelsList { kind: AgentKind },
     DocOpen { panel: String, doc: String },
+    WsRoster,
     DocGet { session: String, doc: String },
 }
 
@@ -201,6 +203,14 @@ impl App {
                 reply = Some(self.hub.snapshot(&panel).to_string());
                 changed = false;
             }
+            WsRoster => {
+                let panels: Vec<String> = {
+                    let st = self.state.lock().unwrap();
+                    st.panels.values().filter(|p| p.kind == model::PanelKind::Workspace).map(|p| p.id.clone()).collect()
+                };
+                reply = Some(self.hub.roster(&panels).to_string());
+                changed = false;
+            }
             DocOpen { panel, doc } => {
                 self.state.lock().unwrap().open_doc(&panel, &doc, true).map_err(e)?;
             }
@@ -218,6 +228,10 @@ impl App {
             }
             WsAddAgent { panel, kind, alias, model } => {
                 self.hub.add_agent(&panel, kind, alias, model).await?;
+                changed = false;
+            }
+            WsRenameAgent { panel, member, alias } => {
+                self.hub.rename_agent(&panel, &member, &alias).await?;
                 changed = false;
             }
             WsRemoveAgent { panel, member } => {

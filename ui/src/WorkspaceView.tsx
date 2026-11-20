@@ -2,13 +2,15 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { onReconnect, openExternal, send, useModels, useWorkspace } from "./client";
-import type { AgentKind, Member, Msg, TurnUsage } from "./types";
+import { createPortal } from "react-dom";
+import { overlay } from "./browsers";
+import { onAddAgentRequest, onReconnect, openExternal, send, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { chatsOf, leaves, type AgentKind, type Member, type Msg, type TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
 const AVATAR_COLORS = ["#e8714a", "#3fb8a8", "#6a8cff", "#c792ea", "#e0a83a", "#4ab36b", "#e05d8c", "#4aa3d9"];
-function colorFor(id: string) {
+export function colorFor(id: string) {
   let h = 0;
   for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
@@ -38,7 +40,7 @@ function renderMarkdown(text: string, aliases: string[]): string {
 
 const KIND_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
 
-const STATUS_LABEL: Record<Member["status"], string> = {
+export const STATUS_LABEL: Record<Member["status"], string> = {
   idle: "閒置",
   starting: "啟動中",
   thinking: "思考中",
@@ -85,7 +87,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
 
   return (
     <div className="ws">
-      <MembersBar panel={panel} members={members} />
+      <MembersBar panel={panel} members={members} bigForm={members.length === 0 && ws.messages.length === 0} />
       {members.length === 0 && ws.messages.length === 0 ? (
         <div className="ws-log ws-center">
           <AddAgent panel={panel} big />
@@ -98,7 +100,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   );
 }
 
-function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
+export function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
   const label = (m?.alias ?? "?").slice(0, 1).toUpperCase();
   return (
     <span className="avatar" style={{ width: size, height: size, background: m ? colorFor(m.id) : "#4a4b52", fontSize: size * 0.46 }}>
@@ -107,38 +109,56 @@ function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
   );
 }
 
-function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
-  const [menu, setMenu] = useState<string | null>(null);
+/** Centered dialog over the whole app. Closes on ✕, Esc, or a click outside. */
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const restore = overlay(); // native browser panels would draw on top of it
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close.current();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      restore();
+    };
+  }, []);
+  return createPortal(
+    <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+        <button className="modal-x" onClick={onClose} aria-label="關閉" title="關閉（Esc）">
+          ✕
+        </button>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// Who is in the chat is listed in the sidebar tree; this bar keeps "add" and the account meters.
+function MembersBar({ panel, members, bigForm }: { panel: string; members: Member[]; bigForm: boolean }) {
   const [adding, setAdding] = useState(false);
-  if (members.length === 0) return <div className="ws-members is-empty" />;
+  useEffect(() => onAddAgentRequest(panel, () => setAdding(true)), [panel]);
+  // The empty chat shows the big form instead; otherwise "add" must always be reachable,
+  // including when every agent was removed from a chat that has history.
+  if (bigForm) return <div className="ws-members is-empty" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
   const usage = members.find((m) => m.usage?.five_hour !== undefined)?.usage;
   return (
     <div className="ws-members">
-      {members.map((m) => (
-        <div key={m.id} className="chip-wrap">
-          <button className={`chip st-${m.status}`} onClick={() => setMenu(menu === m.id ? null : m.id)} title={STATUS_LABEL[m.status]}>
-            <Avatar m={m} size={18} />@{m.alias}
-            <span className="chip-model">{m.model ?? m.kind}</span>
-            <i className="st-dot" />
-          </button>
-          {menu === m.id && (
-            <div className="menu" onMouseLeave={() => setMenu(null)}>
-              <button className="danger" onClick={() => (setMenu(null), send({ t: "ws_remove_agent", panel, member: m.id }))}>
-                移除 @{m.alias}
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
       <div className="chip-wrap">
         <button className="chip add" onClick={() => setAdding((v) => !v)}>
           ＋ agent
         </button>
         {adding && (
-          <div className="pop">
-            <AddAgent panel={panel} onDone={() => setAdding(false)} taken={members.map((m) => m.alias)} />
-          </div>
+          <Modal title="新增 agent" onClose={() => setAdding(false)}>
+            <AddAgent panel={panel} onDone={() => setAdding(false)} />
+          </Modal>
         )}
       </div>
       <span className="ws-meta">
@@ -155,14 +175,28 @@ const KIND_INFO: Record<AgentKind, { vendor: string; glyph: string; color: strin
   codex: { vendor: "OpenAI", glyph: "◎", color: "#3fb8a8", hint: "用你登入的 codex 帳號" },
 };
 
-function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boolean; onDone?: () => void; taken?: string[] }) {
+function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone?: () => void }) {
   const [kind, setKind] = useState<AgentKind>("claude");
-  const free = (base: string) => {
+  // Any chat of this session can be the target; the one it was opened from is the default.
+  const { state } = useSnapshot();
+  const chats = useMemo(() => {
+    const s = state?.sessions.find((x) => x.windows.some((w) => leaves(w.root).includes(panel)));
+    return s && state ? chatsOf(s, state) : [];
+  }, [state, panel]);
+  const [target, setTarget] = useState(panel);
+  const roster = useRoster(chats.map((c) => c.panel).join(","));
+  const free = (base: string, chat = target) => {
+    const taken = (roster[chat] ?? []).map((m) => m.alias.toLowerCase());
     if (!taken.includes(base)) return base;
     for (let i = 2; ; i++) if (!taken.includes(base + i)) return base + i;
   };
   const [alias, setAlias] = useState(free("claude"));
   const [touched, setTouched] = useState(false);
+  // The member list may arrive after the form opens: keep the suggested alias free of clashes.
+  const takenKey = (roster[target] ?? []).map((m) => m.alias).join(",");
+  useEffect(() => {
+    if (!touched) setAlias(free(kind));
+  }, [takenKey]);
   const [model, setModel] = useState("");
   const list = useModels(kind);
   const options = list.models.length ? list.models : [{ value: "", label: "預設模型", description: "" }];
@@ -173,7 +207,8 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
       className={`add-card${big ? " big" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
-        send({ t: "ws_add_agent", panel, kind, alias, model: model || null });
+        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null });
+        if (target !== panel) send({ t: "panel_focus", panel: target });
         onDone?.();
       }}
     >
@@ -181,6 +216,31 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
         <h3>{big ? "這個群聊還沒有成員" : "新增 agent"}</h3>
         {big && <p>加入一個 agent 開始對話，之後隨時可以再加人。</p>}
       </div>
+      {chats.length > 1 && (
+        <div className="field">
+          <label htmlFor={`chat-${id}`}>加到哪個群聊</label>
+          <div className="select-wrap">
+            <select
+              id={`chat-${id}`}
+              value={target}
+              onChange={(e) => {
+                setTarget(e.target.value);
+                if (!touched) setAlias(free(kind, e.target.value));
+              }}
+            >
+              {chats.map((c) => (
+                <option key={c.panel} value={c.panel}>
+                  {c.label}
+                  {(roster[c.panel] ?? []).length ? `：${roster[c.panel].map((m) => `@${m.alias}`).join(" ")}` : "（還沒有人）"}
+                </option>
+              ))}
+            </select>
+            <span className="chev" aria-hidden="true">
+              ⌄
+            </span>
+          </div>
+        </div>
+      )}
       <div className="kind-cards" role="radiogroup" aria-label="agent 種類">
         {(["claude", "codex"] as AgentKind[]).map((k) => (
           <button

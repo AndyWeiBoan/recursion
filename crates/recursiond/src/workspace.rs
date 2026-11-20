@@ -37,6 +37,11 @@ pub struct Member {
     /// Latest rate-limit utilisation reported by the CLI (0–1), e.g. {"five_hour": 0.1}.
     #[serde(default)]
     pub usage: std::collections::BTreeMap<String, f64>,
+    /// Tokens in the agent's context as of its latest model call, and the model's limit (0 = unknown).
+    #[serde(default)]
+    pub context_used: u64,
+    #[serde(default)]
+    pub context_window: u64,
     /// Highest message `seq` this agent has been shown.
     #[serde(default)]
     pub seen: u64,
@@ -316,7 +321,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), seen: 0 }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 }
     }
 
     #[test]
