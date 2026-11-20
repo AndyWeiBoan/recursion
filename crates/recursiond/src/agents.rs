@@ -14,27 +14,30 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::broadcast;
 
+mod codex;
+
 /// PATH and binaries resolved from the user's login shell (GUI apps start with a bare PATH).
 #[derive(Clone, Debug, Default)]
 pub struct AgentEnv {
     pub path: String,
     pub claude: Option<String>,
+    pub codex: Option<String>,
 }
 
 impl AgentEnv {
     pub async fn detect() -> Self {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
         let out = Command::new(&shell)
-            .args(["-l", "-c", "printf '%s\\n' \"$PATH\"; command -v claude || true"])
+            .args(["-l", "-c", "printf '%s\\n' \"$PATH\"; printf 'claude=%s\\n' \"$(command -v claude)\"; printf 'codex=%s\\n' \"$(command -v codex)\""])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
             .await;
         let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
-        let mut lines = text.lines().filter(|l| !l.trim().is_empty());
-        let path = lines.next().map(|s| s.to_string()).unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
-        let claude = lines.next().map(|s| s.trim().to_string()).filter(|s| s.starts_with('/'));
-        AgentEnv { path, claude }
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let path = lines.first().filter(|l| !l.starts_with("claude=") && !l.starts_with("codex=")).map(|s| s.to_string()).unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        let find = |k: &str| lines.iter().find_map(|l| l.strip_prefix(k)).map(|s| s.trim().to_string()).filter(|s| s.starts_with('/'));
+        AgentEnv { path, claude: find("claude="), codex: find("codex=") }
     }
 }
 
@@ -43,6 +46,8 @@ struct Proc {
     child: Arc<tokio::sync::Mutex<Child>>,
     /// Bumped on every spawn so a dying old reader can't clobber a new process.
     generation: u64,
+    /// JSON-RPC state when the agent is Codex (app-server).
+    codex: Option<Arc<codex::Rpc>>,
 }
 
 struct PendingPerm {
@@ -51,6 +56,8 @@ struct PendingPerm {
     msg_id: String,
     input: Value,
     suggestions: Value,
+    /// Codex: JSON-RPC id of the server request to answer.
+    codex_request: Option<Value>,
 }
 
 /// Loop-guard limits (SPEC: per chain 10 agent-triggered turns, per pair 4, 3 repeats).
@@ -115,7 +122,7 @@ impl Hub {
 
     async fn env(&self) -> AgentEnv {
         if let Some(e) = self.env.read().await.clone() {
-            if e.claude.is_some() {
+            if e.claude.is_some() || e.codex.is_some() {
                 return e;
             }
         }
@@ -208,8 +215,21 @@ impl Hub {
 
     pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>) -> Result<(), String> {
         let env = self.env().await;
-        if env.claude.is_none() {
-            return Err("找不到 claude 指令。請先安裝 Claude Code（npm i -g @anthropic-ai/claude-code）並執行 claude auth login".into());
+        match kind {
+            AgentKind::Claude if env.claude.is_none() => {
+                return Err("找不到 claude 指令。請先安裝 Claude Code 並執行 claude auth login".into());
+            }
+            AgentKind::Codex => {
+                let Some(bin) = env.codex.clone() else {
+                    return Err("找不到 codex 指令。請先安裝 Codex CLI（npm i -g @openai/codex）並執行 codex login".into());
+                };
+                let out = Command::new(bin).args(["login", "status"]).env("PATH", &env.path).output().await.map_err(|e| e.to_string())?;
+                let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+                if !out.status.success() || text.to_lowercase().contains("not logged in") {
+                    return Err("Codex 還沒登入，請先在終端執行 codex login".into());
+                }
+            }
+            _ => {}
         }
         let alias = alias.trim().trim_start_matches('@').to_string();
         if alias.is_empty() {
@@ -396,6 +416,21 @@ impl Hub {
 
     pub async fn decide(&self, request_id: &str, decision: &str) -> Result<(), String> {
         let p = self.perms.lock().unwrap().remove(request_id).ok_or("這個核准請求已經結束了")?;
+        if let Some(rpc_id) = p.codex_request.clone() {
+            let (state, d) = match decision {
+                "deny" => (PermState::Denied, "decline"),
+                "always" => (PermState::AlwaysAllowed, "acceptForSession"),
+                _ => (PermState::Allowed, "accept"),
+            };
+            self.write(&p.panel, &p.member, json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "decision": d } })).await?;
+            self.update_msg(&p.panel, &p.msg_id, |m| {
+                if let Body::Permission { state: s, .. } = &mut m.body {
+                    *s = state;
+                }
+            });
+            self.update_member(&p.panel, &p.member, |m| m.status = MemberStatus::Thinking);
+            return Ok(());
+        }
         let (state, response) = match decision {
             "deny" => (PermState::Denied, json!({ "behavior": "deny", "message": "使用者拒絕了這個動作。" })),
             "always" => {
@@ -417,7 +452,13 @@ impl Hub {
     pub async fn stop(self: &Arc<Self>, panel: &str) {
         let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().filter(|m| m.status != MemberStatus::Idle).map(|m| m.id.clone()).collect());
         for member in members {
-            let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
+            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), member.clone())).and_then(|p| p.codex.clone());
+            match rpc {
+                Some(rpc) => rpc.interrupt(self, panel, &member).await,
+                None => {
+                    let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
+                }
+            }
             let (hub, panel, member) = (self.clone(), panel.to_string(), member.clone());
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -531,30 +572,26 @@ impl Hub {
 
         let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
         if !running {
-            self.spawn(panel, m, cwd).await?;
+            match m.kind {
+                AgentKind::Claude => self.spawn(panel, m, cwd).await?,
+                AgentKind::Codex => self.spawn_codex(panel, m, cwd).await?,
+            }
         }
         self.update_member(panel, &m.id, |x| {
             x.status = MemberStatus::Thinking;
             x.seen = upto;
         });
+        if m.kind == AgentKind::Codex {
+            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).ok_or("Codex 沒有在執行")?;
+            return rpc.start_turn(self, panel, &m.id, &text).await;
+        }
         self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
     }
 
     async fn spawn(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
         let env = self.env().await;
         let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
-        let prompt = format!(
-            "You are @{alias}, an agent in a Recursion group chat: a human working with one or more AI agents in the same project.\n\
-             - New messages arrive prefixed with their speaker, e.g. `[human → everyone]: ...` or `[@other]: ...`. You only receive \
-             messages you have not seen yet; your own earlier replies are already in your context.\n\
-             - To ask another agent for something, mention them as @alias in your reply; they will read your whole reply. Do not \
-             @mention anyone unless you actually need their input, and never just to thank or agree with them.\n\
-             - If the human @mentioned you by name, you must respond and do what was asked (including asking other agents). \
-             Only when a message was sent to everyone and you truly have nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
-             - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
-             - Reply in the human's language.",
-            alias = m.alias
-        );
+        let prompt = group_prompt(&m.alias);
         let mut cmd = Command::new(bin);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
             .args(["--permission-prompt-tool", "stdio", "--permission-mode", "acceptEdits"])
@@ -575,7 +612,7 @@ impl Hub {
         let stderr = child.stderr.take().unwrap();
         let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let child = Arc::new(tokio::sync::Mutex::new(child));
-        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation });
+        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None });
 
         let base_cost = m.cost_usd;
         let (hub, panel_s, member_s, cwd_s) = (self.clone(), panel.to_string(), m.id.clone(), dir.clone());
@@ -780,7 +817,7 @@ impl ClaudeReader {
                     let tool = req["display_name"].as_str().or(req["tool_name"].as_str()).unwrap_or("tool").to_string();
                     let (summary, detail) = summarize_tool(req["tool_name"].as_str().unwrap_or(""), &req["input"], &self.cwd);
                     let msg_id = self.new_msg(Body::Permission { request_id: request_id.clone(), tool, summary, detail, state: PermState::Pending }, false);
-                    hub.perms.lock().unwrap().insert(request_id, PendingPerm { panel: panel.clone(), member: member.clone(), msg_id, input: req["input"].clone(), suggestions: req["permission_suggestions"].clone() });
+                    hub.perms.lock().unwrap().insert(request_id, PendingPerm { panel: panel.clone(), member: member.clone(), msg_id, input: req["input"].clone(), suggestions: req["permission_suggestions"].clone(), codex_request: None });
                     hub.update_member(&panel, &member, |m| m.status = MemberStatus::WaitingPermission);
                 }
             }
@@ -814,4 +851,19 @@ impl ClaudeReader {
             _ => {}
         }
     }
+}
+
+/// Instructions shared by every agent kind.
+fn group_prompt(alias: &str) -> String {
+    format!(
+        "You are @{alias}, an agent in a Recursion group chat: a human working with one or more AI agents in the same project.\n\
+         - New messages arrive prefixed with their speaker, e.g. `[human → everyone]: ...` or `[@other]: ...`. You only receive \
+         messages you have not seen yet; your own earlier replies are already in your context.\n\
+         - To ask another agent for something, mention them as @alias in your reply; they will read your whole reply. Do not \
+         @mention anyone unless you actually need their input, and never just to thank or agree with them.\n\
+         - If the human @mentioned you by name, you must respond and do what was asked (including asking other agents). \
+         Only when a message was sent to everyone and you truly have nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
+         - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
+         - Reply in the human's language."
+    )
 }

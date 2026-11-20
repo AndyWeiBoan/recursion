@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     Claude,
+    Codex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

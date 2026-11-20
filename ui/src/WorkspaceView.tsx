@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { onReconnect, openExternal, send, useWorkspace } from "./client";
-import type { Member, Msg } from "./types";
+import type { AgentKind, Member, Msg } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -36,12 +36,16 @@ function renderMarkdown(text: string, aliases: string[]): string {
   return html;
 }
 
-const MODELS: { value: string; label: string }[] = [
-  { value: "", label: "預設模型" },
-  { value: "opus", label: "Opus" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "haiku", label: "Haiku" },
-];
+const MODELS: Record<AgentKind, { value: string; label: string }[]> = {
+  claude: [
+    { value: "", label: "預設模型" },
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+    { value: "haiku", label: "Haiku" },
+  ],
+  codex: [{ value: "", label: "預設模型" }],
+};
+const KIND_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
 
 const STATUS_LABEL: Record<Member["status"], string> = {
   idle: "閒置",
@@ -98,7 +102,7 @@ function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
 function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
   const [menu, setMenu] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  if (members.length === 0) return null;
+  if (members.length === 0) return <div className="ws-members empty" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
   const usage = members.find((m) => m.usage?.five_hour !== undefined)?.usage;
   return (
@@ -107,7 +111,7 @@ function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
         <div key={m.id} className="chip-wrap">
           <button className={`chip st-${m.status}`} onClick={() => setMenu(menu === m.id ? null : m.id)} title={STATUS_LABEL[m.status]}>
             <Avatar m={m} size={18} />@{m.alias}
-            {m.model && <span className="chip-model">{m.model}</span>}
+            <span className="chip-model">{m.model ?? m.kind}</span>
             <i className="st-dot" />
           </button>
           {menu === m.id && (
@@ -125,7 +129,7 @@ function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
         </button>
         {adding && (
           <div className="pop">
-            <AddAgent panel={panel} onDone={() => setAdding(false)} suggest={`claude${members.length + 1}`} />
+            <AddAgent panel={panel} onDone={() => setAdding(false)} taken={members.map((m) => m.alias)} />
           </div>
         )}
       </div>
@@ -138,15 +142,21 @@ function MembersBar({ panel, members }: { panel: string; members: Member[] }) {
   );
 }
 
-function AddAgent({ panel, big, onDone, suggest }: { panel: string; big?: boolean; onDone?: () => void; suggest?: string }) {
-  const [alias, setAlias] = useState(suggest ?? "claude");
+function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boolean; onDone?: () => void; taken?: string[] }) {
+  const [kind, setKind] = useState<AgentKind>("claude");
+  const free = (base: string) => {
+    if (!taken.includes(base)) return base;
+    for (let i = 2; ; i++) if (!taken.includes(base + i)) return base + i;
+  };
+  const [alias, setAlias] = useState(free("claude"));
+  const [touched, setTouched] = useState(false);
   const [model, setModel] = useState("");
   return (
     <form
       className={`add-agent${big ? " big" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
-        send({ t: "ws_add_agent", panel, kind: "claude", alias, model: model || null });
+        send({ t: "ws_add_agent", panel, kind, alias, model: model || null });
         onDone?.();
       }}
     >
@@ -154,20 +164,38 @@ function AddAgent({ panel, big, onDone, suggest }: { panel: string; big?: boolea
         <>
           <div className="ws-glyph">✳</div>
           <h3>加入一個 agent 開始對話</h3>
-          <p className="dim">目前支援 Claude，用你已登入的 claude 帳號。之後隨時可以再加人。</p>
+          <p className="dim">用你已登入的 claude／codex 帳號。之後隨時可以再加人。</p>
         </>
       )}
+      <div className="kind-seg" role="radiogroup" aria-label="agent 種類">
+        {(["claude", "codex"] as AgentKind[]).map((k) => (
+          <button
+            key={k}
+            type="button"
+            role="radio"
+            aria-checked={kind === k}
+            className={kind === k ? "on" : ""}
+            onClick={() => {
+              setKind(k);
+              setModel("");
+              if (!touched) setAlias(free(k === "codex" ? "codex" : "claude"));
+            }}
+          >
+            {KIND_NAME[k]}
+          </button>
+        ))}
+      </div>
       <div className="add-row">
         <label>
           <span>別名</span>
           <span className="alias-in">
-            @<input id={`alias-${panel}${big ? "-big" : ""}`} value={alias} onChange={(e) => setAlias(e.target.value)} spellCheck={false} autoFocus={!big} />
+            @<input id={`alias-${panel}${big ? "-big" : ""}`} value={alias} onChange={(e) => (setAlias(e.target.value), setTouched(true))} spellCheck={false} autoFocus={!big} />
           </span>
         </label>
         <label>
           <span>模型</span>
           <select id={`model-${panel}${big ? "-big" : ""}`} value={model} onChange={(e) => setModel(e.target.value)}>
-            {MODELS.map((m) => (
+            {MODELS[kind].map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}
               </option>
@@ -176,7 +204,7 @@ function AddAgent({ panel, big, onDone, suggest }: { panel: string; big?: boolea
         </label>
       </div>
       <button className="primary" type="submit">
-        加入 Claude
+        加入 {KIND_NAME[kind]}
       </button>
     </form>
   );
@@ -349,7 +377,7 @@ const MessageView = memo(function MessageView({
         {first && (
           <div className="name">
             <b style={{ color: who ? colorFor(who.id) : undefined }}>@{who?.alias ?? "agent"}</b>
-            {who?.model && <span>{who.model}</span>}
+            {who && <span>{who.model ?? who.kind}</span>}
             <span>{time(m.ts)}</span>
           </div>
         )}
@@ -379,7 +407,7 @@ function Composer({ panel, members, disabled, busy, focused }: { panel: string; 
   // @mention autocomplete for the word under the caret.
   const token = /(^|\s)@([\w\-一-鿿]*)$/.exec(text.slice(0, caret));
   const options = token
-    ? [...members.map((m) => ({ alias: m.alias, label: m.model ?? "claude", m })), { alias: "all", label: "所有 agent", m: undefined }].filter((o) =>
+    ? [...members.map((m) => ({ alias: m.alias, label: m.model ?? m.kind, m })), { alias: "all", label: "所有 agent", m: undefined }].filter((o) =>
         o.alias.toLowerCase().startsWith(token[2].toLowerCase()),
       )
     : [];

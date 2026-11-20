@@ -59,18 +59,20 @@ export type Cmd =
   | { t: "term_resize"; panel: string; cols: number; rows: number }
   | { t: "term_restart"; panel: string; cols: number; rows: number }
   | { t: "ws_attach"; panel: string }
-  | { t: "ws_add_agent"; panel: string; kind: "claude"; alias: string; model?: string | null }
+  | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_send"; panel: string; text: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_continue"; panel: string };
 
+export type AgentKind = "claude" | "codex";
+
 export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission";
 
 export interface Member {
   id: string;
-  kind: "claude";
+  kind: AgentKind;
   alias: string;
   model?: string | null;
   cli_session_id?: string | null;

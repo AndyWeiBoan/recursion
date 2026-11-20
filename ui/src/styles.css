@@ -291,3 +291,8 @@ body.dragging iframe, body.dragging .xterm { pointer-events: none; }
 .mention-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; text-align: left; font-family: var(--mono); font-size: 12.5px; }
 .mention-menu button .dim { margin-left: auto; font-size: 11px; }
 .mention-menu button.on { background: var(--sel); }
+
+.kind-seg { display: inline-flex; background: #1d1e22; border: 1px solid var(--line); border-radius: 8px; padding: 2px; gap: 2px; }
+.kind-seg button { padding: 4px 14px; border-radius: 6px; color: var(--dim); font-size: 13px; }
+.kind-seg button.on { background: var(--sel); color: var(--fg); }
+.ws-members.empty { padding: 0; border: 0; }
