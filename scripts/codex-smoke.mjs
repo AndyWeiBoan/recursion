@@ -38,7 +38,7 @@ const seen = [];
 const waitFor = async (pred, ms = 120000) => { const end = Date.now() + ms; while (Date.now() < end) { pump(); const r = pred(); if (r) return r; await sleep(200); } return null; };
 const allIdle = () => [...members.values()].every((m) => m.status === "idle");
 const texts = (fromId) => [...transcript.values()].filter((m) => m.kind === "text" && m.from === fromId && !m.streaming);
-const settle = async () => { await sleep(1500); return waitFor(() => allIdle() && (sleep(0), true), 180000); };
+const settle = async () => { await sleep(2500); return waitFor(() => allIdle() && (sleep(0), true), 180000); };
 
 await until((m) => m.t === "state");
 send({ t: "session_create", name: "c", cwd: proj, kind: "workspace" });
@@ -63,10 +63,16 @@ check([...transcript.values()].some((m) => m.kind === "tool" && m.from === cx.id
 check(cx && (members.get(cx.id).cli_session_id ?? "").length > 10, "codex thread id stored");
 
 const clBefore = texts(cl.id).length;
-send({ t: "ws_send", panel, text: "@cx ask @claude to name the largest planet in one word. Mention him as @claude." });
-await waitFor(() => texts(cl.id).length > clBefore, 180000);
+send({ t: "ws_send", panel, text: "@cx ask the other agent (alias: claude) to name the largest planet in one word. Address him by writing the at-sign followed by claude." });
+await waitFor(() => texts(cx.id).some((m) => /@claude/i.test(m.text)), 150000);
 await settle();
-check(texts(cl.id).slice(clBefore).some((m) => /jupiter|木星/i.test(m.text)), "codex @mentioned claude and claude answered");
+await sleep(4000);
+pump();
+check(texts(cl.id).length === clBefore, "codex's @claude did not make claude speak this round");
+send({ t: "ws_send", panel, text: "@claude please answer what @cx asked you." });
+await waitFor(() => texts(cl.id).length > clBefore, 150000);
+await settle();
+check(texts(cl.id).slice(clBefore).some((m) => /jupiter|木星/i.test(m.text)), "next round claude saw codex's question and answered");
 
 send({ t: "ws_send", panel, text: "@cx what number did the node command print earlier? Reply with just the number." });
 await waitFor(() => texts(cx.id).filter((m) => /^\s*`?42`?\s*$/.test(m.text)).length > 0, 150000);

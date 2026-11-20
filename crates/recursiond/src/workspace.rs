@@ -292,11 +292,6 @@ pub fn mentions(text: &str, members: &[Member], exclude: Option<&str>) -> Vec<St
     found
 }
 
-/// Loose comparison for the repetition guard.
-pub fn normalize(text: &str) -> String {
-    text.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
-}
-
 #[cfg(test)]
 mod mention_tests {
     use super::*;
@@ -315,8 +310,4 @@ mod mention_tests {
         assert_eq!(mentions("@全部 開始", &ms, None), vec!["a", "b"]);
     }
 
-    #[test]
-    fn normalize_ignores_punctuation_and_case() {
-        assert_eq!(normalize("OK, sounds good!"), normalize("ok sounds good"));
-    }
 }

@@ -127,6 +127,7 @@ impl Hub {
         {
             let (hub, panel_s, member_s, rpc) = (self.clone(), panel.to_string(), m.id.clone(), rpc.clone());
             let mut reader = Reader::new(hub.clone(), panel_s.clone(), member_s.clone(), dir.clone(), rpc.clone());
+            let cwd_done = dir.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -147,6 +148,7 @@ impl Hub {
                         let detail = if err.is_empty() { String::new() } else { format!("\n\n```\n{}\n```", err.chars().take(1500).collect::<String>()) };
                         hub.system(&panel_s, &member_s, format!("Codex 意外結束（exit {code}）。下一則訊息會自動接續對話。{detail}"), true);
                         hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
+                        super::spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
                     }
                 }
             });

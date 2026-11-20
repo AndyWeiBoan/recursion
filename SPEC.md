@@ -42,8 +42,8 @@ recursiond
 | 主題 | 決定 |
 |---|---|
 | 群聊 | 共用對話紀錄；可 @ 某 agent；agent 可設 alias；agent 也能 @ 別的 agent |
-| 沒有 @ 時 | **人類**訊息發給這個 workspace 的所有 agent；**agent** 訊息只有 @ 到誰才觸發誰 |
-| 防無限遞迴 | ① 每個人類訊息起算 agent 觸發最多 10 輪（只有人類發言才重置），超過問「繼續 10 輪？」 ② 同一對 A↔B 來回上限 4 ③ agent 可回 `[PASS]` 不發言 ④ 同 agent 連 3 次近乎相同 → 暫停 ⑤ 永遠有「全部停止」 |
+| 沒有 @ 時 | 人類訊息發給這個 workspace 的所有 agent |
+| 回合制（取代 agent 互相觸發） | 人類發言開啟一個回合；被點到的 agent（有 @ 就是被 @ 的，沒有就是全部）**同時**作答、每人一次；回合結束後全部安靜等人類。agent 回覆裡的 @ 不會觸發對方，對方下一回合會看到。連續送出的人類訊息 1.5 秒內合併為同一回合；回合進行中送出的訊息排進下一回合，可按「中斷本回合，立即送出」。因不會循環，移除防遞迴上限，只保留 [PASS] |
 | agent 可見內容 | 所有人的文字發言；看不到別人的工具呼叫細節 |
 | agent 執行指令 | 用 CLI 自己的工具（Claude 的 Bash、Codex 的 shell）在**背景**執行，結果以 `⎿` 摘要顯示在對話裡。**agent 不開、不碰 terminal panel**；terminal panel 只給人用 |
 | 權限 | 以 session cwd 為界，由 **OS 沙箱強制**（Claude Code sandbox：macOS Seatbelt / Linux bubblewrap；Codex sandbox）。cwd 內讀寫自動允許。cwd 外被 OS 拒絕 → agent 呼叫 `request_access(path)` → 原生對話框 / 資料夾選擇器 → 同意後加入允許清單並 resume。agent 的 shell 指令一律跳核准卡片（可勾「以後都允許這個指令」） |
@@ -67,7 +67,7 @@ recursiond
 - 偵測終端前景程序（決定 `Ctrl+H/J/K/L` 給誰）：macOS／Linux 用 `tcgetpgrp` + 程序名稱。
 
 ## 待決定
-（目前無）
+- **Lua 設定檔**（使用者需求，2026-11-20）：設定改用 Lua，參考 WezTerm / Neovim，`~/.config/recursion/init.lua`，Rust 端以 `mlua` 嵌入。待討論：開放哪些設定（快捷鍵、預設 agent 與模型、外觀、群聊規則、事件 hook）、熱重載、錯誤提示方式。
 
 ## v1 開發順序
 | # | 里程碑 | 內容 | 完成標準 |

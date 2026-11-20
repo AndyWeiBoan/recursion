@@ -64,7 +64,7 @@ export type Cmd =
   | { t: "ws_send"; panel: string; text: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
-  | { t: "ws_continue"; panel: string };
+  | { t: "ws_send_now"; panel: string };
 
 export type AgentKind = "claude" | "codex";
 
@@ -95,6 +95,7 @@ export type Msg = { id: string; ts: number; from: string; seq: number; to?: stri
 export interface Workspace {
   members: Member[];
   messages: Msg[];
+  round?: { active: boolean; queued: number };
 }
 
 export function leaves(n: Node): string[] {

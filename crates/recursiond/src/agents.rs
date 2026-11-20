@@ -4,8 +4,7 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
-use crate::workspace::{mentions, normalize, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, Workspace};
-use std::collections::VecDeque;
+use crate::workspace::{mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, Workspace};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -60,26 +59,32 @@ struct PendingPerm {
     codex_request: Option<Value>,
 }
 
-/// Loop-guard limits (SPEC: per chain 10 agent-triggered turns, per pair 4, 3 repeats).
-const CHAIN_LIMIT: u32 = 10;
-const PAIR_LIMIT: u32 = 4;
-const REPEAT_LIMIT: usize = 3;
 /// How much history a newly joined agent gets.
 const HISTORY_MSGS: usize = 60;
 const HISTORY_CHARS: usize = 30_000;
+/// Consecutive human messages within this window form one round.
+const MERGE_WINDOW_MS: u64 = 1500;
 
-/// Per-workspace routing state (not persisted).
+/// Per-workspace round state (not persisted).
+///
+/// Turn-based chat: a human message opens a round; every addressed agent answers once, in
+/// parallel; then everyone waits for the human again. Human messages sent while a round is
+/// running are queued for the next round.
 #[derive(Default)]
 struct Runtime {
-    /// Agent-triggered deliveries since the last human message.
-    chain_turns: u32,
-    pairs: HashMap<(String, String), u32>,
-    /// Members that were triggered while busy; delivered when their turn ends.
+    /// Members that still owe a reply in the current round.
+    speaking: HashSet<String>,
+    /// Targets accumulated from human messages not yet delivered (None inside = everyone).
+    queued_targets: Option<HashSet<String>>,
+    queued_all: bool,
+    /// Human messages waiting for the next round.
+    queued_count: u32,
+    /// Bumped on every human message; a delayed round start only fires if still current.
+    send_gen: u64,
+    /// Members that must be re-delivered when their in-flight turn ends (round started while busy).
     pending: HashSet<String>,
-    /// Triggers held back by a tripped guard, released by "continue".
-    blocked: HashSet<String>,
-    paused: bool,
-    recent: HashMap<String, VecDeque<String>>,
+    /// Project folder of this workspace (set on every human message).
+    cwd: String,
     roster_version: u64,
     roster_seen: HashMap<String, u64>,
 }
@@ -157,7 +162,8 @@ impl Hub {
     }
 
     pub fn snapshot(&self, panel: &str) -> Value {
-        self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws }))
+        let round = self.round_state(panel);
+        self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws, "round": { "active": round["active"], "queued": round["queued"] } }))
     }
 
     fn push_msg(&self, panel: &str, msg: Message) -> Message {
@@ -261,14 +267,26 @@ impl Hub {
         self.rt(panel, |r| {
             r.roster_version += 1;
             r.pending.remove(member);
-            r.blocked.remove(member);
+            r.speaking.remove(member);
         });
+        self.emit_round(panel);
         if let Some(a) = alias {
             self.system(panel, "system", format!("@{a} 離開了群聊"), false);
         }
     }
 
-    /// A human message: goes to the @mentioned agents, or to everyone when nobody is mentioned.
+    fn emit_round(&self, panel: &str) {
+        let (active, queued) = self.rt(panel, |r| (!r.speaking.is_empty(), r.queued_count));
+        self.emit(json!({ "t": "ws_round", "panel": panel, "active": active, "queued": queued }));
+    }
+
+    pub fn round_state(&self, panel: &str) -> Value {
+        let (active, queued) = self.rt(panel, |r| (!r.speaking.is_empty(), r.queued_count));
+        json!({ "t": "ws_round", "panel": panel, "active": active, "queued": queued })
+    }
+
+    /// A human message. It is shown right away; the round starts once the human has been quiet
+    /// for MERGE_WINDOW_MS, or — if a round is running — right after that round ends.
     pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String) -> Result<(), String> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -283,51 +301,61 @@ impl Hub {
         let mut m = msg("you", Body::Text { text }, false);
         m.to = if all { vec![] } else { targeted.clone() };
         self.push_msg(panel, m);
-        // A human message starts a new chain: reset every guard.
-        self.rt(panel, |r| {
-            r.chain_turns = 0;
-            r.pairs.clear();
-            r.blocked.clear();
-            r.paused = false;
-            r.recent.clear();
+        let gen = self.rt(panel, |r| {
+            r.cwd = cwd.clone();
+            if all {
+                r.queued_all = true;
+            } else {
+                r.queued_targets.get_or_insert_with(HashSet::new).extend(targeted);
+            }
+            r.queued_count += 1;
+            r.send_gen += 1;
+            r.send_gen
         });
-        self.resolve_guards(panel);
-        let targets: Vec<String> = if all { members.iter().map(|m| m.id.clone()).collect() } else { targeted };
-        for t in targets {
-            self.trigger(panel, &t, &cwd).await;
-        }
+        self.emit_round(panel);
+        let (hub, panel, cwd) = (self.clone(), panel.to_string(), cwd);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(MERGE_WINDOW_MS)).await;
+            let ready = hub.rt(&panel, |r| r.send_gen == gen && r.speaking.is_empty());
+            if ready {
+                hub.start_round(&panel, &cwd).await;
+            }
+        });
         Ok(())
     }
 
-    /// "Continue" after a guard tripped: give agents another budget and release held triggers.
-    pub async fn resume_chain(self: &Arc<Self>, panel: &str, cwd: String) {
-        let blocked: Vec<String> = self.rt(panel, |r| {
-            r.chain_turns = 0;
-            r.pairs.clear();
-            r.paused = false;
-            r.recent.clear();
-            r.blocked.drain().collect()
+    /// "Interrupt this round and send now": stop agents, then open a round with the queued messages.
+    pub async fn send_now(self: &Arc<Self>, panel: &str, cwd: String) {
+        self.interrupt_all(panel).await;
+        self.rt(panel, |r| r.speaking.clear());
+        self.start_round(panel, &cwd).await;
+    }
+
+    async fn start_round(self: &Arc<Self>, panel: &str, cwd: &str) {
+        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect());
+        let targets: Vec<String> = self.rt(panel, |r| {
+            if r.queued_count == 0 {
+                return vec![];
+            }
+            let t: Vec<String> = if r.queued_all {
+                members.clone()
+            } else {
+                let q = r.queued_targets.clone().unwrap_or_default();
+                members.iter().filter(|m| q.contains(*m)).cloned().collect()
+            };
+            r.queued_all = false;
+            r.queued_targets = None;
+            r.queued_count = 0;
+            r.speaking = t.iter().cloned().collect();
+            t
         });
-        self.resolve_guards(panel);
-        for m in blocked {
-            self.trigger(panel, &m, &cwd).await;
+        self.emit_round(panel);
+        for t in targets {
+            self.trigger(panel, &t, cwd).await;
         }
     }
 
-    fn resolve_guards(&self, panel: &str) {
-        let ids: Vec<String> = self.with_ws(panel, |ws| {
-            ws.messages.iter().filter(|m| matches!(m.body, Body::Guard { resolved: false, .. })).map(|m| m.id.clone()).collect()
-        });
-        for id in ids {
-            self.update_msg(panel, &id, |m| {
-                if let Body::Guard { resolved, .. } = &mut m.body {
-                    *resolved = true;
-                }
-            });
-        }
-    }
-
-    /// Wake an agent: deliver now if idle, otherwise after its current turn.
+    /// Deliver to an agent now, or after its in-flight (interrupted) turn ends.
     async fn trigger(self: &Arc<Self>, panel: &str, member: &str, cwd: &str) {
         let Some(m) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()) else { return };
         if m.status != MemberStatus::Idle {
@@ -337,10 +365,27 @@ impl Hub {
         if let Err(e) = self.deliver(panel, &m, cwd).await {
             self.system(panel, &m.id, e, true);
             self.update_member(panel, &m.id, |m| m.status = MemberStatus::Idle);
+            spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
         }
     }
 
-    /// Called when an agent finishes a turn: [PASS], guards, @mention routing, queued triggers.
+    /// An agent finished (or failed) its reply for this round.
+    async fn member_done(self: &Arc<Self>, panel: &str, member: &str, cwd: &str) {
+        let (round_over, next) = self.rt(panel, |r| {
+            let was = r.speaking.remove(member);
+            let over = was && r.speaking.is_empty();
+            (over, over && r.queued_count > 0)
+        });
+        if round_over {
+            self.emit_round(panel);
+            if next {
+                self.start_round(panel, cwd).await;
+            }
+        }
+    }
+
+    /// Called when an agent's turn ends: hide [PASS], then either re-deliver (it was interrupted
+    /// into a new round) or mark it done for the round. @mentions never wake anyone.
     async fn turn_ended(self: &Arc<Self>, panel: String, member: String, text: String, text_ids: Vec<String>, cwd: String) {
         let trimmed = text.trim();
         let passed = trimmed == "[PASS]" || (trimmed.starts_with("[PASS]") && trimmed.len() < 40);
@@ -349,68 +394,38 @@ impl Hub {
             let alias = self.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone())).unwrap_or_default();
             self.system(&panel, &member, format!("@{alias} 略過（沒有要補充的）"), false);
         }
-        let mut targets: Vec<String> = Vec::new();
-        if !passed && !trimmed.is_empty() {
-            let members: Vec<Member> = self.with_ws(&panel, |ws| ws.members.clone());
-            let alias = members.iter().find(|m| m.id == member).map(|m| m.alias.clone()).unwrap_or_default();
-            // Repetition guard.
-            let repeated = self.rt(&panel, |r| {
-                let q = r.recent.entry(member.clone()).or_default();
-                q.push_back(normalize(trimmed));
-                while q.len() > REPEAT_LIMIT {
-                    q.pop_front();
-                }
-                q.len() == REPEAT_LIMIT && q.iter().all(|t| t == &q[0])
-            });
-            if repeated {
-                self.trip(&panel, format!("@{alias} 連續 {REPEAT_LIMIT} 次說了幾乎一樣的話，已暫停。"), mentions(trimmed, &members, Some(&member)));
-            } else {
-                for to in mentions(trimmed, &members, Some(&member)) {
-                    let to_alias = members.iter().find(|m| m.id == to).map(|m| m.alias.clone()).unwrap_or_default();
-                    let verdict = self.rt(&panel, |r| {
-                        if r.paused {
-                            return Err(None);
-                        }
-                        if r.chain_turns >= CHAIN_LIMIT {
-                            return Err(Some(format!("agent 之間已經互動 {CHAIN_LIMIT} 輪了。")));
-                        }
-                        let key = if member < to { (member.clone(), to.clone()) } else { (to.clone(), member.clone()) };
-                        let n = r.pairs.entry(key).or_insert(0);
-                        if *n >= PAIR_LIMIT {
-                            return Err(Some(format!("@{alias} 和 @{to_alias} 已經來回 {PAIR_LIMIT} 次了。")));
-                        }
-                        *n += 1;
-                        r.chain_turns += 1;
-                        Ok(())
-                    });
-                    match verdict {
-                        Ok(()) => targets.push(to),
-                        Err(Some(reason)) => self.trip(&panel, reason, vec![to]),
-                        Err(None) => {
-                            self.rt(&panel, |r| r.blocked.insert(to));
-                        }
-                    }
-                }
-            }
-        }
         let again = self.rt(&panel, |r| r.pending.remove(&member));
         if again {
-            targets.push(member.clone());
-        }
-        for t in targets {
-            self.trigger(&panel, &t, &cwd).await;
+            self.trigger(&panel, &member, &cwd).await;
+        } else {
+            self.member_done(&panel, &member, &cwd).await;
         }
     }
 
-    fn trip(&self, panel: &str, reason: String, held: Vec<String>) {
-        let first = self.rt(panel, |r| {
-            let first = !r.paused;
-            r.paused = true;
-            r.blocked.extend(held);
-            first
-        });
-        if first {
-            self.push_msg(panel, msg("system", Body::Guard { text: format!("{reason}要讓它們繼續嗎？"), resolved: false }, false));
+    async fn interrupt_all(self: &Arc<Self>, panel: &str) {
+        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().filter(|m| m.status != MemberStatus::Idle).map(|m| m.id.clone()).collect());
+        for member in members {
+            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), member.clone())).and_then(|p| p.codex.clone());
+            match rpc {
+                Some(rpc) => rpc.interrupt(self, panel, &member).await,
+                None => {
+                    let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
+                }
+            }
+            let (hub, panel, member) = (self.clone(), panel.to_string(), member.clone());
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                let busy = hub.with_ws(&panel, |ws| ws.members.iter().any(|m| m.id == member && m.status != MemberStatus::Idle));
+                if busy {
+                    hub.kill(&panel, &member).await;
+                    hub.update_member(&panel, &member, |m| m.status = MemberStatus::Idle);
+                    // It never reported the end of its turn: hand it the next round now if one is waiting.
+                    let (again, cwd) = hub.rt(&panel, |r| (r.pending.remove(&member), r.cwd.clone()));
+                    if again {
+                        spawn_trigger(hub.clone(), panel.clone(), member.clone(), cwd);
+                    }
+                }
+            });
         }
     }
 
@@ -449,31 +464,18 @@ impl Hub {
         Ok(())
     }
 
+    /// Stop everything: interrupt agents, end the round, drop queued messages' delivery.
     pub async fn stop(self: &Arc<Self>, panel: &str) {
-        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().filter(|m| m.status != MemberStatus::Idle).map(|m| m.id.clone()).collect());
-        for member in members {
-            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), member.clone())).and_then(|p| p.codex.clone());
-            match rpc {
-                Some(rpc) => rpc.interrupt(self, panel, &member).await,
-                None => {
-                    let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
-                }
-            }
-            let (hub, panel, member) = (self.clone(), panel.to_string(), member.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                let busy = hub.with_ws(&panel, |ws| ws.members.iter().any(|m| m.id == member && m.status != MemberStatus::Idle));
-                if busy {
-                    hub.kill(&panel, &member).await;
-                    hub.update_member(&panel, &member, |m| m.status = MemberStatus::Idle);
-                }
-            });
-        }
+        self.interrupt_all(panel).await;
         self.rt(panel, |r| {
             r.pending.clear();
-            r.blocked.clear();
+            r.speaking.clear();
+            r.queued_all = false;
+            r.queued_targets = None;
+            r.queued_count = 0;
+            r.send_gen += 1;
         });
-        self.resolve_guards(panel);
+        self.emit_round(panel);
         self.system(panel, "system", "已停止", false);
     }
 
@@ -616,6 +618,7 @@ impl Hub {
 
         let base_cost = m.cost_usd;
         let (hub, panel_s, member_s, cwd_s) = (self.clone(), panel.to_string(), m.id.clone(), dir.clone());
+        let cwd_done = dir.clone();
         let err_buf = Arc::new(Mutex::new(String::new()));
         {
             let err_buf = err_buf.clone();
@@ -649,6 +652,7 @@ impl Hub {
                     let detail = if err.is_empty() { String::new() } else { format!("\n\n```\n{}\n```", err.chars().take(1500).collect::<String>()) };
                     hub.system(&panel_s, &member_s, format!("Claude 意外結束（exit {code}）。下一則訊息會自動接續對話。{detail}"), true);
                     hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
+                    spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
                 }
             }
         });
@@ -857,13 +861,23 @@ impl ClaudeReader {
 fn group_prompt(alias: &str) -> String {
     format!(
         "You are @{alias}, an agent in a Recursion group chat: a human working with one or more AI agents in the same project.\n\
+         - The chat is turn-based. Each time the human speaks, every addressed agent replies exactly once, all at the same time; \
+         then everyone waits for the human again. You will not see other agents' replies from the same round until the next round.\n\
          - New messages arrive prefixed with their speaker, e.g. `[human → everyone]: ...` or `[@other]: ...`. You only receive \
          messages you have not seen yet; your own earlier replies are already in your context.\n\
-         - To ask another agent for something, mention them as @alias in your reply; they will read your whole reply. Do not \
-         @mention anyone unless you actually need their input, and never just to thank or agree with them.\n\
-         - If the human @mentioned you by name, you must respond and do what was asked (including asking other agents). \
-         Only when a message was sent to everyone and you truly have nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
+         - You may address another agent as @alias, but that does not make them reply now; they will read it next round.\n\
+         - If the human @mentioned you by name, you must respond. Only when a message was sent to everyone and you truly have \
+         nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
          - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
          - Reply in the human's language."
     )
+}
+
+/// Plain fn so callers' future types don't recurse into the round machinery.
+fn spawn_member_done(hub: Arc<Hub>, panel: String, member: String, cwd: String) {
+    tokio::spawn(async move { hub.member_done(&panel, &member, &cwd).await });
+}
+
+fn spawn_trigger(hub: Arc<Hub>, panel: String, member: String, cwd: String) {
+    tokio::spawn(async move { hub.trigger(&panel, &member, &cwd).await });
 }

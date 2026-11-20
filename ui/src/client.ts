@@ -84,7 +84,7 @@ export async function connect() {
           toast(m.msg);
           break;
         case "ws_state":
-          workspaces.set(m.panel, m.ws);
+          workspaces.set(m.panel, { ...m.ws, round: m.round });
           wsChanged(m.panel);
           break;
         case "ws_msg":
@@ -110,6 +110,9 @@ export async function connect() {
             else members.push(m.member as Member);
             return { ...w, members };
           });
+          break;
+        case "ws_round":
+          wsUpdate(m.panel, (w) => ({ ...w, round: { active: m.active, queued: m.queued } }));
           break;
         case "ws_msg_removed":
           wsUpdate(m.panel, (w) => ({ ...w, messages: w.messages.filter((x) => x.id !== m.id) }));

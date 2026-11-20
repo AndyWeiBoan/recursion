@@ -85,7 +85,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
       ) : (
         <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} />
       )}
-      <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused} />
+      <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused} round={ws.round} />
     </div>
   );
 }
@@ -316,9 +316,6 @@ const MessageView = memo(function MessageView({
         <span>⚠ {m.text}</span>
         {!m.resolved && (
           <span className="acts">
-            <button className="yes" onClick={() => send({ t: "ws_continue", panel })}>
-              繼續 10 輪
-            </button>
             <button onClick={() => send({ t: "ws_stop", panel })}>停止</button>
           </span>
         )}
@@ -411,7 +408,21 @@ const MessageView = memo(function MessageView({
   );
 });
 
-function Composer({ panel, members, disabled, busy, focused }: { panel: string; members: Member[]; disabled: boolean; busy: boolean; focused: boolean }) {
+function Composer({
+  panel,
+  members,
+  disabled,
+  busy,
+  focused,
+  round,
+}: {
+  panel: string;
+  members: Member[];
+  disabled: boolean;
+  busy: boolean;
+  focused: boolean;
+  round?: { active: boolean; queued: number };
+}) {
   const [text, setText] = useState("");
   const [sel, setSel] = useState(0);
   const [caret, setCaret] = useState(0);
@@ -455,8 +466,15 @@ function Composer({ panel, members, disabled, busy, focused }: { panel: string; 
     setText("");
     setCaret(0);
   };
+  const queued = round?.active ? round.queued : 0;
   return (
     <div className="ws-input">
+      {queued > 0 && (
+        <div className="queue-bar">
+          <span>已排隊 {queued} 則，本回合結束後送出</span>
+          <button onClick={() => send({ t: "ws_send_now", panel })}>中斷本回合，立即送出</button>
+        </div>
+      )}
       {showMenu && (
         <div className="mention-menu" role="listbox">
           {options.map((o, i) => (
@@ -472,7 +490,7 @@ function Composer({ panel, members, disabled, busy, focused }: { panel: string; 
         rows={1}
         value={text}
         disabled={disabled}
-        placeholder={disabled ? "先加入一個 agent" : "傳訊息（沒有 @ 會發給全部 agent；Enter 送出，Shift+Enter 換行）"}
+        placeholder={disabled ? "先加入一個 agent" : "傳訊息（沒有 @ 就問全部 agent；Enter 送出，Shift+Enter 換行）"}
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);
