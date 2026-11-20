@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { send } from "./client";
 import { requestKind } from "./picker";
+import { WorkspaceView } from "./WorkspaceView";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
 import { KIND_LABEL, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
@@ -83,7 +84,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
     if (!focused) send({ t: "panel_focus", panel: panel.id });
   };
   const title =
-    panel.kind === "terminal" ? info?.fg ?? "shell" : panel.kind === "browser" ? panel.url || "新分頁" : "尚未加入 agent";
+    panel.kind === "terminal" ? info?.fg ?? "shell" : panel.kind === "browser" ? panel.url || "新分頁" : "";
 
   return (
     <section className={`panel${focused ? " focused" : ""}`} data-panel={panel.id} onMouseDown={focus}>
@@ -126,7 +127,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
       </header>
       <div className="panel-body">
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
-        {panel.kind === "workspace" && <WorkspaceBody />}
+        {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
         {panel.kind === "browser" && <BrowserBody panel={panel} />}
       </div>
     </section>
@@ -160,24 +161,6 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
           <button onClick={() => restartTerminal(id)}>重新啟動</button>
         </div>
       )}
-    </div>
-  );
-}
-
-function WorkspaceBody() {
-  return (
-    <div className="ws">
-      <div className="ws-log">
-        <div className="ws-empty">
-          <div className="ws-glyph">❯_</div>
-          <p>這個群聊還沒有 agent。</p>
-          <p className="dim">下一個版本（M1）會接上 Claude，到時在這裡新增 agent 就能開始對話。</p>
-        </div>
-      </div>
-      <div className="ws-input">
-        <span className="prompt">❯</span>
-        <input disabled placeholder="還沒有 agent 可以對話" />
-      </div>
     </div>
   );
 }

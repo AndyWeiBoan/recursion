@@ -1,6 +1,6 @@
 // Connection to recursiond plus a tiny external store for React.
 import { useSyncExternalStore } from "react";
-import type { Cmd, State, TermInfo } from "./types";
+import type { Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "error";
 
@@ -81,6 +81,38 @@ export async function connect() {
         case "error":
           lastError = m.msg;
           console.warn("recursiond:", m.msg);
+          toast(m.msg);
+          break;
+        case "ws_state":
+          workspaces.set(m.panel, m.ws);
+          wsChanged(m.panel);
+          break;
+        case "ws_msg":
+          wsUpdate(m.panel, (w) => {
+            const i = w.messages.findIndex((x) => x.id === m.msg.id);
+            const messages = [...w.messages];
+            if (i >= 0) messages[i] = m.msg as Msg;
+            else messages.push(m.msg as Msg);
+            return { ...w, messages };
+          });
+          break;
+        case "ws_delta":
+          wsUpdate(m.panel, (w) => ({
+            ...w,
+            messages: w.messages.map((x) => (x.id === m.id && x.kind === "text" ? { ...x, text: x.text + m.text } : x)),
+          }));
+          break;
+        case "ws_member":
+          wsUpdate(m.panel, (w) => {
+            const i = w.members.findIndex((x) => x.id === m.member.id);
+            const members = [...w.members];
+            if (i >= 0) members[i] = m.member as Member;
+            else members.push(m.member as Member);
+            return { ...w, members };
+          });
+          break;
+        case "ws_member_removed":
+          wsUpdate(m.panel, (w) => ({ ...w, members: w.members.filter((x) => x.id !== m.member) }));
           break;
       }
     };
@@ -137,6 +169,65 @@ export async function pickFolder(): Promise<string | null> {
     return typeof r === "string" ? r : null;
   }
   return window.prompt("專案資料夾的完整路徑", "") || null;
+}
+
+// ---------- workspaces (group chats) ----------
+const workspaces = new Map<string, Workspace>();
+const wsSubs = new Map<string, Set<() => void>>();
+
+function wsChanged(panel: string) {
+  wsSubs.get(panel)?.forEach((f) => f());
+}
+function wsUpdate(panel: string, f: (w: Workspace) => Workspace) {
+  const cur = workspaces.get(panel);
+  if (!cur) return;
+  workspaces.set(panel, f(cur));
+  wsChanged(panel);
+}
+
+export function useWorkspace(panel: string): Workspace | null {
+  return useSyncExternalStore(
+    (f) => {
+      let set = wsSubs.get(panel);
+      if (!set) wsSubs.set(panel, (set = new Set()));
+      set.add(f);
+      return () => set!.delete(f);
+    },
+    () => workspaces.get(panel) ?? null,
+  );
+}
+
+// ---------- toasts ----------
+let toastMsg: { id: number; text: string } | null = null;
+const toastSubs = new Set<() => void>();
+export function toast(text: string) {
+  const id = Date.now();
+  toastMsg = { id, text };
+  toastSubs.forEach((f) => f());
+  setTimeout(() => {
+    if (toastMsg?.id === id) {
+      toastMsg = null;
+      toastSubs.forEach((f) => f());
+    }
+  }, 5000);
+}
+export function useToast() {
+  return useSyncExternalStore(
+    (f) => {
+      toastSubs.add(f);
+      return () => toastSubs.delete(f);
+    },
+    () => toastMsg,
+  );
+}
+
+export async function openExternal(url: string) {
+  if (isTauri) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+  } else {
+    window.open(url, "_blank", "noopener");
+  }
 }
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);

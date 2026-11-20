@@ -57,7 +57,41 @@ export type Cmd =
   | { t: "term_attach"; panel: string; cols: number; rows: number }
   | { t: "term_input"; panel: string; data: string }
   | { t: "term_resize"; panel: string; cols: number; rows: number }
-  | { t: "term_restart"; panel: string; cols: number; rows: number };
+  | { t: "term_restart"; panel: string; cols: number; rows: number }
+  | { t: "ws_attach"; panel: string }
+  | { t: "ws_add_agent"; panel: string; kind: "claude"; alias: string; model?: string | null }
+  | { t: "ws_remove_agent"; panel: string; member: string }
+  | { t: "ws_send"; panel: string; text: string }
+  | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
+  | { t: "ws_stop"; panel: string };
+
+export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission";
+
+export interface Member {
+  id: string;
+  kind: "claude";
+  alias: string;
+  model?: string | null;
+  cli_session_id?: string | null;
+  cost_usd: number;
+  status: MemberStatus;
+  usage: Record<string, number>;
+}
+
+export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
+
+export type Msg = { id: string; ts: number; from: string; streaming: boolean } & (
+  | { kind: "text"; text: string }
+  | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
+  | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
+  | { kind: "system"; text: string }
+  | { kind: "error"; text: string }
+);
+
+export interface Workspace {
+  members: Member[];
+  messages: Msg[];
+}
 
 export function leaves(n: Node): string[] {
   return n.type === "leaf" ? [n.panel] : n.children.flatMap(leaves);

@@ -7,10 +7,17 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// Must match `recursiond::PROTOCOL`.
+const PROTOCOL: u32 = 2;
+
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
     port: u16,
     token: String,
+    #[serde(default)]
+    protocol: u32,
+    #[serde(default)]
+    pid: u32,
 }
 
 fn home() -> PathBuf {
@@ -70,13 +77,24 @@ fn spawn_daemon() -> std::io::Result<()> {
 #[tauri::command]
 fn daemon_info() -> Result<DaemonInfo, String> {
     if let Some(info) = read_discovery().filter(healthy) {
-        return Ok(info);
+        if info.protocol == PROTOCOL {
+            return Ok(info);
+        }
+        // Outdated daemon (app was upgraded): stop it; layout is persisted, so nothing is lost but running shells.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(info.pid as i32, libc::SIGTERM);
+        }
+        let start = Instant::now();
+        while healthy(&info) && start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
     spawn_daemon().map_err(|e| format!("無法啟動 recursiond：{e}"))?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         std::thread::sleep(Duration::from_millis(150));
-        if let Some(info) = read_discovery().filter(healthy) {
+        if let Some(info) = read_discovery().filter(|i| i.protocol == PROTOCOL).filter(healthy) {
             return Ok(info);
         }
     }
@@ -87,6 +105,7 @@ fn daemon_info() -> Result<DaemonInfo, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![daemon_info])
         .run(tauri::generate_context!())
         .expect("error while running Recursion");

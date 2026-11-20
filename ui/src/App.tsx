@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getSnapshot, isMac, pickFolder, send, useSnapshot } from "./client";
+import { getSnapshot, isMac, pickFolder, send, useSnapshot, useToast } from "./client";
 import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
@@ -151,6 +151,7 @@ export default function App() {
         )}
       </main>
       {pick && <KindPicker req={pick} close={closePicker} />}
+      <Toast />
     </div>
   );
 }
@@ -343,5 +344,15 @@ function SidebarIcon() {
       <rect x="1.5" y="2.5" width="13" height="11" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
       <path d="M6 2.5v11" stroke="currentColor" strokeWidth="1.3" />
     </svg>
+  );
+}
+
+function Toast() {
+  const t = useToast();
+  if (!t) return null;
+  return (
+    <div className="toast" role="status" key={t.id}>
+      {t.text}
+    </div>
   );
 }

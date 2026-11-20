@@ -9,7 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 dirs.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal", "process", "io-util"] }
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 portable-pty = "0.9"
