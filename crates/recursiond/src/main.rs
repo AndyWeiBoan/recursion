@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -62,7 +62,7 @@ struct App {
 #[derive(Deserialize, Debug)]
 #[serde(tag = "t", rename_all = "snake_case")]
 enum In {
-    SessionCreate { name: String, cwd: String },
+    SessionCreate { name: String, cwd: String, kind: Option<PanelKind> },
     SessionDelete { session: String },
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
@@ -135,8 +135,8 @@ impl App {
         let mut changed = true;
         let mut reply = None;
         match msg {
-            SessionCreate { name, cwd } => {
-                self.state.lock().unwrap().create_session(name, cwd);
+            SessionCreate { name, cwd, kind } => {
+                self.state.lock().unwrap().create_session(name, cwd, kind.unwrap_or(model::PanelKind::Terminal));
             }
             SessionDelete { session } => {
                 let removed = self.state.lock().unwrap().delete_session(&session).map_err(e)?;

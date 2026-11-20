@@ -39,7 +39,7 @@ export interface TermInfo {
 }
 
 export type Cmd =
-  | { t: "session_create"; name: string; cwd: string }
+  | { t: "session_create"; name: string; cwd: string; kind?: PanelKind }
   | { t: "session_delete"; session: string }
   | { t: "session_rename"; session: string; name: string }
   | { t: "session_group"; session: string; group: string }

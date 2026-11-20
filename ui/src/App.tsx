@@ -18,7 +18,7 @@ async function newSession() {
   const cwd = await pickFolder();
   if (!cwd) return;
   const name = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
-  send({ t: "session_create", name, cwd });
+  requestKind(`在「${name}」開啟`, null, (kind) => send({ t: "session_create", name, cwd, kind }));
 }
 
 /** Move focus to the nearest panel in a direction, by on-screen geometry. */

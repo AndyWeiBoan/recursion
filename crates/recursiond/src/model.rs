@@ -203,8 +203,8 @@ impl State {
         Window { id: new_id(), name, root: Node::Leaf { panel: panel.clone() }, focus: panel }
     }
 
-    pub fn create_session(&mut self, name: String, cwd: String) -> String {
-        let window = self.new_window(PanelKind::Terminal, String::new());
+    pub fn create_session(&mut self, name: String, cwd: String, kind: PanelKind) -> String {
+        let window = self.new_window(kind, String::new());
         let id = new_id();
         let session = Session {
             id: id.clone(),
@@ -376,7 +376,7 @@ mod tests {
 
     fn one_session() -> (State, String) {
         let mut st = State::default();
-        let sid = st.create_session("t".into(), "/tmp/proj".into());
+        let sid = st.create_session("t".into(), "/tmp/proj".into(), PanelKind::Terminal);
         (st, sid)
     }
 
