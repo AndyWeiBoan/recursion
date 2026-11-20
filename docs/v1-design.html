@@ -219,12 +219,26 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
 .hl-line{background:#33291c;border-bottom:1px dashed #ffb46b}
 .rx-tbl tr.flash td{box-shadow:inset 0 0 0 1px #ffb46b}
 .din{border:1px solid #44464f;border-radius:6px;padding:5px 8px;color:var(--rx-dim)}
+.acc{background:#1d1e22;color:#e8e8ea;border:1px solid #2c2d33;border-radius:14px;padding:16px;display:grid;gap:6px;font-size:14px;align-content:start}
+.acc .ah{font-size:12px;color:#8d8f98;letter-spacing:.04em;padding-bottom:4px}
+.acc .ag-h{font-size:12px;color:#8d8f98;margin-top:8px}
+.acc .ar{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:8px;align-items:center;padding:7px 10px;border-radius:8px;background:#26272c}
+.acc .ar.on .rd{color:#e8714a}.acc .rd{color:#8d8f98}
+.acc .nm small{display:block;font-size:11.5px;color:#8d8f98}
+.acc .us{font-family:var(--mono);font-size:12px;color:#8d8f98;white-space:nowrap}
+.acc .us.warn{color:#ffb46b}
+.acc .add{color:#e8714a;font-size:13px;padding:4px 10px}
+.acc .fr{display:grid;grid-template-columns:56px minmax(0,1fr);gap:10px;align-items:center}
+.acc .fr span:first-child{color:#8d8f98;font-size:13px}
+.acc .sel{border:1px solid #44464f;border-radius:6px;padding:4px 10px;background:#26272c}
+.acc .mini{font-family:var(--mono);font-size:12.5px;background:#141519;border-radius:8px;padding:10px 12px;white-space:pre-wrap;color:#c9cbd1}
+.acc .okc{color:#4ade80}
 /* which-key */
 .wk{background:#1d1e22;color:#e8e8ea;border-radius:12px;border:1px solid #2c2d33;padding:14px 18px;font-family:var(--mono);font-size:13.5px;display:grid;gap:10px;max-width:900px}
 .wk .t{color:#8d8f98;font-size:12px}
 .wk .g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 20px}
 @media (max-width:640px){.wk .g{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.wk b{color:#ffb46b;font-weight:700;display:inline-block;min-width:3.2em}
+.wk b{color:#ffb46b;font-weight:700;display:inline-block;min-width:5.5em}
 </style>
 
 <div class="layout">
@@ -234,6 +248,7 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
   <a href="#ui">畫面</a>
   <a href="#layout">版面</a>
   <a href="#keys">快捷鍵</a>
+  <a href="#accounts">帳號</a>
   <a href="#arch">架構</a>
   <a href="#chat">群聊規則</a>
   <a href="#widget">HTML 回覆</a>
@@ -250,7 +265,7 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
   <div class="eyebrow">Recursion · v1 開發文件</div>
   <h1>讓人和多個 coding agent 在同一個房間裡工作</h1>
   <p class="lede">一個桌面 app：你和 Claude、Codex 在群聊裡討論，agent 可以直接回你一張表單或一個畫面草稿；旁邊用 panel 開著終端和瀏覽器，版面像 tmux 一樣自由分割。</p>
-  <div class="tags"><span class="tag">草稿 v0.4</span><span class="tag">2026-11-20</span><span class="tag">macOS、Linux 桌面</span><span class="tag">Tauri + Rust</span><span class="tag">v2 開放遠端加入</span></div>
+  <div class="tags"><span class="tag">草稿 v0.4</span><span class="tag">2026-11-20</span><span class="tag">macOS、Linux 桌面</span><span class="tag">Tauri + Rust</span><span class="tag">多帳號</span></div>
 </header>
 
 <section id="tldr">
@@ -393,6 +408,46 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
   </figure>
 </section>
 
+<section id="accounts">
+  <h2>帳號</h2>
+  <p>可以登入多個 Claude、Codex 訂閱帳號，新增 agent 時選要用哪一個。做法跟 nodeterm 一樣：每個帳號有自己的設定資料夾，啟動 agent 時用 <code>CLAUDE_CONFIG_DIR</code> 或 <code>CODEX_HOME</code> 指過去。</p>
+  <div class="two">
+  <figure>
+  <div class="acc" role="img" aria-label="帳號設定">
+    <div class="ah">設定 · 帳號</div>
+    <div class="ag-h">Claude</div>
+    <div class="ar on"><span class="rd">◉</span><span class="nm">個人 Max<small>andy@…</small></span><span class="us">5h 14% · 7d 25%</span></div>
+    <div class="ar"><span class="rd">○</span><span class="nm">公司 Team<small>work@…</small></span><span class="us warn">5h 86% · 快用完</span></div>
+    <div class="add">+ 新增 Claude 帳號</div>
+    <div class="ag-h">Codex</div>
+    <div class="ar on"><span class="rd">◉</span><span class="nm">個人 Plus<small>andy@…</small></span><span class="us">5h 8%</span></div>
+    <div class="add">+ 新增 Codex 帳號</div>
+  </div>
+  <figcaption>◉ 是預設帳號。快用完時只提醒，不會自動切換。</figcaption>
+  </figure>
+  <figure>
+  <div class="acc" role="img" aria-label="新增 agent 與登入引導">
+    <div class="ah">新增 agent</div>
+    <div class="fr"><span>類型</span><span class="sel">Claude ▾</span></div>
+    <div class="fr"><span>帳號</span><span class="sel">個人 Max ▾</span></div>
+    <div class="fr"><span>別名</span><span class="sel">@claude2</span></div>
+    <div class="ah" style="margin-top:12px">新增帳號 · ③ 登入</div>
+    <div class="mini">$ claude auth login
+已開啟瀏覽器，請完成登入…
+<span class="okc">✓ 已登入 work@company.com（Team）</span></div>
+  </div>
+  <figcaption>登入時直接顯示 CLI 自己的畫面；Recursion 在背景確認登入狀態。</figcaption>
+  </figure>
+  </div>
+  <ul class="clean">
+    <li><b>第一次開啟</b>：自動偵測 <code>claude</code>、<code>codex</code> 有沒有裝、有沒有登入。已登入的直接匯入為「預設」帳號；沒裝的顯示安裝指令和複製按鈕。</li>
+    <li><b>新增帳號</b>：選類型、取名稱、在內嵌的小終端裡登入，完成後顯示偵測到的 email 和方案。email 跟已有的帳號重複時會提醒。</li>
+    <li><b>共用設定</b>：你的 <code>CLAUDE.md</code>、<code>settings.json</code>、skills、MCP 設定對每個帳號都有效，只有登入資料分開。</li>
+    <li><b>登入過期</b>：對話裡出現「需要重新登入」卡片，登入後 agent 自動接續。</li>
+    <li><b>限制</b>：agent 建立後不能換帳號，因為它的對話紀錄存在那個帳號的資料夾裡。</li>
+  </ul>
+</section>
+
 <section id="arch">
   <h2>架構</h2>
   <p>分成兩個程式：常駐背景的 <code>recursiond</code> 負責所有事情，桌面 app 只是看它、操作它的畫面。最下面是實際做事的 agent 和瀏覽器引擎，都是你電腦上本來就有的東西。</p>
@@ -425,7 +480,7 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
     <rect class="bx" x="572" y="372" width="268" height="44" rx="8"/><text class="t" x="592" y="400">系統內建瀏覽器引擎</text>
   </svg>
   </div>
-  <figcaption>v2 的遠端使用者也是用同一條 WebSocket 連進 recursiond。</figcaption>
+  <figcaption>桌面 app 只負責畫面，關掉它不會中斷任何 agent。</figcaption>
   </figure>
   <details>
     <summary>技術細節：agent 怎麼被驅動</summary>
@@ -463,7 +518,7 @@ footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:v
     <div class="card"><h3>show_widget</h3><p>在對話中顯示。agent 可以選擇停下來等你填完，填好的資料直接回到它手上。</p></div>
     <div class="card"><h3>open_pane</h3><p>比較大的頁面，開成一個新的瀏覽器 panel。</p></div>
   </div>
-  <div class="callout">畫面放在隔離的 iframe 裡執行。v2 有遠端使用者後，別人的 agent 產生的 HTML 也會在你的 app 裡跑，<b>所以一定要隔離</b>。</div>
+  <div class="callout">畫面放在隔離的 iframe 裡執行。HTML 是 agent 即時寫出來的程式碼，<b>不能讓它碰到 app 本身</b>，例如讀你的檔案或冒充你按下核准。</div>
   <details>
     <summary>技術細節：小畫面能用的 API</summary>
     <div class="inner">
@@ -571,10 +626,10 @@ recursion.ask(text)        <span class="c">// 對畫面裡選取的內容開討�
   <h2>開發順序</h2>
   <div class="plan">
     <div class="pm"><span class="id">M0</span><span class="tt">骨架</span><span class="ds">recursiond 與桌面 app、Session／Window／Panel、存檔、detach。</span><span class="ok">能分割版面；關掉 app 再開，版面還在。</span></div>
-    <div class="pm"><span class="id">M1</span><span class="tt">跟一個 Claude 對話</span><span class="ds">群聊 panel、串流顯示、權限卡片、續聊。</span><span class="ok">能正常對話並改檔。</span></div>
+    <div class="pm"><span class="id">M1</span><span class="tt">跟一個 Claude 對話</span><span class="ds">群聊 panel、串流顯示、權限卡片、續聊；匯入你目前登入的帳號，並先驗證多帳號可行。</span><span class="ok">能正常對話並改檔。</span></div>
     <div class="pm"><span class="id">M2</span><span class="tt">終端與快捷鍵</span><span class="ds">終端 panel、三層快捷鍵、提示面板、Ctrl+HJKL 導航、捲動複製模式。</span><span class="ok">不碰滑鼠就能開、分割、切換 panel。</span></div>
     <div class="pm"><span class="id">M3</span><span class="tt">HTML 回覆</span><span class="ds">工具伺服器、隔離顯示、資料回傳。</span><span class="ok">agent 丟出表單，填完資料回到 agent。</span></div>
-    <div class="pm"><span class="id">M4</span><span class="tt">多 agent 群聊</span><span class="ds">接上 Codex、別名、@、群發、防遞迴、多個群聊。</span><span class="ok">Claude 和 Codex 能互相 @，也會自己停。</span></div>
+    <div class="pm"><span class="id">M4</span><span class="tt">多 agent 群聊與多帳號</span><span class="ds">接上 Codex、別名、@、群發、防遞迴、多個群聊；帳號管理、新增帳號引導、用量提醒。</span><span class="ok">Claude 和 Codex 能互相 @，也會自己停；兩個 Claude 帳號能在同一個群聊。</span></div>
     <div class="pm"><span class="id">M5</span><span class="tt">作業系統沙箱</span><span class="ds">沙箱設定、存取申請對話框、指令核准與記憶。</span><span class="ok">資料夾外的存取需要你同意。</span></div>
     <div class="pm"><span class="id">M6</span><span class="tt">瀏覽器</span><span class="ds">瀏覽器 panel、agent 的背景瀏覽器。</span><span class="ok">agent 能讀網頁和截圖；你能開任意網站。</span></div>
     <div class="pm"><span class="id">M7</span><span class="tt">討論串</span><span class="ds">句子定位與徽章、抽屜列表與內容、完成與刪除、分支、帶回主對話。</span><span class="ok">能對表格某一列開串並帶回結論。</span></div>

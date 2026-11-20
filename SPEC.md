@@ -1,4 +1,4 @@
-# Recursion — 設計規格（草稿 v0.4）
+# Recursion — 設計規格（草稿 v0.5）
 
 > 名字梗：AI 精神病圈的黑話「recursion / spiral」，同時是 agent 互相 @ 的遞迴。
 
@@ -55,6 +55,7 @@ recursiond
 | 快捷鍵 | ① app 快捷鍵（macOS `⌘T/⌘D/⌘W/⌘1–9/⌘K`，Linux `Ctrl+Shift` 同等）；所有操作也能用滑鼠與指令面板完成 ② prefix 模式，預設 **`Ctrl+;`**（可改成單按右 ⌘），按下後顯示 which-key 提示：`hjkl` 移動、`s/v` 分割、`x` 關閉、`z` 放大、`c` 新 window、`n/p`、`1–9`、`w` workspace、`a` agent、`d` detach、`[` 捲動複製模式、`?` 說明 ③ nvim 式導航：**`Ctrl+H/J/K/L` 預設開啟**直接切 panel；終端前景程式是 nvim/vim 時交給它，此時用 prefix+`hjkl` 離開。workspace panel 有 vim 式操作（`Esc`、`j/k` 移動區塊、`Enter` 開討論串、`/` 搜尋、`i` 回輸入框）。終端有 vim 按鍵的捲動複製模式。**不做 nvim 外掛** |
 | 介面風格 | 參考 Rex：左側依專案分組的 session 列表；workspace panel 是終端風格對話（`❯` 使用者輸入、`●` agent 發言、`⎿` 工具結果、底部狀態列）；對話內容是真的 HTML（表格、表單、草稿） |
 | 多帳號 | 每個帳號一個設定資料夾 `~/.recursion/accounts/<id>/`，啟動 agent 時設 `CLAUDE_CONFIG_DIR` / `CODEX_HOME`（同 nodeterm 做法）。**共用全域設定**：`CLAUDE.md`、`settings.json`、skills、agents、MCP 設定以連結指回 `~/.claude/`（Codex 同理指回 `~/.codex/`），只有登入資料各自獨立。每個 provider 有一個預設帳號；新增 agent 時可選帳號；agent 標籤顯示帳號名。**agent 建立後不能換帳號**（對話紀錄存在帳號資料夾內）。帳號列表顯示 5h／7d 用量；快用完時**只提醒** |
+| 帳號認證引導 | **首次開啟**：用 `claude auth status`／`codex login status` 偵測 CLI 是否安裝與登入，已登入的直接「匯入為帳號『預設』」；未安裝則顯示安裝指令 + 複製鈕 +「重新檢查」。**新增帳號**：① 選 Claude／Codex ② 取名 ③ 內嵌小終端跑 `claude auth login`／`codex login`（帶該帳號的設定資料夾），不自己模仿 CLI 流程；背景輪詢登入狀態 ④ 成功顯示偵測到的 email 與方案；email 與既有帳號重複時提醒。**登入過期**：agent 回報認證錯誤 → 對話中出現「帳號『X』需要重新登入［重新登入］」卡片 → 完成後 agent 自動接續 |
 | 紀錄 | `~/.recursion/` |
 
 ## 技術風險
@@ -72,10 +73,10 @@ recursiond
 | # | 里程碑 | 內容 | 完成標準 |
 |---|---|---|---|
 | M0 | 骨架 | `recursiond` + Tauri 客戶端、WebSocket、Session／Window／Panel 模型與持久化、detach／attach、Rex 風格外框 | 建立 session 與分割版面；關掉 app 再開，版面還在 |
-| M1 | 單一 Claude | workspace panel、stream-json 驅動、串流 Markdown、權限卡片、resume | 能跟一個 Claude 正常對話、改檔 |
+| M1 | 單一 Claude | workspace panel、stream-json 驅動、串流 Markdown、權限卡片、resume；首次開啟偵測並匯入預設帳號；先驗證 `CLAUDE_CONFIG_DIR` 多帳號與 Keychain | 能跟一個 Claude 正常對話、改檔 |
 | M2 | 終端與快捷鍵 | terminal panel（portable-pty + xterm.js）、三層快捷鍵、which-key、`Ctrl+H/J/K/L` 導航、捲動複製模式 | 不碰滑鼠就能開、分割、切換 panel |
 | M3 | HTML widget | 內建 MCP server（rmcp）：`show_widget` / `open_pane` / `read_me`；iframe sandbox + 串流 morphdom；`reply` / `sendPrompt` | agent 丟出表單，填完資料回到 agent |
-| M4 | 多 agent 群聊 | Codex app-server、alias、@ 路由、群發、防遞迴五層、多個 workspace | Claude + Codex 能互相 @、會自動停 |
+| M4 | 多 agent 群聊與多帳號 | Codex app-server、alias、@ 路由、群發、防遞迴五層、多個 workspace；帳號管理、新增帳號引導、新增 agent 選帳號、用量顯示與提醒、重新登入卡片 | Claude + Codex 能互相 @、會自動停；兩個 Claude 帳號的 agent 能在同一群聊 |
 | M5 | OS 沙箱 | 沙箱設定、`request_access` 原生對話框、指令核准與記憶 | cwd 外存取需要同意 |
 | M6 | 瀏覽器 | browser panel；agent 用隱藏 WebView + 原生 eval / snapshot 工具 | agent 能讀網頁、截圖；人能開任意網站 |
 | M7 | 討論串 | 區塊錨點、討論串 panel、fork、帶回主對話 | 能對表格某列開串並帶回結論 |
