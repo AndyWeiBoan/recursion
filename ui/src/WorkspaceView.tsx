@@ -50,7 +50,7 @@ const KIND_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" 
 const STATUS_LABEL: Record<Member["status"], string> = {
   idle: "閒置",
   starting: "啟動中",
-  thinking: "回覆中",
+  thinking: "思考中",
   waiting_permission: "等你核准",
 };
 
@@ -240,6 +240,11 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
   const last = messages[messages.length - 1];
   const lastLen = last && last.kind === "text" ? last.text.length : 0;
   const aliases = useMemo(() => [...byId.values()].map((m) => m.alias), [byId]);
+  // Agents already visibly producing output (streaming text, running tool) don't need the spinner.
+  const producing = new Set(
+    messages.filter((m) => (m.kind === "text" || m.kind === "tool") && (m.streaming || (m.kind === "tool" && m.result == null))).map((m) => m.from),
+  );
+  const waiting = busy.filter((b) => b.status === "waiting_permission" || !producing.has(b.id));
 
   useLayoutEffect(() => {
     const el = box.current;
@@ -267,7 +272,7 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
         const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard";
         return <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} />;
       })}
-      {busy.map((b) => (
+      {waiting.map((b) => (
         <div key={b.id} className="row agent">
           <Avatar m={b} />
           <div className="ws-busy">
