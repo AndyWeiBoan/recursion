@@ -125,7 +125,7 @@ export default function App() {
     if (!state) return;
     const alive = new Set(Object.values(state.panels).filter((p) => p.kind === "terminal").map((p) => p.id));
     pruneTerminals(alive);
-    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser").map((p) => p.id)));
+    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:")).map((p) => p.id)));
   }, [state]);
   useEffect(() => (pick ? overlay() : undefined), [pick]);
 
@@ -146,7 +146,7 @@ export default function App() {
         {session && window ? (
           <>
             <Tabs session={session} />
-            <LayoutView key={window.id} ctx={{ window, panels: state!.panels, terms, cwd: session.cwd }} />
+            <LayoutView key={window.id} ctx={{ window, panels: state!.panels, terms, cwd: session.cwd, session: session.id, docs: session.docs ?? [] }} />
             <StatusBar session={session} status={status} />
           </>
         ) : (

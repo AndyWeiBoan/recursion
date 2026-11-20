@@ -59,6 +59,8 @@ pub enum Body {
     Permission { request_id: String, tool: String, summary: String, detail: String, state: PermState },
     System { text: String },
     Error { text: String },
+    /// An agent created (`updated: false`) or replaced a session document.
+    Doc { doc: String, title: String, #[serde(default)] updated: bool },
     /// Loop guard tripped; the UI offers "continue".
     Guard { text: String, #[serde(default)] resolved: bool },
 }

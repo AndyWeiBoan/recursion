@@ -4,6 +4,7 @@
 //! localhost WebSocket (port + token are written to ~/.recursion/daemon.json).
 
 mod agents;
+mod docs;
 mod model;
 mod pty;
 mod workspace;
@@ -12,7 +13,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State as AxState};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -26,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -89,6 +90,8 @@ enum In {
     WsStop { panel: String },
     WsSendNow { panel: String },
     ModelsList { kind: AgentKind },
+    DocOpen { panel: String, doc: String },
+    DocGet { session: String, doc: String },
 }
 
 /// Messages to a UI client.
@@ -101,6 +104,7 @@ enum Out<'a> {
     Exit { panel: &'a str },
     Error { msg: String },
     Models { kind: AgentKind, models: Vec<agents::ModelOption>, error: Option<String> },
+    Doc { session: &'a str, doc: &'a str, html: Option<String> },
 }
 
 impl App {
@@ -144,6 +148,7 @@ impl App {
             SessionDelete { session } => {
                 let removed = self.state.lock().unwrap().delete_session(&session).map_err(e)?;
                 self.kill_panels(&removed).await;
+                docs::delete_session(&session);
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
@@ -194,6 +199,13 @@ impl App {
             }
             WsAttach { panel } => {
                 reply = Some(self.hub.snapshot(&panel).to_string());
+                changed = false;
+            }
+            DocOpen { panel, doc } => {
+                self.state.lock().unwrap().open_doc(&panel, &doc, true).map_err(e)?;
+            }
+            DocGet { session, doc } => {
+                reply = Some(serde_json::to_string(&Out::Doc { session: &session, doc: &doc, html: docs::read(&session, &doc) }).unwrap());
                 changed = false;
             }
             ModelsList { kind } => {
@@ -426,8 +438,10 @@ async fn main() -> anyhow::Result<()> {
         std::fs::set_permissions(&disc_path, std::fs::Permissions::from_mode(0o600))?;
     }
     tracing::info!(port, "recursiond listening");
+    app.hub.set_port(port);
 
-    let router = Router::new().route("/health", get(health)).route("/ws", get(ws)).with_state(app.clone());
+    let router = Router::new().route("/health", get(health)).route("/ws", get(ws))
+        .route("/mcp/{key}", post(docs::mcp).get(docs::mcp_get)).with_state(app.clone());
     let shutdown = {
         let app = app.clone();
         async move {

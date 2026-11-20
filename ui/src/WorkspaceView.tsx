@@ -385,6 +385,19 @@ const MessageView = memo(function MessageView({
         </div>
       );
       break;
+    case "doc":
+      body = (
+        <button className="m-doc" onClick={() => send({ t: "doc_open", panel, doc: m.doc })} title="在旁邊的 panel 打開">
+          <span className="m-doc-ic" aria-hidden="true">
+            ▤
+          </span>
+          <span className="m-doc-text">
+            <b>{m.title}</b>
+            <span>{m.updated ? "更新了文件" : "文件"} · 點一下打開</span>
+          </span>
+        </button>
+      );
+      break;
     case "error":
       body = (
         <div className="m-err">

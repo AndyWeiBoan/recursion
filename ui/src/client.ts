@@ -117,6 +117,10 @@ export async function connect() {
         case "ws_msg_removed":
           wsUpdate(m.panel, (w) => ({ ...w, messages: w.messages.filter((x) => x.id !== m.id) }));
           break;
+        case "doc":
+          docHtml.set(`${m.session}/${m.doc}`, m.html ?? null);
+          docSubs.forEach((f) => f());
+          break;
         case "models":
           setModels(m.kind, { models: m.models, error: m.error ?? null, loading: false });
           break;
@@ -273,5 +277,21 @@ export function useModels(kind: AgentKind): ModelList {
   return useSyncExternalStore(
     (f) => (modelSubs.add(f), () => modelSubs.delete(f)),
     () => modelLists.get(kind) ?? LOADING,
+  );
+}
+
+// Document contents, fetched on demand and refetched when the doc's rev changes.
+const docHtml = new Map<string, string | null>();
+const docSubs = new Set<() => void>();
+
+/** HTML of a session doc (undefined while loading, null if it is gone). */
+export function useDocHtml(session: string, doc: string, rev: number): string | null | undefined {
+  const key = `${session}/${doc}`;
+  useEffect(() => {
+    send({ t: "doc_get", session, doc });
+  }, [session, doc, rev]);
+  return useSyncExternalStore(
+    (f) => (docSubs.add(f), () => docSubs.delete(f)),
+    () => docHtml.get(key),
   );
 }

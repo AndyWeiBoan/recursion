@@ -3,14 +3,17 @@ import { send } from "./client";
 import { requestKind } from "./picker";
 import { WorkspaceView } from "./WorkspaceView";
 import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
+import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
-import { KIND_LABEL, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
+import { KIND_LABEL, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
 interface Ctx {
   window: Window;
   panels: Record<string, Panel>;
   terms: Record<string, TermInfo>;
   cwd: string;
+  session: string;
+  docs: Doc[];
 }
 
 export function LayoutView({ ctx }: { ctx: Ctx }) {
@@ -85,8 +88,18 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const focus = () => {
     if (!focused) send({ t: "panel_focus", panel: panel.id });
   };
+  const docId = panel.kind === "browser" && panel.url?.startsWith("doc:") ? panel.url.slice(4) : null;
+  const doc = docId ? ctx.docs.find((d) => d.id === docId) : undefined;
   const title =
-    panel.kind === "terminal" ? info?.fg ?? "shell" : panel.kind === "browser" ? panel.url || "新分頁" : "";
+    panel.kind === "terminal"
+      ? info?.fg ?? "shell"
+      : docId
+        ? doc
+          ? `${doc.title} · @${doc.author}`
+          : "文件已不存在"
+        : panel.kind === "browser"
+          ? panel.url || "新分頁"
+          : "";
 
   return (
     <section className={`panel${focused ? " focused" : ""}`} data-panel={panel.id} onMouseDown={focus}>
@@ -130,7 +143,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
       <div className="panel-body">
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
         {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
-        {panel.kind === "browser" && <BrowserBody panel={panel} />}
+        {docId ? <DocBody session={ctx.session} doc={docId} rev={doc?.rev ?? 0} /> : panel.kind === "browser" && <BrowserBody panel={panel} />}
       </div>
     </section>
   );
@@ -165,6 +178,15 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
       )}
     </div>
   );
+}
+
+/** A session doc: agent-written HTML in a sandboxed iframe. No `allow-same-origin`, so its scripts
+ *  run in an opaque origin and can't reach this page, the daemon token or Tauri. */
+function DocBody({ session, doc, rev }: { session: string; doc: string; rev: number }) {
+  const html = useDocHtml(session, doc, rev);
+  if (html === null) return <div className="br-empty"><p>這份文件已經不存在。</p></div>;
+  if (html === undefined) return <div className="br-empty"><p className="dim">載入中…</p></div>;
+  return <iframe className="doc-frame" title={doc} srcDoc={html} sandbox="allow-scripts allow-forms allow-modals" />;
 }
 
 function BrowserBody({ panel }: { panel: Panel }) {

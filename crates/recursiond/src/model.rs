@@ -54,6 +54,25 @@ pub struct Session {
     pub group: String,
     pub windows: Vec<Window>,
     pub active_window: Option<String>,
+    /// Documents agents wrote for this session (content lives in `docs/<session>/<id>.html`).
+    #[serde(default)]
+    pub docs: Vec<Doc>,
+}
+
+/// An HTML document attached to a session. Rewriting it replaces it (same id, higher rev).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Doc {
+    pub id: String,
+    pub title: String,
+    /// Alias of the agent that last wrote it.
+    pub author: String,
+    pub rev: u64,
+    pub updated: u64,
+}
+
+/// Browser panels show a doc when their url is `doc:<id>`.
+pub fn doc_url(id: &str) -> String {
+    format!("doc:{id}")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -213,6 +232,7 @@ impl State {
             cwd,
             active_window: Some(window.id.clone()),
             windows: vec![window],
+            docs: vec![],
         };
         self.sessions.push(session);
         self.active_session = Some(id.clone());
@@ -361,6 +381,54 @@ impl State {
         }
     }
 
+    pub fn session_of_panel(&self, panel: &str) -> Option<&Session> {
+        self.sessions.iter().find(|s| s.windows.iter().any(|w| w.panel_ids().iter().any(|p| p == panel)))
+    }
+
+    /// Create or replace a doc's metadata. `id: None` (or an unknown id) creates a new doc.
+    /// Returns the doc and whether it is new.
+    pub fn write_doc(&mut self, session: &str, id: Option<&str>, title: String, author: String, now: u64) -> Res<(Doc, bool)> {
+        let s = self.session_mut(session)?;
+        if let Some(d) = id.and_then(|id| s.docs.iter_mut().find(|d| d.id == id)) {
+            d.title = title;
+            d.author = author;
+            d.rev += 1;
+            d.updated = now;
+            return Ok((d.clone(), false));
+        }
+        let d = Doc { id: new_id(), title, author, rev: 1, updated: now };
+        s.docs.push(d.clone());
+        Ok((d, true))
+    }
+
+    /// Show a doc next to `from` (a panel in the same session): focus the panel already showing
+    /// it, otherwise split `from` and open it there. With `focus: false` the keyboard stays put.
+    pub fn open_doc(&mut self, from: &str, doc: &str, focus: bool) -> Res<String> {
+        let (si, wi) = self.locate_panel(from)?;
+        if !self.sessions[si].docs.iter().any(|d| d.id == doc) {
+            return Err(ModelError::NotFound("doc"));
+        }
+        let url = doc_url(doc);
+        let existing = self.sessions[si]
+            .windows
+            .iter()
+            .flat_map(|w| w.panel_ids())
+            .find(|p| self.panels.get(p).is_some_and(|x| x.url.as_deref() == Some(url.as_str())));
+        if let Some(p) = existing {
+            if focus {
+                self.focus_panel(&p)?;
+            }
+            return Ok(p);
+        }
+        let prev = self.sessions[si].windows[wi].focus.clone();
+        let p = self.split_panel(from, Dir::Row, PanelKind::Browser)?;
+        self.set_panel_url(&p, url)?;
+        if !focus {
+            self.sessions[si].windows[wi].focus = prev;
+        }
+        Ok(p)
+    }
+
     /// cwd of the session that owns a panel.
     pub fn panel_cwd(&self, panel: &str) -> Option<String> {
         self.sessions
@@ -483,5 +551,22 @@ mod tests {
         let s = serde_json::to_string(&st).unwrap();
         let back: State = serde_json::from_str(&s).unwrap();
         assert_eq!(back.sessions[0].windows[0].root, st.sessions[0].windows[0].root);
+    }
+
+    #[test]
+    fn docs_open_beside_the_chat_once() {
+        let mut st = State::default();
+        let sid = st.create_session("s".into(), "/tmp".into(), PanelKind::Workspace);
+        let chat = st.sessions[0].windows[0].focus.clone();
+        let (d, created) = st.write_doc(&sid, None, "T".into(), "claude".into(), 1).unwrap();
+        assert!(created);
+        let p = st.open_doc(&chat, &d.id, false).unwrap();
+        assert_eq!(st.panels[&p].url.as_deref(), Some(doc_url(&d.id).as_str()));
+        assert_eq!(st.sessions[0].windows[0].focus, chat, "focus stays on the chat");
+        assert_eq!(st.open_doc(&chat, &d.id, true).unwrap(), p, "reuses the open panel");
+        assert_eq!(st.sessions[0].windows[0].focus, p);
+        let (d2, created) = st.write_doc(&sid, Some(&d.id), "T2".into(), "codex".into(), 2).unwrap();
+        assert!(!created);
+        assert_eq!((d2.rev, d2.author.as_str(), st.sessions[0].docs.len()), (2, "codex", 1));
     }
 }

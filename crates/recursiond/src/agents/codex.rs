@@ -163,6 +163,7 @@ impl Hub {
             "approvalPolicy": "on-request",
             "sandbox": "workspace-write",
             "developerInstructions": group_prompt(&m.alias),
+            "config": { "mcp_servers": { "recursion": { "url": self.mcp_url(panel, &m.id) } } },
         });
         if let Some(model) = &m.model {
             params["model"] = json!(model);
@@ -218,6 +219,7 @@ impl Reader {
         let hub = self.hub.clone();
         let (panel, member) = (self.panel.clone(), self.member.clone());
         let method = v["method"].as_str().unwrap_or("").to_string();
+        tracing::trace!(line = %v.to_string().chars().take(300).collect::<String>(), "codex");
 
         // Response to one of our calls.
         if method.is_empty() {
@@ -231,6 +233,7 @@ impl Reader {
         // Request from the server (needs an answer).
         if !v["id"].is_null() {
             let rpc_id = v["id"].clone();
+            tracing::debug!(%method, params = %params.to_string().chars().take(400).collect::<String>(), "codex server request");
             match method.as_str() {
                 "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
                     let item_id = params["itemId"].as_str().unwrap_or("").to_string();
@@ -254,6 +257,11 @@ impl Reader {
                         PendingPerm { panel: panel.clone(), member: member.clone(), msg_id, input: Value::Null, suggestions: Value::Null, codex_request: Some(rpc_id) },
                     );
                     hub.update_member(&panel, &member, |m| m.status = MemberStatus::WaitingPermission);
+                }
+                // Codex asks before each MCP tool call. Our own server only touches this session's
+                // documents, so say yes; other servers' prompts still fall through to a decline.
+                "mcpServer/elicitation/request" if params["serverName"] == "recursion" => {
+                    let _ = hub.write(&panel, &member, json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "action": "accept", "content": {} } })).await;
                 }
                 _ => {
                     // Not supported yet (user input prompts, MCP elicitations…): decline so the turn can continue.

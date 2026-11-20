@@ -104,6 +104,10 @@ pub struct Hub {
     /// Model lists per CLI, cached for a while (asking spawns the CLI).
     models: tokio::sync::Mutex<HashMap<&'static str, (std::time::Instant, Vec<ModelOption>)>>,
     generation: std::sync::atomic::AtomicU64,
+    /// Daemon port, for the MCP URL handed to agents.
+    port: std::sync::atomic::AtomicU16,
+    /// MCP key → (panel, member): each agent gets its own URL, so tool calls know who is calling.
+    mcp: Mutex<HashMap<String, (String, String)>>,
 }
 
 fn mid() -> String {
@@ -128,6 +132,8 @@ impl Hub {
             env: tokio::sync::RwLock::new(None),
             models: Default::default(),
             generation: Default::default(),
+            port: Default::default(),
+            mcp: Default::default(),
         })
     }
 
@@ -146,6 +152,37 @@ impl Hub {
         let list = models::list(&self.env().await, kind).await?;
         cache.insert(key, (std::time::Instant::now(), list.clone()));
         Ok(list)
+    }
+
+    pub fn set_port(&self, port: u16) {
+        self.port.store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The built-in MCP server's URL for one agent (stable for the daemon's lifetime).
+    fn mcp_url(&self, panel: &str, member: &str) -> String {
+        let mut map = self.mcp.lock().unwrap();
+        let key = match map.iter().find(|(_, v)| v.0 == panel && v.1 == member) {
+            Some((k, _)) => k.clone(),
+            None => {
+                use rand::Rng;
+                let k: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect();
+                map.insert(k.clone(), (panel.to_string(), member.to_string()));
+                k
+            }
+        };
+        format!("http://127.0.0.1:{}/mcp/{key}", self.port.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Who an MCP key belongs to: (panel, member id, alias).
+    pub fn mcp_caller(&self, key: &str) -> Option<(String, String, String)> {
+        let (panel, member) = self.mcp.lock().unwrap().get(key).cloned()?;
+        let alias = self.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone()))?;
+        Some((panel, member, alias))
+    }
+
+    /// The card in the chat for a document an agent just wrote.
+    pub fn post_doc(&self, panel: &str, member: &str, doc: &crate::model::Doc, updated: bool) {
+        self.push_msg(panel, msg(member, Body::Doc { doc: doc.id.clone(), title: doc.title.clone(), updated }, false));
     }
 
     async fn env(&self) -> AgentEnv {
@@ -566,6 +603,11 @@ impl Hub {
                         Some(format!("[human → {to}]: {text}"))
                     }
                     Body::Text { text } => Some(format!("[@{}]: {}", names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), text)),
+                    Body::Doc { doc, title, updated } => Some(format!(
+                        "[@{} {} document `{doc}` \"{title}\" — read it with doc_read]",
+                        names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()),
+                        if *updated { "updated" } else { "shared" }
+                    )),
                     _ => None,
                 })
                 .collect();
@@ -621,6 +663,8 @@ impl Hub {
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
             .args(["--permission-prompt-tool", "stdio", "--permission-mode", "acceptEdits"])
             .args(["--append-system-prompt", &prompt]);
+        let mcp = json!({ "mcpServers": { "recursion": { "type": "http", "url": self.mcp_url(panel, &m.id) } } });
+        cmd.args(["--mcp-config", &mcp.to_string(), "--allowedTools", "mcp__recursion"]);
         if let Some(model) = &m.model {
             cmd.args(["--model", model]);
         }
@@ -892,6 +936,9 @@ fn group_prompt(alias: &str) -> String {
          - If the human @mentioned you by name, you must respond. Only when a message was sent to everyone and you truly have \
          nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
          - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
+         - For anything long or visual (reports, big tables, diagrams, dashboards), call the `doc_write` tool (Recursion MCP server) \
+         to save an HTML document: the human gets a card that opens it in its own panel, and every agent in the chat can read it \
+         with `doc_read`. Then keep your chat reply short. Revise a document by passing its id instead of making a new one.\n\
          - Reply in the human's language."
     )
 }

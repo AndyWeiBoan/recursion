@@ -25,6 +25,16 @@ export interface Session {
   group: string;
   windows: Window[];
   active_window: string | null;
+  docs?: Doc[];
+}
+
+/** An HTML document an agent wrote for the session; browser panels show it at `doc:<id>`. */
+export interface Doc {
+  id: string;
+  title: string;
+  author: string;
+  rev: number;
+  updated: number;
 }
 
 export interface State {
@@ -65,7 +75,9 @@ export type Cmd =
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
-  | { t: "models_list"; kind: AgentKind };
+  | { t: "models_list"; kind: AgentKind }
+  | { t: "doc_open"; panel: string; doc: string }
+  | { t: "doc_get"; session: string; doc: string };
 
 export type AgentKind = "claude" | "codex";
 
@@ -91,6 +103,7 @@ export type Msg = { id: string; ts: number; from: string; seq: number; to?: stri
   | { kind: "system"; text: string }
   | { kind: "error"; text: string }
   | { kind: "guard"; text: string; resolved: boolean }
+  | { kind: "doc"; doc: string; title: string; updated: boolean }
 );
 
 export interface Workspace {
