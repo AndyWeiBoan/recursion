@@ -1,0 +1,636 @@
+<title>Recursion v1 開發文件</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout：閱讀型文件。寬螢幕左側固定目錄 + 右側最寬 1180px 內文（段落限 900px）；手機單欄。細節收在 <details>。 */
+:root{
+  --bg:#ffffff; --panel:#f4f6f9; --panel-2:#eaeef3; --ink:#15181e; --ink-2:#4a5260; --ink-3:#7a8392; --line:#e1e5eb;
+  --accent:#c2410c; --accent-bg:#fff1e8; --ok:#15803d;
+  --sans:"Noto Sans TC",-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#111318; --panel:#191c23; --panel-2:#20242c; --ink:#eceef2; --ink-2:#b4bac5; --ink-3:#8a92a0; --line:#2a2f39;
+  --accent:#fb923c; --accent-bg:#2a1a10; --ok:#4ade80; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#111318; --panel:#191c23; --panel-2:#20242c; --ink:#eceef2; --ink-2:#b4bac5; --ink-3:#8a92a0; --line:#2a2f39;
+  --accent:#fb923c; --accent-bg:#2a1a10; --ok:#4ade80; color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.8;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 80px}
+.layout{max-width:1440px;margin:0 auto;display:grid;grid-template-columns:180px minmax(0,1fr);gap:48px}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)} .toc{display:none}}
+.toc{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding-top:56px;display:grid;gap:2px;font-size:14px}
+.toc .h{font-size:12px;letter-spacing:.08em;color:var(--ink-3);margin-bottom:8px}
+.toc a{color:var(--ink-2);text-decoration:none;padding:4px 10px;border-radius:6px}
+.toc a:hover,.toc a:focus-visible{background:var(--panel);color:var(--ink)}
+main{min-width:0;max-width:1180px}
+main section > p, main section > ul.clean, .steps, .lede{max-width:900px}
+header{padding-block:56px 32px;display:grid;gap:16px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:var(--mono);font-size:13px;color:var(--accent)}
+h1{font-size:clamp(32px,5vw,44px);line-height:1.2;margin:0;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+.lede{font-size:19px;color:var(--ink-2);margin:0}
+.tags{display:flex;flex-wrap:wrap;gap:8px}
+.tag{font-size:13px;padding:2px 10px;border-radius:999px;background:var(--panel);color:var(--ink-2)}
+section{padding-top:56px;display:grid;gap:18px;scroll-margin-top:16px}
+h2{font-size:26px;line-height:1.35;margin:0;font-weight:700;text-wrap:balance}
+h3{font-size:19px;margin:12px 0 0;font-weight:700}
+p{margin:0}
+.muted{color:var(--ink-2)}
+ul.clean{margin:0;padding-left:1.2em;display:grid;gap:6px}
+code{font-family:var(--mono);font-size:.85em;background:var(--panel);padding:1px 6px;border-radius:5px}
+kbd{font-family:var(--mono);font-size:.82em;padding:1px 7px;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;background:var(--bg);white-space:nowrap}
+a{color:var(--accent)}
+
+.decisions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:1200px){.decisions{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){.decisions{grid-template-columns:minmax(0,1fr)}}
+.dc{background:var(--panel);border-radius:12px;padding:16px 18px;display:grid;gap:4px;align-content:start;min-width:0}
+.dc .k{font-size:13px;color:var(--ink-3);letter-spacing:.04em}
+.dc .v{font-size:17px;font-weight:500;line-height:1.55}
+
+.callout{background:var(--accent-bg);border-radius:12px;padding:16px 20px;color:var(--ink);max-width:900px}
+.callout b{color:var(--accent)}
+
+details{border:1px solid var(--line);border-radius:12px;padding:0 18px;max-width:900px}
+details[open]{padding-bottom:16px}
+summary{cursor:pointer;padding:14px 0;font-weight:500;color:var(--ink-2);list-style:none;display:flex;gap:8px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--ink-3);transition:transform .15s}
+details[open] summary::before{transform:rotate(90deg)}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+details .inner{display:grid;gap:12px;font-size:15.5px}
+pre{font-family:var(--mono);font-size:13.5px;line-height:1.65;background:var(--panel);color:var(--ink);padding:14px 16px;border-radius:10px;overflow-x:auto;margin:0}
+pre .c{color:var(--ink-3)}
+
+.tbl{overflow-x:auto;min-width:0;max-width:900px}
+table{border-collapse:collapse;width:100%;font-size:15.5px}
+th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}
+th{font-size:13px;font-weight:500;color:var(--ink-3)}
+td:first-child{font-weight:500}
+
+figure{margin:0;display:grid;gap:10px}
+figcaption{font-size:14px;color:var(--ink-3)}
+.fig{border:1px solid var(--line);border-radius:14px;padding:20px;overflow-x:auto;background:var(--bg)}
+.fig svg{display:block;width:100%;min-width:640px;height:auto}
+svg text{font-family:var(--sans);fill:var(--ink)}
+svg .band{fill:var(--panel)}
+svg .bandlbl{font-size:14px;fill:var(--ink-3);font-weight:500}
+svg .bx{fill:var(--bg);stroke:var(--line);stroke-width:1.5}
+svg .bx-a{fill:var(--accent-bg);stroke:var(--accent);stroke-width:1.5}
+svg .t{font-size:16px;font-weight:500}
+svg .s{font-size:13px;fill:var(--ink-2)}
+svg .ar{stroke:var(--ink-3);stroke-width:1.6;fill:none}
+svg .ah{fill:var(--ink-3)}
+svg .lb{font-size:13px;fill:var(--ink-3)}
+svg .d-cl{fill:#e8714a} svg .d-cx{fill:#14b8a6}
+
+.mark{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#ffb46b;color:#22160a;font-size:12px;font-weight:700;font-family:var(--sans);vertical-align:middle;margin-right:6px;flex:none}
+.legend{display:grid;gap:8px;margin:0;padding:0;list-style:none;max-width:900px}
+.legend li{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:start}
+.legend .mark{margin-top:5px}
+
+/* 版面樹 */
+.tree{display:grid;gap:10px;max-width:900px}
+.lvl{display:grid;grid-template-columns:120px minmax(0,1fr);gap:16px;align-items:start;padding:14px 18px;border-radius:12px;background:var(--panel)}
+.lvl:nth-child(2){margin-left:28px}.lvl:nth-child(3){margin-left:56px}
+@media (max-width:640px){.lvl{grid-template-columns:minmax(0,1fr);gap:4px}.lvl:nth-child(2){margin-left:12px}.lvl:nth-child(3){margin-left:24px}}
+.lvl .nm{font-family:var(--mono);font-weight:700;color:var(--accent)}
+.lvl .ds{color:var(--ink-2);font-size:15.5px}
+.ptypes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:760px){.ptypes{grid-template-columns:minmax(0,1fr)}}
+.pt{border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:grid;gap:6px;align-content:start;min-width:0}
+.pt .ic{font-family:var(--mono);font-size:13px;color:var(--ink-3)}
+.pt h3{margin:0;font-size:17px}
+.pt p{color:var(--ink-2);font-size:15.5px}
+
+/* 快捷鍵 */
+.keys{display:grid;gap:14px}
+.layer{display:grid;grid-template-columns:200px minmax(0,1fr);gap:18px;padding:18px 20px;border:1px solid var(--line);border-radius:12px}
+@media (max-width:760px){.layer{grid-template-columns:minmax(0,1fr);gap:8px}}
+.layer .who{font-size:13px;color:var(--ink-3)}
+.layer h3{margin:0;font-size:17px}
+.layer ul{margin:0;padding-left:1.1em;display:grid;gap:4px;font-size:15.5px;color:var(--ink-2)}
+
+.steps{display:grid;gap:10px;counter-reset:s}
+.st{display:grid;grid-template-columns:36px minmax(0,1fr);gap:12px;align-items:start}
+.st::before{counter-increment:s;content:counter(s);display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--panel-2);font-weight:700;font-size:14px;color:var(--ink-2)}
+.st b{display:block}
+.st span{color:var(--ink-2);font-size:15.5px}
+
+.plan{display:grid;border-left:2px solid var(--line);margin-left:8px;max-width:900px}
+.pm{position:relative;padding:0 0 22px 26px;display:grid;gap:2px}
+.pm::before{content:"";position:absolute;left:-7px;top:9px;width:12px;height:12px;border-radius:50%;background:var(--bg);border:2px solid var(--accent)}
+.pm .id{font-family:var(--mono);font-size:13px;color:var(--accent)}
+.pm .tt{font-weight:700;font-size:17px}
+.pm .ds{color:var(--ink-2);font-size:15.5px}
+.pm .ok{font-size:14.5px}
+.pm .ok::before{content:"完成標準　";color:var(--ok);font-weight:500}
+
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;max-width:1180px}
+@media (max-width:640px){.two{grid-template-columns:minmax(0,1fr)}}
+.card{border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:grid;gap:6px;align-content:start;min-width:0}
+.card h3{margin:0;font-size:17px}
+.card p{color:var(--ink-2);font-size:15.5px}
+footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--line);color:var(--ink-3);font-size:14px}
+
+/* ---------- Rex 風格 app mock（像截圖，所以固定深色） ---------- */
+.rex{--rx-bg:#1d1e22;--rx-side:#26272c;--rx-sel:#3a3b42;--rx-line:#34353c;--rx-fg:#e8e8ea;--rx-dim:#8d8f98;--rx-or:#e8714a;--rx-tl:#3fd6c3;--rx-bl:#5aa2ff;--rx-pk:#ff5c7a;
+  display:grid;grid-template-columns:200px minmax(0,1fr);background:var(--rx-bg);color:var(--rx-fg);border-radius:14px;overflow:hidden;border:1px solid #2c2d33;font-size:13.5px;line-height:1.6;box-shadow:0 18px 40px -24px rgba(0,0,0,.6)}
+@media (max-width:760px){.rex{grid-template-columns:minmax(0,1fr)} .rx-side{display:none}}
+.rx-side{background:var(--rx-side);padding:12px 10px;display:grid;align-content:start;gap:2px;border-right:1px solid var(--rx-line)}
+.rx-tl{display:flex;gap:7px;align-items:center;margin:0 4px 14px}
+.rx-tl i{width:12px;height:12px;border-radius:50%;display:block}
+.rx-g{font-size:11.5px;color:var(--rx-dim);margin:12px 6px 4px}
+.rx-i{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;font-size:13px;white-space:nowrap;overflow:hidden}
+.rx-i.on{background:var(--rx-sel)}
+.rx-ic{width:16px;height:16px;border-radius:4px;display:grid;place-items:center;font-size:10px;color:#fff;flex:none;background:var(--rx-or)}
+.rx-main{display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0}
+.rx-wins{display:flex;align-items:stretch;border-bottom:1px solid var(--rx-line);font-size:12.5px;overflow-x:auto}
+.rx-wins span{padding:9px 14px;color:var(--rx-dim);white-space:nowrap;border-right:1px solid var(--rx-line)}
+.rx-wins .on{color:var(--rx-fg);background:#25262b;box-shadow:inset 0 -2px 0 var(--rx-or)}
+.rx-wins .add{border-right:0}
+.rx-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);min-width:0;min-height:520px}
+@media (max-width:1000px){.rx-grid{grid-template-columns:minmax(0,1fr)} .rx-col{display:none}}
+.rx-col{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1fr);border-left:1px solid var(--rx-line);min-width:0}
+.pn{display:grid;grid-template-rows:auto minmax(0,1fr);min-width:0;position:relative}
+.pn + .pn{border-top:1px solid var(--rx-line)}
+.pn.focus{box-shadow:inset 0 0 0 1px #e8714a66}
+.ph{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:12px;color:var(--rx-dim);border-bottom:1px solid var(--rx-line);font-family:var(--mono)}
+.ph .ty{color:var(--rx-fg)}
+.ph .r{margin-left:auto}
+.rx-chat{display:grid;grid-template-rows:minmax(0,1fr) auto;min-width:0}
+.rx-log{padding:14px 16px;display:grid;gap:14px;align-content:start;font-family:var(--mono);font-size:13px;min-width:0}
+.rx-you{background:#2a2b31;border-radius:6px;padding:6px 10px}
+.rx-you::before{content:"❯ ";color:var(--rx-dim)}
+.rx-b{display:grid;grid-template-columns:16px minmax(0,1fr);gap:4px;min-width:0}
+.rx-b > .dot{color:var(--rx-or)}
+.rx-b > .dot.tl{color:var(--rx-tl)}
+.rx-b > div{display:grid;gap:8px;min-width:0}
+.rx-who{font-weight:700}.rx-who.cl{color:var(--rx-or)}.rx-who.tl{color:var(--rx-tl)}
+.rx-tbl{border-collapse:collapse;font-size:12.5px;width:100%;max-width:440px}
+.rx-tbl th,.rx-tbl td{border:1px solid var(--rx-line);padding:4px 8px;text-align:left;font-weight:400;color:var(--rx-fg)}
+.rx-tbl th{color:var(--rx-dim);font-size:12px}
+.rx-tbl tr.hl td{background:#33291c}
+.rx-pill{display:inline-block;margin-left:6px;padding:0 6px;border-radius:999px;background:#4a3414;color:#ffb46b;font-size:11px}
+.rx-wd{border:1px solid #44464f;border-radius:8px;padding:10px 12px;max-width:440px;display:grid;gap:8px;background:#232429;font-family:var(--sans);font-size:13px}
+.rx-wd .lbl{font-family:var(--mono);font-size:11px;color:var(--rx-dim)}
+.rx-wd .r{display:flex;gap:14px;flex-wrap:wrap}
+.rx-wd .btn{justify-self:start;background:var(--rx-or);color:#fff;border-radius:6px;padding:2px 12px;font-weight:700;font-size:12.5px}
+.rx-at{color:#ffb46b}
+.rx-tool b{font-weight:700}
+.rx-res{color:var(--rx-dim)}
+.rx-res::before{content:"⎿  "}
+.rx-acts{display:flex;gap:8px;flex-wrap:wrap;padding-left:22px}
+.rx-acts span{border:1px solid #44464f;border-radius:6px;padding:0 9px;font-size:12px}
+.rx-acts .y{border-color:#4ade80;color:#4ade80}
+.rx-note{color:var(--rx-dim);font-size:12px}
+.rx-in{border-top:1px solid var(--rx-line);padding:10px 16px 8px;display:grid;gap:6px;font-family:var(--mono);font-size:13px}
+.rx-in .p::before{content:"❯ ";color:var(--rx-dim)}
+.rx-in .cur{display:inline-block;width:7px;height:14px;background:var(--rx-fg);vertical-align:-2px}
+.rx-st{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12px;color:var(--rx-dim)}
+.rx-st .cl{color:var(--rx-or)}.rx-st .tl{color:var(--rx-tl)}
+.rx-term{padding:12px;font-family:var(--mono);font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere}
+.rx-term .p{color:var(--rx-tl)}.rx-term .d{color:var(--rx-dim)}.rx-term .g{color:#4ade80}
+.rx-web{padding:14px;display:grid;gap:10px;align-content:start;font-family:var(--sans)}
+.rx-url{font-family:var(--mono);font-size:12px;color:var(--rx-dim);border:1px solid var(--rx-line);border-radius:6px;padding:3px 9px}
+.rx-page{background:#f4f5f7;color:#1b1d22;border-radius:8px;padding:14px;display:grid;gap:8px;font-size:13px}
+.rx-page .bar{height:8px;border-radius:4px;background:#d8dbe1}
+.rx-page .row{display:flex;gap:8px}.rx-page .row i{flex:1;height:34px;border-radius:6px;background:#e5e7ec;display:block}
+.rx-foot{display:flex;flex-wrap:wrap;gap:4px 14px;padding:6px 14px;border-top:1px solid var(--rx-line);font-size:12px;color:var(--rx-dim);font-family:var(--mono)}
+.rx-foot .bl{color:var(--rx-bl)}.rx-foot .pk{color:var(--rx-pk)}
+.rx-q{border-left:2px solid #ffb46b;padding-left:8px;color:var(--rx-dim)}
+.rx-back{justify-self:start;border:1px dashed #55575f;border-radius:6px;padding:1px 9px;color:#ffb46b;font-size:12px}
+.th-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:1100px){.th-pair{grid-template-columns:minmax(0,1fr)}}
+.th-wrap{display:grid;grid-template-columns:minmax(0,1fr) 230px;min-height:330px}
+.drawer{border-left:1px solid var(--rx-line);background:#232429;padding:10px;display:grid;gap:8px;align-content:start;font-family:var(--mono);font-size:12.5px;min-width:0}
+.drawer .dh{display:flex;justify-content:space-between;color:var(--rx-fg);font-size:12px;padding-bottom:6px;border-bottom:1px solid var(--rx-line)}
+.drawer .dim{color:var(--rx-dim)}
+.ti{display:grid;gap:2px;padding:7px 8px;border-radius:6px}
+.ti.on{background:#33343b}
+.ti .q{color:var(--rx-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ti .mt{font-size:11.5px;color:var(--rx-dim)}
+.ti .cl{color:var(--rx-or)}.ti .tl{color:var(--rx-tl)}.ti .run{color:var(--rx-tl)}.ti .wait{color:#ffb46b}
+.ti.done{opacity:.5}
+.hl-line{background:#33291c;border-bottom:1px dashed #ffb46b}
+.rx-tbl tr.flash td{box-shadow:inset 0 0 0 1px #ffb46b}
+.din{border:1px solid #44464f;border-radius:6px;padding:5px 8px;color:var(--rx-dim)}
+/* which-key */
+.wk{background:#1d1e22;color:#e8e8ea;border-radius:12px;border:1px solid #2c2d33;padding:14px 18px;font-family:var(--mono);font-size:13.5px;display:grid;gap:10px;max-width:900px}
+.wk .t{color:#8d8f98;font-size:12px}
+.wk .g{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 20px}
+@media (max-width:640px){.wk .g{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.wk b{color:#ffb46b;font-weight:700;display:inline-block;min-width:3.2em}
+</style>
+
+<div class="layout">
+<nav class="toc" aria-label="目錄">
+  <div class="h">目錄</div>
+  <a href="#tldr">一頁看懂</a>
+  <a href="#ui">畫面</a>
+  <a href="#layout">版面</a>
+  <a href="#keys">快捷鍵</a>
+  <a href="#arch">架構</a>
+  <a href="#chat">群聊規則</a>
+  <a href="#widget">HTML 回覆</a>
+  <a href="#perm">權限與沙箱</a>
+  <a href="#browser">瀏覽器</a>
+  <a href="#thread">討論串</a>
+  <a href="#plan">開發順序</a>
+  <a href="#risk">風險</a>
+  <a href="#appendix">附錄</a>
+</nav>
+
+<main>
+<header>
+  <div class="eyebrow">Recursion · v1 開發文件</div>
+  <h1>讓人和多個 coding agent 在同一個房間裡工作</h1>
+  <p class="lede">一個桌面 app：你和 Claude、Codex 在群聊裡討論，agent 可以直接回你一張表單或一個畫面草稿；旁邊用 panel 開著終端和瀏覽器，版面像 tmux 一樣自由分割。</p>
+  <div class="tags"><span class="tag">草稿 v0.4</span><span class="tag">2026-11-20</span><span class="tag">macOS、Linux 桌面</span><span class="tag">Tauri + Rust</span><span class="tag">v2 開放遠端加入</span></div>
+</header>
+
+<section id="tldr">
+  <h2>一頁看懂</h2>
+  <p class="muted">名字取自 AI 精神病圈的黑話「recursion」：人跟 AI 越聊越深、互相附和停不下來。agent 互相 @ 的時候，也正好就是遞迴。</p>
+  <div class="decisions">
+    <div class="dc"><span class="k">做成什麼</span><span class="v">桌面 app，全 Rust，不帶 Node</span></div>
+    <div class="dc"><span class="k">接哪些 agent</span><span class="v">Claude、Codex，直接用你已登入的 CLI</span></div>
+    <div class="dc"><span class="k">版面</span><span class="v">像 tmux：Session、Window、Panel</span></div>
+    <div class="dc"><span class="k">Panel 種類</span><span class="v">群聊、終端、瀏覽器</span></div>
+    <div class="dc"><span class="k">群聊</span><span class="v">沒 @ 就發給全部 agent；agent 之間只有 @ 才觸發</span></div>
+    <div class="dc"><span class="k">回覆形式</span><span class="v">文字、表格，加上可以操作的 HTML</span></div>
+    <div class="dc"><span class="k">背景常駐</span><span class="v">關掉視窗，agent 照樣在跑</span></div>
+    <div class="dc"><span class="k">安全</span><span class="v">作業系統沙箱，超出專案資料夾要你同意</span></div>
+  </div>
+</section>
+
+<section id="ui">
+  <h2>畫面長這樣</h2>
+  <p class="muted">外觀參考 Rex。左側是依專案分組的 session；上方是這個 session 的 window 分頁；每個 window 裡用 panel 自由分割。下面這個 window 分成三個 panel：群聊、你的終端、正在預覽的網頁。</p>
+  <figure>
+  <div class="rex" role="img" aria-label="Recursion 主畫面">
+    <aside class="rx-side">
+      <div class="rx-tl"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+      <div class="rx-g">gs-wallet</div>
+      <div class="rx-i on"><span class="rx-ic">✳</span>payments-refactor</div>
+      <div class="rx-i"><span class="rx-ic">✳</span>BBU-4398 affiliate</div>
+      <div class="rx-g">research</div>
+      <div class="rx-i"><span class="rx-ic">✳</span>Recursion dev</div>
+      <div class="rx-i"><span class="rx-ic">✳</span>kb-ingest</div>
+    </aside>
+    <div class="rx-main">
+      <div class="rx-wins"><span class="on">1 重構</span><span>2 壓測</span><span class="add">+</span></div>
+      <div class="rx-grid">
+        <div class="pn focus">
+          <div class="ph"><span class="ty">群聊</span> · 重構討論 · @claude @cx<span class="r">⊟ ◫</span></div>
+          <div class="rx-chat">
+            <div class="rx-log">
+              <div class="rx-you">比較一下兩種重構方案，順便讓我選 queue。</div>
+              <div class="rx-b"><span class="dot">●</span><div>
+                <span><span class="mark">1</span><span class="rx-who cl">@claude</span></span>
+                <table class="rx-tbl">
+                  <tr><th>方案</th><th>延遲</th><th>風險</th></tr>
+                  <tr class="hl"><td>A · Outbox</td><td>~200ms</td><td>低<span class="rx-pill">💬 2</span></td></tr>
+                  <tr><td>B · 直接 Kafka</td><td>~40ms</td><td>中</td></tr>
+                </table>
+                <div class="rx-wd"><span class="lbl">widget · queue_picker</span><div class="r"><span>◉ Kafka</span><span>○ RabbitMQ</span><span>○ Redis Streams</span></div><span class="btn">送出</span></div>
+                <span><span class="mark">2</span><span class="rx-at">@cx</span> 方案 B 的冪等性有測試嗎？</span>
+              </div></div>
+              <div class="rx-b"><span class="dot tl">●</span><div>
+                <span><span class="mark">3</span><span class="rx-who tl">@cx</span> <span class="rx-tool"><b>Bash</b>(dotnet test --filter Idempotency)</span></span>
+                <span class="rx-res">等待你核准</span>
+                <div class="rx-acts"><span class="y">允許</span><span>以後都允許</span><span>拒絕</span></div>
+              </div></div>
+              <div class="rx-note">↻ agent 互動 3/10 輪　·　🌐 @claude 正在瀏覽 docs.confluent.io</div>
+            </div>
+            <div class="rx-in">
+              <div class="p">@cx 測完把結果貼給我<span class="cur"></span></div>
+              <div class="rx-st"><span class="cl">◆ @claude 回覆中</span><span class="tl">◆ @cx 等待核准</span><span>輪數 3/10</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="rx-col">
+          <div class="pn">
+            <div class="ph"><span class="ty">終端</span> · zsh<span class="r">⊟ ◫</span></div>
+            <div class="rx-term"><span class="p">gs-wallet</span> $ npm run dev
+<span class="g">  VITE ready in 412 ms</span>
+<span class="d">  ➜ Local: http://localhost:5173/</span></div>
+          </div>
+          <div class="pn">
+            <div class="ph"><span class="ty">瀏覽器</span> · localhost:5173<span class="r">⊟ ◫</span></div>
+            <div class="rx-web"><span class="rx-url">http://localhost:5173/payments</span>
+              <div class="rx-page"><div class="bar" style="width:40%"></div><div class="row"><i></i><i></i><i></i></div><div class="bar" style="width:70%"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="rx-foot"><span>~/work/gs-wallet</span><span>window 1/2 · panel 1/3</span><span class="bl">Ctrl+; 指令</span><span class="pk">esc 全部停止</span></div>
+    </div>
+  </div>
+  </figure>
+  <ul class="legend">
+    <li><span class="mark">1</span><span>Claude 的回覆裡有一張表，第一列掛著 💬 2，代表那裡有一個討論串。下面是一個可以直接選的小表單。</span></li>
+    <li><span class="mark">2</span><span>Claude 用 @cx 把問題丟給 Codex，Codex 就會被觸發。</span></li>
+    <li><span class="mark">3</span><span>Codex 要在背景跑測試，先跳出核准卡片；結果會以 ⎿ 摘要顯示在這裡，不會佔用你的終端。</span></li>
+  </ul>
+</section>
+
+<section id="layout">
+  <h2>版面：Session、Window、Panel</h2>
+  <p>結構照 tmux。熟 tmux 的人一看就懂，不熟的人也只要記得「一個專案、幾個分頁、每頁切成幾塊」。</p>
+  <div class="tree">
+    <div class="lvl"><span class="nm">Session</span><span class="ds">一個專案。決定工作目錄、沙箱範圍、你允許過的路徑。左側列表的每一項就是一個 session。</span></div>
+    <div class="lvl"><span class="nm">Window</span><span class="ds">session 裡的分頁，每個分頁有自己的分割版面，例如「重構」、「壓測」各一個。</span></div>
+    <div class="lvl"><span class="nm">Panel</span><span class="ds">分割出來的每一塊，有三種，下面說明。</span></div>
+  </div>
+  <div class="ptypes">
+    <div class="pt"><span class="ic">workspace</span><h3>群聊</h3><p>一個獨立的群聊，有自己的 agent 成員和對話紀錄。同一個專案可以開好幾個，各聊各的。討論串收在它右側的抽屜裡。</p></div>
+    <div class="pt"><span class="ic">terminal</span><h3>終端</h3><p>給你用的終端。agent 不會開、也不會碰它；agent 要跑指令是在自己的背景執行。</p></div>
+    <div class="pt"><span class="ic">browser</span><h3>瀏覽器</h3><p>開任意網站或本機 HTML。agent 想給你看一個比較大的頁面時，也會開一個這種 panel。</p></div>
+  </div>
+  <div class="callout">關掉視窗就像 tmux 的 detach：<b>agent 和終端在背景繼續跑</b>，重開 app 自動接回原本的版面。</div>
+</section>
+
+<section id="keys">
+  <h2>快捷鍵</h2>
+  <p>分三層，不同習慣的人各取所需。不想記任何按鍵的人，所有操作都能用滑鼠或指令面板完成。</p>
+  <div class="keys">
+    <div class="layer"><div><span class="who">給所有人</span><h3>一般 app 快捷鍵</h3></div>
+      <ul>
+        <li>macOS：<kbd>⌘T</kbd> 新 window、<kbd>⌘D</kbd> 分割、<kbd>⌘W</kbd> 關閉、<kbd>⌘1</kbd>–<kbd>⌘9</kbd> 切 window、<kbd>⌘K</kbd> 指令面板</li>
+        <li>Linux：同樣的功能改用 <kbd>Ctrl+Shift</kbd>，跟一般終端軟體的習慣一致</li>
+        <li>這些按鍵不會送進終端，跟 shell、vim 都不衝突</li>
+      </ul></div>
+    <div class="layer"><div><span class="who">給 tmux 使用者</span><h3>Prefix 模式</h3></div>
+      <ul>
+        <li>預設 <kbd>Ctrl+;</kbd>：終端程式本來就收不到這個組合，所以 shell、vim、tmux 都沒在用；也不會撞到 macOS 用 <kbd>Ctrl+Space</kbd> 切輸入法</li>
+        <li>按下後在畫面下方跳出提示，不用背</li>
+        <li>不想按組合鍵的人可以改成「單按右 ⌘」</li>
+      </ul></div>
+    <div class="layer"><div><span class="who">給 vim 使用者</span><h3>nvim 式導航</h3></div>
+      <ul>
+        <li><kbd>Ctrl+H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd> 直接在 panel 之間移動</li>
+        <li>終端裡正在跑 nvim 時，這組按鍵交給 nvim；要離開就按 <kbd>Ctrl+;</kbd> 再按 <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd></li>
+        <li>群聊裡按 <kbd>Esc</kbd> 離開輸入框，<kbd>j</kbd> <kbd>k</kbd> 在訊息區塊間移動，<kbd>Enter</kbd> 開討論串，<kbd>/</kbd> 搜尋，<kbd>i</kbd> 回到輸入框</li>
+        <li>終端的捲動複製模式用 vim 按鍵</li>
+      </ul></div>
+  </div>
+  <figure>
+  <div class="wk" role="img" aria-label="按下 Ctrl+; 後的提示">
+    <span class="t">Ctrl+;　接著按：</span>
+    <div class="g">
+      <span><b>h j k l</b>移動 panel</span><span><b>s</b>上下分割</span><span><b>v</b>左右分割</span>
+      <span><b>x</b>關閉 panel</span><span><b>z</b>放大或還原</span><span><b>c</b>新 window</span>
+      <span><b>n p</b>上或下一個 window</span><span><b>1–9</b>切換 window</span><span><b>w</b>切換群聊</span>
+      <span><b>a</b>@ agent</span><span><b>t</b>討論串抽屜</span><span><b>d</b>detach</span><span><b>[</b>捲動與複製</span>
+    </div>
+  </div>
+  <figcaption>按下 Ctrl+; 之後出現的提示，學的是 nvim 的 which-key。</figcaption>
+  </figure>
+</section>
+
+<section id="arch">
+  <h2>架構</h2>
+  <p>分成兩個程式：常駐背景的 <code>recursiond</code> 負責所有事情，桌面 app 只是看它、操作它的畫面。最下面是實際做事的 agent 和瀏覽器引擎，都是你電腦上本來就有的東西。</p>
+  <figure>
+  <div class="fig">
+  <svg viewBox="0 0 860 430" role="img" aria-label="三層架構圖">
+    <defs><marker id="m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0,0L10,5L0,10z"/></marker></defs>
+    <rect class="band" x="0" y="0" width="860" height="104" rx="12"/>
+    <text class="bandlbl" x="20" y="28">桌面 app（客戶端）</text>
+    <rect class="bx" x="20" y="40" width="190" height="48" rx="8"/><text class="t" x="115" y="70" text-anchor="middle">群聊 panel</text>
+    <rect class="bx" x="226" y="40" width="190" height="48" rx="8"/><text class="t" x="321" y="70" text-anchor="middle">HTML 回覆</text>
+    <rect class="bx" x="432" y="40" width="190" height="48" rx="8"/><text class="t" x="527" y="70" text-anchor="middle">終端 panel</text>
+    <rect class="bx" x="638" y="40" width="202" height="48" rx="8"/><text class="t" x="739" y="70" text-anchor="middle">瀏覽器 panel</text>
+    <path class="ar" d="M430 108 V150" marker-start="url(#m)" marker-end="url(#m)"/>
+    <text class="lb" x="444" y="134">WebSocket　（關掉 app 也不影響下一層）</text>
+    <rect class="band" x="0" y="154" width="860" height="128" rx="12"/>
+    <text class="bandlbl" x="20" y="182">recursiond（背景常駐）</text>
+    <rect class="bx-a" x="20" y="194" width="196" height="72" rx="8"/><text class="t" x="118" y="224" text-anchor="middle">版面與群聊</text><text class="s" x="118" y="248" text-anchor="middle">session、@、防遞迴</text>
+    <rect class="bx" x="230" y="194" width="196" height="72" rx="8"/><text class="t" x="328" y="224" text-anchor="middle">Agent 驅動</text><text class="s" x="328" y="248" text-anchor="middle">啟動、串流、續聊</text>
+    <rect class="bx" x="440" y="194" width="196" height="72" rx="8"/><text class="t" x="538" y="224" text-anchor="middle">工具伺服器</text><text class="s" x="538" y="248" text-anchor="middle">給 agent 用的工具</text>
+    <rect class="bx" x="650" y="194" width="190" height="72" rx="8"/><text class="t" x="745" y="224" text-anchor="middle">終端與權限</text><text class="s" x="745" y="248" text-anchor="middle">PTY、核准、沙箱</text>
+    <path class="ar" d="M328 286 V330" marker-end="url(#m)"/>
+    <path class="ar" d="M538 330 V286" marker-end="url(#m)"/>
+    <text class="lb" x="342" y="314">啟動與對話</text>
+    <text class="lb" x="552" y="314">agent 呼叫工具</text>
+    <rect class="band" x="0" y="334" width="860" height="96" rx="12"/>
+    <text class="bandlbl" x="20" y="362">你電腦上已有的</text>
+    <rect class="bx" x="20" y="372" width="250" height="44" rx="8"/><circle class="d-cl" cx="44" cy="394" r="6"/><text class="t" x="58" y="400">claude CLI</text>
+    <rect class="bx" x="286" y="372" width="270" height="44" rx="8"/><circle class="d-cx" cx="310" cy="394" r="6"/><text class="t" x="324" y="400">codex app-server</text>
+    <rect class="bx" x="572" y="372" width="268" height="44" rx="8"/><text class="t" x="592" y="400">系統內建瀏覽器引擎</text>
+  </svg>
+  </div>
+  <figcaption>v2 的遠端使用者也是用同一條 WebSocket 連進 recursiond。</figcaption>
+  </figure>
+  <details>
+    <summary>技術細節：agent 怎麼被驅動</summary>
+    <div class="inner">
+      <p><b>Claude</b>：<code>claude -p --input-format stream-json --output-format stream-json</code>。用 <code>--resume</code> 續聊、<code>--fork-session</code> 開討論串、<code>--append-system-prompt</code> 告訴它群聊規則、<code>--mcp-config</code> 掛上我們的工具、<code>--permission-prompt-tool</code> 把權限詢問接到我們的核准卡片。</p>
+      <p><b>Codex</b>：<code>codex app-server</code>，用 JSON-RPC 溝通，可以中途要求核准，用 <code>thread/fork</code> 開討論串。官方仍標示為實驗性質。</p>
+      <p>兩個 CLI 都是使用者自己安裝和登入，app 不另外打包，所以 app 本身大約 10–20 MB。</p>
+    </div>
+  </details>
+</section>
+
+<section id="chat">
+  <h2>群聊規則</h2>
+  <ul class="clean">
+    <li>你的訊息有 @ 就只給被 @ 的人，沒有 @ 就給這個群聊的所有 agent。</li>
+    <li>agent 的訊息只有 @ 到誰，才會叫醒誰。</li>
+    <li>每個 agent 都看得到大家說的話，但看不到別人在背景讀了什麼檔、跑了什麼指令。</li>
+    <li>可以替 agent 取別名，例如把 Codex 叫做 @cx。</li>
+  </ul>
+  <h3>怎麼避免 agent 互相 @ 停不下來</h3>
+  <div class="steps">
+    <div class="st"><div><b>每串最多 10 輪</b><span>從你發的一則訊息算起，agent 之間最多來回 10 次。你再發話才重新計算。</span></div></div>
+    <div class="st"><div><b>同兩個 agent 最多來回 4 次</b><span>避免兩個 agent 一直互相說「好的，你說得對」。</span></div></div>
+    <div class="st"><div><b>沒話說可以不說</b><span>agent 回 [PASS] 就不會出現在畫面上。</span></div></div>
+    <div class="st"><div><b>重複就暫停</b><span>同一個 agent 連續 3 次說幾乎一樣的話，自動停下來。</span></div></div>
+    <div class="st"><div><b>隨時全部停止</b><span>按 Esc 或停止鈕，所有 agent 立刻停。</span></div></div>
+  </div>
+  <p class="muted">超過上限時會問你「要再給 10 輪嗎？」，不會默默繼續花錢。</p>
+</section>
+
+<section id="widget">
+  <h2>HTML 回覆</h2>
+  <p>agent 想給你一張表單、一個畫面草稿或一張圖表時，呼叫一個工具把 HTML 交給我們，畫面就直接出現在對話裡。這是參考 claude.ai 的內嵌元件和 MCP Apps 標準的做法。</p>
+  <div class="two">
+    <div class="card"><h3>show_widget</h3><p>在對話中顯示。agent 可以選擇停下來等你填完，填好的資料直接回到它手上。</p></div>
+    <div class="card"><h3>open_pane</h3><p>比較大的頁面，開成一個新的瀏覽器 panel。</p></div>
+  </div>
+  <div class="callout">畫面放在隔離的 iframe 裡執行。v2 有遠端使用者後，別人的 agent 產生的 HTML 也會在你的 app 裡跑，<b>所以一定要隔離</b>。</div>
+  <details>
+    <summary>技術細節：小畫面能用的 API</summary>
+    <div class="inner">
+<pre>recursion.reply(data)      <span class="c">// 回給叫出這個畫面的 agent</span>
+recursion.sendPrompt(text) <span class="c">// 當作你在群聊裡打字</span>
+recursion.ask(text)        <span class="c">// 對畫面裡選取的內容開討論串</span>
+<span class="c">// 一般的 &lt;form&gt; 送出會自動變成 reply(表單資料)</span></pre>
+      <p>另外有 <code>read_me</code> 工具，agent 需要時才載入設計規範（配色、元件寫法、能用的 CDN），不必每次都塞進提示詞。畫面一邊產生一邊顯示，<code>&lt;script&gt;</code> 等內容完整才執行。</p>
+    </div>
+  </details>
+</section>
+
+<section id="perm">
+  <h2>權限與沙箱</h2>
+  <p>以 session 的專案資料夾為界，由作業系統強制執行（macOS 用 Seatbelt，Linux 用 bubblewrap），不是只靠 agent 自律。</p>
+  <div class="tbl"><table>
+    <tr><th>情況</th><th>會發生什麼</th></tr>
+    <tr><td>在專案資料夾內讀寫</td><td>直接允許</td></tr>
+    <tr><td>碰到資料夾外</td><td>先被系統擋下，agent 提出申請，跳出系統對話框讓你決定</td></tr>
+    <tr><td>agent 要跑指令</td><td>跳出核准卡片，可以勾「以後都允許這個指令」；指令在背景執行，結果顯示在對話裡</td></tr>
+    <tr><td>你自己的終端</td><td>不受限制，agent 也碰不到</td></tr>
+  </table></div>
+</section>
+
+<section id="browser">
+  <h2>瀏覽器</h2>
+  <div class="two">
+    <div class="card"><h3>給你看的</h3><p>瀏覽器 panel 直接用系統內建的瀏覽器引擎，任何網站都能開，也能登入。</p></div>
+    <div class="card"><h3>給 agent 用的</h3><p>同一個引擎，在背景開一個看不見的分頁。agent 可以讀網頁、點擊、填表、截圖，而且跟你共用登入狀態。</p></div>
+  </div>
+  <p class="muted">agent 在瀏覽什麼會顯示在對話裡，點一下就能在瀏覽器 panel 打開同一頁。之後再評估要不要自己做一個更輕量的 agent 專用瀏覽器。</p>
+</section>
+
+<section id="thread">
+  <h2>討論串</h2>
+  <p>回覆很長的時候，可以對某一句、某一列直接追問，不會打亂主對話。討論串屬於它所在的群聊 panel，收在 panel 右側的抽屜裡。</p>
+  <div class="th-pair">
+  <figure>
+  <div class="rex" role="img" aria-label="討論串列表" style="grid-template-columns:minmax(0,1fr)">
+    <div class="pn">
+      <div class="ph"><span class="ty">群聊</span> · 重構討論<span class="r">⊟ ◫</span></div>
+      <div class="th-wrap">
+        <div class="rx-log">
+          <div class="rx-b"><span class="dot">●</span><div>
+            <span class="rx-who cl">@claude</span>
+            <table class="rx-tbl">
+              <tr><th>方案</th><th>延遲</th><th>風險</th></tr>
+              <tr class="hl"><td>A · Outbox</td><td>~200ms</td><td>低<span class="rx-pill">💬 2</span></td></tr>
+              <tr><td>B · 直接 Kafka</td><td>~40ms</td><td>中</td></tr>
+            </table>
+            <span>建議先上 A，<span class="hl-line">冪等性要靠 consumer 端保證</span><span class="rx-pill">💬 3</span>。</span>
+          </div></div>
+        </div>
+        <aside class="drawer">
+          <div class="dh"><span>討論串 · 3</span><span class="dim">⇥</span></div>
+          <div class="ti on"><span class="q">A · Outbox ｜ ~200ms</span><span class="mt"><span class="cl">@claude</span> · 2 則 · <span class="wait">等你回</span></span></div>
+          <div class="ti"><span class="q">冪等性要靠 consumer 端保證</span><span class="mt"><span class="tl">@cx</span> · 3 則 · <span class="run">回覆中…</span></span></div>
+          <div class="ti done"><span class="q">第三點的重試策略</span><span class="mt">@claude · 已完成 · 已帶回主對話</span></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+  <figcaption>列表：這個群聊開過的所有討論串。💬 徽章掛在被引用的那一句旁邊。</figcaption>
+  </figure>
+  <figure>
+  <div class="rex" role="img" aria-label="討論串內容" style="grid-template-columns:minmax(0,1fr)">
+    <div class="pn">
+      <div class="ph"><span class="ty">群聊</span> · 重構討論<span class="r">⊟ ◫</span></div>
+      <div class="th-wrap">
+        <div class="rx-log">
+          <div class="rx-b"><span class="dot">●</span><div>
+            <span class="rx-who cl">@claude</span>
+            <table class="rx-tbl">
+              <tr><th>方案</th><th>延遲</th><th>風險</th></tr>
+              <tr class="hl flash"><td>A · Outbox</td><td>~200ms</td><td>低<span class="rx-pill">💬 2</span></td></tr>
+              <tr><td>B · 直接 Kafka</td><td>~40ms</td><td>中</td></tr>
+            </table>
+          </div></div>
+        </div>
+        <aside class="drawer">
+          <div class="dh"><span>← 返回</span><span class="dim">✓ 完成　🗑</span></div>
+          <div class="rx-q">A · Outbox ｜ ~200ms ｜ 低</div>
+          <div class="rx-you">200ms 怎麼算的？我們 poller 是 100ms。</div>
+          <div class="rx-b"><span class="dot">●</span><div><span class="rx-who cl">@claude</span><span>那平均大約 60–80ms，我原本假設得太保守。</span></div></div>
+          <span class="rx-back">↩ 帶回主對話</span>
+          <div class="din">❯ 輸入…</div>
+        </aside>
+      </div>
+    </div>
+  </div>
+  <figcaption>點進去：引用的原文、對話、自己的輸入框。點引用會讓主對話捲到那一列並高亮。</figcaption>
+  </figure>
+  </div>
+  <ul class="clean">
+    <li>預設由寫那句話的 agent 回答，也可以 @ 其他人進來。討論串不會發給所有人，其他 agent 也看不到。</li>
+    <li>按「↩ 帶回主對話」，agent 會把結論濃縮成一句貼回主線。</li>
+    <li><b>完成</b>：問完但想留紀錄，討論串會收到列表底部變灰，徽章變淡。</li>
+    <li><b>刪除</b>：不跳確認，底部出現「已刪除［復原］」，幾秒內可以救回。已經帶回主對話的摘要會保留。</li>
+    <li>抽屜可以收到右邊，只留一條細邊欄顯示數量；有沒看過的回覆會亮一個小點。panel 太窄時抽屜改成蓋在對話上。</li>
+    <li>快捷鍵：<kbd>Ctrl+;</kbd> 再按 <kbd>t</kbd> 開關抽屜；抽屜裡 <kbd>j</kbd> <kbd>k</kbd> 移動、<kbd>Enter</kbd> 打開、<kbd>h</kbd> 返回、<kbd>dd</kbd> 刪除。</li>
+  </ul>
+</section>
+
+<section id="plan">
+  <h2>開發順序</h2>
+  <div class="plan">
+    <div class="pm"><span class="id">M0</span><span class="tt">骨架</span><span class="ds">recursiond 與桌面 app、Session／Window／Panel、存檔、detach。</span><span class="ok">能分割版面；關掉 app 再開，版面還在。</span></div>
+    <div class="pm"><span class="id">M1</span><span class="tt">跟一個 Claude 對話</span><span class="ds">群聊 panel、串流顯示、權限卡片、續聊。</span><span class="ok">能正常對話並改檔。</span></div>
+    <div class="pm"><span class="id">M2</span><span class="tt">終端與快捷鍵</span><span class="ds">終端 panel、三層快捷鍵、提示面板、Ctrl+HJKL 導航、捲動複製模式。</span><span class="ok">不碰滑鼠就能開、分割、切換 panel。</span></div>
+    <div class="pm"><span class="id">M3</span><span class="tt">HTML 回覆</span><span class="ds">工具伺服器、隔離顯示、資料回傳。</span><span class="ok">agent 丟出表單，填完資料回到 agent。</span></div>
+    <div class="pm"><span class="id">M4</span><span class="tt">多 agent 群聊</span><span class="ds">接上 Codex、別名、@、群發、防遞迴、多個群聊。</span><span class="ok">Claude 和 Codex 能互相 @，也會自己停。</span></div>
+    <div class="pm"><span class="id">M5</span><span class="tt">作業系統沙箱</span><span class="ds">沙箱設定、存取申請對話框、指令核准與記憶。</span><span class="ok">資料夾外的存取需要你同意。</span></div>
+    <div class="pm"><span class="id">M6</span><span class="tt">瀏覽器</span><span class="ds">瀏覽器 panel、agent 的背景瀏覽器。</span><span class="ok">agent 能讀網頁和截圖；你能開任意網站。</span></div>
+    <div class="pm"><span class="id">M7</span><span class="tt">討論串</span><span class="ds">句子定位與徽章、抽屜列表與內容、完成與刪除、分支、帶回主對話。</span><span class="ok">能對表格某一列開串並帶回結論。</span></div>
+    <div class="pm"><span class="id">M8</span><span class="tt">Linux 與安裝檔</span><span class="ds">Linux 驗證、自動產出安裝檔。</span><span class="ok">兩個平台都能安裝執行。</span></div>
+  </div>
+</section>
+
+<section id="risk">
+  <h2>風險</h2>
+  <div class="two">
+    <div class="card"><h3>CLI 協定可能變</h3><p>兩個 CLI 的程式介面文件不多，升版可能要跟著改。把驅動層隔開，並固定版本跑測試。</p></div>
+    <div class="card"><h3>Linux 上的瀏覽器 panel</h3><p>Tauri 的多 WebView 還不穩定，Linux 最容易出問題。M6 先驗證，不行就改成獨立視窗。</p></div>
+    <div class="card"><h3>兩套平台程式碼</h3><p>背景瀏覽器要直接呼叫 macOS 和 Linux 各自的 API。包成同一個介面，各寫一份實作。</p></div>
+    <div class="card"><h3>token 花費</h3><p>群發加上多個 agent 很快就貴。靠 [PASS]、輪數上限、只送新訊息和快取來控制。</p></div>
+  </div>
+</section>
+
+<section id="appendix">
+  <h2>附錄</h2>
+  <details>
+    <summary>資料模型</summary>
+    <div class="inner">
+<pre>Session    { id, name, cwd, allow_paths, windows: [Window] }
+Window     { id, name, layout: SplitTree }
+Panel      { id, kind: workspace | terminal | browser, ref }
+Workspace  { id, members: [Member], budget: { per_chain: 10, per_pair: 4 } }
+Member     { id, kind: human | claude | codex, alias, cli_session_id, cursor }
+Message    { id, workspace_id, thread_id?, from, to: [member] | all, parts, blocks }
+Thread     { id, anchor: { message_id, block_id, text_range? }, fork_of }
+
+<span class="c"># 存在 ~/.recursion/</span></pre>
+    </div>
+  </details>
+  <details>
+    <summary>給 agent 的群聊提示詞（摘要）</summary>
+    <div class="inner">
+<pre>你是 {alias}，在 Recursion 群聊裡，成員有 {members}。
+- 別人的發言會以 [名字]: 開頭送給你。
+- 需要某人時寫 @alias；沒有新內容就不要 @ 別人。
+- 沒話要說就只回 [PASS]。
+- 需要表單、草稿、圖表時用 show_widget；大頁面用 open_pane。</pre>
+    </div>
+  </details>
+  <details>
+    <summary>給 agent 的工具一覽</summary>
+    <div class="inner">
+      <ul class="clean">
+        <li>畫面：<code>read_me</code>、<code>show_widget</code>、<code>open_pane</code></li>
+        <li>瀏覽器：<code>browse_open</code>、<code>browse_read</code>、<code>browse_click</code>、<code>browse_fill</code>、<code>browse_eval</code>、<code>browse_screenshot</code></li>
+        <li>權限：<code>request_access</code></li>
+        <li>跑指令用 CLI 自己的工具（Claude 的 Bash、Codex 的 shell），不另外提供</li>
+      </ul>
+    </div>
+  </details>
+</section>
+
+<footer>完整規格見專案裡的 SPEC.md。</footer>
+</main>
+</div>
