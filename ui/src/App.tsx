@@ -4,6 +4,7 @@ import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
+import { overlay, pruneBrowsers } from "./browsers";
 import { leaves, type Session, type State } from "./types";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
@@ -124,7 +125,9 @@ export default function App() {
     if (!state) return;
     const alive = new Set(Object.values(state.panels).filter((p) => p.kind === "terminal").map((p) => p.id));
     pruneTerminals(alive);
+    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser").map((p) => p.id)));
   }, [state]);
+  useEffect(() => (pick ? overlay() : undefined), [pick]);
 
   return (
     <div className={`app${sidebar ? "" : " no-sidebar"}`}>

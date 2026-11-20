@@ -14,6 +14,9 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::broadcast;
 
 mod codex;
+mod models;
+
+pub use models::ModelOption;
 
 /// PATH and binaries resolved from the user's login shell (GUI apps start with a bare PATH).
 #[derive(Clone, Debug, Default)]
@@ -98,6 +101,8 @@ pub struct Hub {
     pub save_notify: tokio::sync::Notify,
     pub tx: broadcast::Sender<String>,
     env: tokio::sync::RwLock<Option<AgentEnv>>,
+    /// Model lists per CLI, cached for a while (asking spawns the CLI).
+    models: tokio::sync::Mutex<HashMap<&'static str, (std::time::Instant, Vec<ModelOption>)>>,
     generation: std::sync::atomic::AtomicU64,
 }
 
@@ -121,8 +126,26 @@ impl Hub {
             save_notify: tokio::sync::Notify::new(),
             tx,
             env: tokio::sync::RwLock::new(None),
+            models: Default::default(),
             generation: Default::default(),
         })
+    }
+
+    pub async fn models(&self, kind: AgentKind) -> Result<Vec<ModelOption>, String> {
+        let key = match kind {
+            AgentKind::Claude => "claude",
+            AgentKind::Codex => "codex",
+        };
+        // Held across the fetch so opening two pickers at once spawns the CLI only once.
+        let mut cache = self.models.lock().await;
+        if let Some((at, list)) = cache.get(key) {
+            if at.elapsed() < std::time::Duration::from_secs(600) {
+                return Ok(list.clone());
+            }
+        }
+        let list = models::list(&self.env().await, kind).await?;
+        cache.insert(key, (std::time::Instant::now(), list.clone()));
+        Ok(list)
     }
 
     async fn env(&self) -> AgentEnv {

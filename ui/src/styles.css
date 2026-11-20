@@ -200,10 +200,14 @@ body.dragging iframe, body.dragging .xterm { pointer-events: none; }
 
 .toast { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%); z-index: 200; background: #3a1d22; color: #ffd0d6; border: 1px solid #6a2a34; border-radius: 8px; padding: 8px 14px; max-width: 70vw; font-size: 13px; box-shadow: 0 10px 30px -10px #000c; }
 
-/* browser placeholder */
-.br { flex: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.br-bar { padding: 6px 8px; border-bottom: 1px solid var(--line); }
-.br-bar input { width: 100%; background: #26272c; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font-family: var(--mono); font-size: 12px; outline: none; }
+/* browser: the native webview is laid over .br-view */
+.br { flex: 1; display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.br-bar { display: flex; gap: 4px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.br-bar button { width: 24px; height: 24px; border-radius: 6px; color: var(--dim); flex: none; }
+.br-bar button:hover:not(:disabled) { background: var(--sel); color: var(--fg); }
+.br-bar button:disabled { opacity: .35; }
+.br-view { position: relative; min-height: 0; display: grid; background: #fff0; }
+.br-bar input { flex: 1; min-width: 0; background: #26272c; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font-family: var(--mono); font-size: 12px; outline: none; }
 .br-bar input:focus { border-color: var(--or); }
 .br-empty { display: grid; place-content: center; text-align: center; gap: 6px; padding: 16px; }
 .br-empty p { margin: 0; }
@@ -316,6 +320,7 @@ body.dragging iframe, body.dragging .xterm { pointer-events: none; }
 .kind-card.on .kind-check { opacity: 1; }
 .field { display: grid; gap: 6px; }
 .field label { font-size: 12px; color: var(--dim); }
+.field-hint { font-size: 11.5px; color: var(--dim); min-height: 1.4em; }
 .input-wrap, .select-wrap { position: relative; display: flex; align-items: center; background: #1d1e22; border: 1px solid #3a3b42; border-radius: 8px; height: 36px; transition: border-color .12s; }
 .input-wrap:focus-within, .select-wrap:focus-within { border-color: var(--or); }
 .input-wrap .at { padding-left: 11px; color: var(--dim); font-family: var(--mono); }

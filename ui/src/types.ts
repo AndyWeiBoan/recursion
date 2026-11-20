@@ -64,7 +64,8 @@ export type Cmd =
   | { t: "ws_send"; panel: string; text: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
-  | { t: "ws_send_now"; panel: string };
+  | { t: "ws_send_now"; panel: string }
+  | { t: "models_list"; kind: AgentKind };
 
 export type AgentKind = "claude" | "codex";
 

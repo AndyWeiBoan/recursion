@@ -1,6 +1,6 @@
 // Connection to recursiond plus a tiny external store for React.
-import { useSyncExternalStore } from "react";
-import type { Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
+import { useEffect, useSyncExternalStore } from "react";
+import type { AgentKind, Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "error";
 
@@ -116,6 +116,9 @@ export async function connect() {
           break;
         case "ws_msg_removed":
           wsUpdate(m.panel, (w) => ({ ...w, messages: w.messages.filter((x) => x.id !== m.id) }));
+          break;
+        case "models":
+          setModels(m.kind, { models: m.models, error: m.error ?? null, loading: false });
           break;
         case "ws_member_removed":
           wsUpdate(m.panel, (w) => ({ ...w, members: w.members.filter((x) => x.id !== m.member) }));
@@ -237,3 +240,38 @@ export async function openExternal(url: string) {
 }
 
 export const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+// Model lists come from the CLIs themselves (recursiond asks `claude` / `codex`), so they match
+// each CLI's own /model menu without us maintaining a list.
+export interface ModelOption {
+  value: string;
+  label: string;
+  description: string;
+}
+export interface ModelList {
+  models: ModelOption[];
+  error: string | null;
+  loading: boolean;
+}
+
+const LOADING: ModelList = { models: [], error: null, loading: true };
+const modelLists = new Map<AgentKind, ModelList>();
+const modelSubs = new Set<() => void>();
+
+function setModels(kind: AgentKind, l: ModelList) {
+  modelLists.set(kind, l);
+  modelSubs.forEach((f) => f());
+}
+
+export function useModels(kind: AgentKind): ModelList {
+  useEffect(() => {
+    const cur = modelLists.get(kind);
+    if (cur && !cur.error) return;
+    setModels(kind, LOADING);
+    send({ t: "models_list", kind });
+  }, [kind]);
+  return useSyncExternalStore(
+    (f) => (modelSubs.add(f), () => modelSubs.delete(f)),
+    () => modelLists.get(kind) ?? LOADING,
+  );
+}

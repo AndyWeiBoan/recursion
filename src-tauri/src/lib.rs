@@ -1,6 +1,8 @@
 //! Recursion desktop client. All state lives in `recursiond`; this app only makes sure the
 //! daemon is running and hands its address to the web UI, which talks to it directly.
 
+mod browser;
+
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -8,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 6;
+const PROTOCOL: u32 = 7;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -106,7 +108,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![daemon_info])
+        .invoke_handler(tauri::generate_handler![
+            daemon_info,
+            browser::browser_show,
+            browser::browser_bounds,
+            browser::browser_hide,
+            browser::browser_close,
+            browser::browser_navigate,
+            browser::browser_go
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Recursion");
 }

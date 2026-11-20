@@ -2,7 +2,7 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { onReconnect, openExternal, send, useWorkspace } from "./client";
+import { onReconnect, openExternal, send, useModels, useWorkspace } from "./client";
 import type { AgentKind, Member, Msg } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -36,15 +36,6 @@ function renderMarkdown(text: string, aliases: string[]): string {
   return html;
 }
 
-const MODELS: Record<AgentKind, { value: string; label: string }[]> = {
-  claude: [
-    { value: "", label: "預設模型" },
-    { value: "opus", label: "Opus" },
-    { value: "sonnet", label: "Sonnet" },
-    { value: "haiku", label: "Haiku" },
-  ],
-  codex: [{ value: "", label: "預設模型" }],
-};
 const KIND_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
 
 const STATUS_LABEL: Record<Member["status"], string> = {
@@ -156,6 +147,9 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
   const [alias, setAlias] = useState(free("claude"));
   const [touched, setTouched] = useState(false);
   const [model, setModel] = useState("");
+  const list = useModels(kind);
+  const options = list.models.length ? list.models : [{ value: "", label: "預設模型", description: "" }];
+  const picked = options.find((m) => m.value === model);
   const id = `${panel}${big ? "-big" : "-pop"}`;
   return (
     <form
@@ -215,8 +209,8 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
         <label htmlFor={`model-${id}`}>模型</label>
         <div className="select-wrap">
           <select id={`model-${id}`} value={model} onChange={(e) => setModel(e.target.value)}>
-            {MODELS[kind].map((m) => (
-              <option key={m.value} value={m.value}>
+            {options.map((m) => (
+              <option key={m.value} value={m.value} title={m.description}>
                 {m.label}
               </option>
             ))}
@@ -225,6 +219,9 @@ function AddAgent({ panel, big, onDone, taken = [] }: { panel: string; big?: boo
             ⌄
           </span>
         </div>
+        <span className="field-hint">
+          {list.loading ? `正在問 ${KIND_NAME[kind]} 有哪些模型…` : list.error ? `讀不到模型清單：${list.error}` : picked?.description}
+        </span>
       </div>
       <button className="add-submit" type="submit" disabled={!alias.trim()}>
         加入 @{alias.trim() || "…"}

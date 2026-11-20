@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { send } from "./client";
 import { requestKind } from "./picker";
 import { WorkspaceView } from "./WorkspaceView";
+import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
 import { KIND_LABEL, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
@@ -80,6 +81,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const focused = ctx.window.focus === panel.id;
   const info = ctx.terms[panel.id];
   const [menu, setMenu] = useState(false);
+  useEffect(() => (menu ? overlay() : undefined), [menu]);
   const focus = () => {
     if (!focused) send({ t: "panel_focus", panel: panel.id });
   };
@@ -166,22 +168,113 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
 }
 
 function BrowserBody({ panel }: { panel: Panel }) {
-  const [url, setUrl] = useState(panel.url ?? "");
-  useEffect(() => setUrl(panel.url ?? ""), [panel.url]);
+  const url = panel.url ?? "";
+  const [input, setInput] = useState(url);
+  const [title, setTitle] = useState("");
+  const [loading, setLoading] = useState(false);
+  const host = useRef<HTMLDivElement>(null);
+  useEffect(() => setInput(url), [url]);
+
+  useEffect(
+    () =>
+      onBrowserEvent(panel.id, (e) => {
+        if (e.title !== null) setTitle(e.title);
+        if (e.loading !== null) setLoading(e.loading);
+        if (e.url) setInput(e.url);
+        // Remember where the user ended up (link clicks, redirects) so reopening lands there.
+        if (e.loading === false && e.url && e.url !== panel.url) send({ t: "panel_url", panel: panel.id, url: e.url });
+      }),
+    [panel.id, panel.url],
+  );
+
+  // Keep the native webview glued to our placeholder box; it can move without resizing
+  // (sidebar toggle, sibling split dragged), so poll the rect each frame instead of observing size.
+  const showRef = useRef<() => void>(() => {});
+  const urlRef = useRef(url);
+  urlRef.current = url;
+  useLayoutEffect(() => {
+    if (!nativeBrowser || !url) return;
+    const el = host.current!;
+    let last = "";
+    let raf = 0;
+    const rect = () => {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    const show = () => {
+      const b = rect();
+      last = JSON.stringify(b);
+      showBrowser(panel.id, urlRef.current, b, show);
+    };
+    const tick = () => {
+      const b = rect();
+      const key = JSON.stringify(b);
+      if (key !== last) {
+        last = key;
+        moveBrowser(panel.id, b);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    showRef.current = show;
+    show();
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      showRef.current = () => {};
+      hideBrowser(panel.id);
+    };
+  }, [panel.id, !!url]);
+  // A new URL (typed, or recorded after a link click) reuses the same webview.
+  const shown = useRef(url);
+  useEffect(() => {
+    if (shown.current === url) return;
+    shown.current = url;
+    showRef.current();
+  }, [url]);
+
+  const go = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+    const next = normalizeUrl(input);
+    setInput(next);
+    if (next === url) browserGo(panel.id, "reload");
+    else send({ t: "panel_url", panel: panel.id, url: next });
+  };
+
   return (
     <div className="br">
-      <form
-        className="br-bar"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (url.trim()) send({ t: "panel_url", panel: panel.id, url: url.trim() });
-        }}
-      >
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="輸入網址，例如 http://localhost:5173" spellCheck={false} />
+      <form className="br-bar" onSubmit={go}>
+        <button type="button" title="上一頁" disabled={!url} onClick={() => browserGo(panel.id, "back")}>
+          ←
+        </button>
+        <button type="button" title="下一頁" disabled={!url} onClick={() => browserGo(panel.id, "forward")}>
+          →
+        </button>
+        <button type="button" title="重新載入" disabled={!url} onClick={() => browserGo(panel.id, "reload")}>
+          {loading ? "✕" : "↻"}
+        </button>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onFocus={(e) => e.currentTarget.select()}
+          placeholder="輸入網址或搜尋，例如 localhost:5173"
+          spellCheck={false}
+          title={title}
+        />
       </form>
-      <div className="br-empty">
-        <p>瀏覽器 panel 會在 M6 接上系統內建的瀏覽器引擎。</p>
-        <p className="dim">網址會先記下來，之後打開就會載入。</p>
+      <div ref={host} className="br-view">
+        {!url ? (
+          <div className="br-empty">
+            <p>輸入網址開始瀏覽。</p>
+          </div>
+        ) : (
+          !nativeBrowser && (
+            <div className="br-empty">
+              <p>瀏覽器 panel 只在桌面 app 裡能用。</p>
+              <p className="dim">{url}</p>
+            </div>
+          )
+        )}
       </div>
     </div>
   );

@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -88,6 +88,7 @@ enum In {
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
     WsSendNow { panel: String },
+    ModelsList { kind: AgentKind },
 }
 
 /// Messages to a UI client.
@@ -99,6 +100,7 @@ enum Out<'a> {
     Out { panel: &'a str, data: String },
     Exit { panel: &'a str },
     Error { msg: String },
+    Models { kind: AgentKind, models: Vec<agents::ModelOption>, error: Option<String> },
 }
 
 impl App {
@@ -192,6 +194,14 @@ impl App {
             }
             WsAttach { panel } => {
                 reply = Some(self.hub.snapshot(&panel).to_string());
+                changed = false;
+            }
+            ModelsList { kind } => {
+                let (models, error) = match self.hub.models(kind).await {
+                    Ok(m) => (m, None),
+                    Err(err) => (vec![], Some(err)),
+                };
+                reply = Some(serde_json::to_string(&Out::Models { kind, models, error }).unwrap());
                 changed = false;
             }
             WsAddAgent { panel, kind, alias, model } => {
