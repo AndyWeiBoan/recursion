@@ -11,6 +11,7 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 ## 狀態
 - **M0 骨架 + 終端**：session、window、可拖曳的分割 panel、多個終端；關掉 app 終端在背景繼續跑，重開版面還在。
 - **M1 群聊接上 Claude**：在群聊 panel 加入 Claude（可選模型），串流回覆、Markdown、工具呼叫摘要、核准卡片（允許／以後都允許／拒絕）、停止、用量與花費；對話存檔，重開後接續。
+- **多 agent 群聊**：群聊中途可再加入 agent；沒 @ 發給全部、@ 指定對象、agent 之間互相 @；新加入的 agent 會收到之前的對話；防遞迴（每串 10 輪、同一對 4 次、重複 3 次暫停、[PASS] 略過、「繼續 10 輪」）；聊天版面（你在右、agent 在左）、輸入 @ 會跳出成員選單。
 - 瀏覽器 panel（M6）目前是佔位畫面。
 
 ## 開發
@@ -21,7 +22,8 @@ pnpm install
 pnpm dev        # 開發模式（會先編譯 recursiond）
 pnpm app        # 打包 target/release/bundle/macos/Recursion.app
 pnpm test       # Rust 單元測試 + 型別檢查 + daemon 端到端測試
-pnpm test:agent # 用真的 Claude（haiku）跑群聊端到端測試，會用到少量額度
+pnpm test:agent # 用真的 Claude（haiku）跑單一 agent 端到端測試，會用到少量額度
+pnpm test:group # 兩個真的 Claude 互相 @、防遞迴的端到端測試
 ```
 
 ## 結構

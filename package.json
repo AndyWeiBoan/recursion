@@ -12,7 +12,8 @@
     "app": "tauri build",
     "smoke": "cargo build -p recursiond && node scripts/smoke.mjs",
     "test": "cargo test -p recursiond && pnpm typecheck && pnpm smoke",
-    "test:agent": "cargo build -p recursiond && node scripts/agent-smoke.mjs"
+    "test:agent": "cargo build -p recursiond && node scripts/agent-smoke.mjs",
+    "test:group": "cargo build -p recursiond && node scripts/group-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.5",

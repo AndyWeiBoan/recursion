@@ -4,7 +4,8 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
-use crate::workspace::{now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, Workspace};
+use crate::workspace::{mentions, normalize, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, Workspace};
+use std::collections::VecDeque;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -52,7 +53,32 @@ struct PendingPerm {
     suggestions: Value,
 }
 
+/// Loop-guard limits (SPEC: per chain 10 agent-triggered turns, per pair 4, 3 repeats).
+const CHAIN_LIMIT: u32 = 10;
+const PAIR_LIMIT: u32 = 4;
+const REPEAT_LIMIT: usize = 3;
+/// How much history a newly joined agent gets.
+const HISTORY_MSGS: usize = 60;
+const HISTORY_CHARS: usize = 30_000;
+
+/// Per-workspace routing state (not persisted).
+#[derive(Default)]
+struct Runtime {
+    /// Agent-triggered deliveries since the last human message.
+    chain_turns: u32,
+    pairs: HashMap<(String, String), u32>,
+    /// Members that were triggered while busy; delivered when their turn ends.
+    pending: HashSet<String>,
+    /// Triggers held back by a tripped guard, released by "continue".
+    blocked: HashSet<String>,
+    paused: bool,
+    recent: HashMap<String, VecDeque<String>>,
+    roster_version: u64,
+    roster_seen: HashMap<String, u64>,
+}
+
 pub struct Hub {
+    runtime: Mutex<HashMap<String, Runtime>>,
     workspaces: Mutex<HashMap<String, Workspace>>,
     procs: Mutex<HashMap<(String, String), Proc>>,
     perms: Mutex<HashMap<String, PendingPerm>>,
@@ -67,10 +93,15 @@ fn mid() -> String {
     crate::model::new_id()
 }
 
+fn msg(from: &str, body: Body, streaming: bool) -> Message {
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, body }
+}
+
 impl Hub {
     pub fn new() -> Arc<Self> {
         let (tx, _) = broadcast::channel(8192);
         Arc::new(Hub {
+            runtime: Mutex::new(HashMap::new()),
             workspaces: Mutex::new(HashMap::new()),
             procs: Mutex::new(HashMap::new()),
             perms: Mutex::new(HashMap::new()),
@@ -122,10 +153,27 @@ impl Hub {
         self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws }))
     }
 
-    fn push_msg(&self, panel: &str, msg: Message) {
-        self.emit(json!({ "t": "ws_msg", "panel": panel, "msg": &msg }));
-        self.with_ws(panel, |ws| ws.messages.push(msg));
+    fn push_msg(&self, panel: &str, msg: Message) -> Message {
+        let m = self.with_ws(panel, |ws| ws.push(msg));
+        self.emit(json!({ "t": "ws_msg", "panel": panel, "msg": &m }));
         self.mark_dirty(panel);
+        m
+    }
+
+    fn remove_msgs(&self, panel: &str, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.with_ws(panel, |ws| ws.messages.retain(|m| !ids.contains(&m.id)));
+        for id in ids {
+            self.emit(json!({ "t": "ws_msg_removed", "panel": panel, "id": id }));
+        }
+        self.mark_dirty(panel);
+    }
+
+    fn rt<R>(&self, panel: &str, f: impl FnOnce(&mut Runtime) -> R) -> R {
+        let mut map = self.runtime.lock().unwrap();
+        f(map.entry(panel.to_string()).or_default())
     }
 
     fn update_msg(&self, panel: &str, id: &str, f: impl FnOnce(&mut Message)) {
@@ -153,7 +201,7 @@ impl Hub {
     fn system(&self, panel: &str, from: &str, text: impl Into<String>, error: bool) {
         let text = text.into();
         let body = if error { Body::Error { text } } else { Body::System { text } };
-        self.push_msg(panel, Message { id: mid(), ts: now_ms(), from: from.into(), streaming: false, body });
+        self.push_msg(panel, msg(from, body, false));
     }
 
     // ---------- commands from clients ----------
@@ -171,8 +219,12 @@ impl Hub {
         if dup {
             return Err(format!("這個群聊已經有 @{alias} 了"));
         }
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default() };
+        if alias.chars().any(|c| !(c.is_alphanumeric() || c == '_' || c == '-')) {
+            return Err("別名只能用英數字、中文、底線或連字號".into());
+        }
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), seen: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
+        self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
         self.system(panel, &member.id, format!("@{alias} 加入了群聊"), false);
         Ok(())
@@ -186,11 +238,17 @@ impl Hub {
             a
         });
         self.emit(json!({ "t": "ws_member_removed", "panel": panel, "member": member }));
+        self.rt(panel, |r| {
+            r.roster_version += 1;
+            r.pending.remove(member);
+            r.blocked.remove(member);
+        });
         if let Some(a) = alias {
             self.system(panel, "system", format!("@{a} 離開了群聊"), false);
         }
     }
 
+    /// A human message: goes to the @mentioned agents, or to everyone when nobody is mentioned.
     pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String) -> Result<(), String> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -200,14 +258,140 @@ impl Hub {
         if members.is_empty() {
             return Err("這個群聊還沒有 agent".into());
         }
-        self.push_msg(panel, Message { id: mid(), ts: now_ms(), from: "you".into(), streaming: false, body: Body::Text { text: text.clone() } });
-        for m in members {
-            if let Err(e) = self.deliver(panel, &m, &text, &cwd).await {
-                self.system(panel, &m.id, e, true);
-                self.update_member(panel, &m.id, |m| m.status = MemberStatus::Idle);
-            }
+        let targeted = mentions(&text, &members, None);
+        let all = targeted.is_empty() || targeted.len() == members.len();
+        let mut m = msg("you", Body::Text { text }, false);
+        m.to = if all { vec![] } else { targeted.clone() };
+        self.push_msg(panel, m);
+        // A human message starts a new chain: reset every guard.
+        self.rt(panel, |r| {
+            r.chain_turns = 0;
+            r.pairs.clear();
+            r.blocked.clear();
+            r.paused = false;
+            r.recent.clear();
+        });
+        self.resolve_guards(panel);
+        let targets: Vec<String> = if all { members.iter().map(|m| m.id.clone()).collect() } else { targeted };
+        for t in targets {
+            self.trigger(panel, &t, &cwd).await;
         }
         Ok(())
+    }
+
+    /// "Continue" after a guard tripped: give agents another budget and release held triggers.
+    pub async fn resume_chain(self: &Arc<Self>, panel: &str, cwd: String) {
+        let blocked: Vec<String> = self.rt(panel, |r| {
+            r.chain_turns = 0;
+            r.pairs.clear();
+            r.paused = false;
+            r.recent.clear();
+            r.blocked.drain().collect()
+        });
+        self.resolve_guards(panel);
+        for m in blocked {
+            self.trigger(panel, &m, &cwd).await;
+        }
+    }
+
+    fn resolve_guards(&self, panel: &str) {
+        let ids: Vec<String> = self.with_ws(panel, |ws| {
+            ws.messages.iter().filter(|m| matches!(m.body, Body::Guard { resolved: false, .. })).map(|m| m.id.clone()).collect()
+        });
+        for id in ids {
+            self.update_msg(panel, &id, |m| {
+                if let Body::Guard { resolved, .. } = &mut m.body {
+                    *resolved = true;
+                }
+            });
+        }
+    }
+
+    /// Wake an agent: deliver now if idle, otherwise after its current turn.
+    async fn trigger(self: &Arc<Self>, panel: &str, member: &str, cwd: &str) {
+        let Some(m) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()) else { return };
+        if m.status != MemberStatus::Idle {
+            self.rt(panel, |r| r.pending.insert(member.to_string()));
+            return;
+        }
+        if let Err(e) = self.deliver(panel, &m, cwd).await {
+            self.system(panel, &m.id, e, true);
+            self.update_member(panel, &m.id, |m| m.status = MemberStatus::Idle);
+        }
+    }
+
+    /// Called when an agent finishes a turn: [PASS], guards, @mention routing, queued triggers.
+    async fn turn_ended(self: &Arc<Self>, panel: String, member: String, text: String, text_ids: Vec<String>, cwd: String) {
+        let trimmed = text.trim();
+        let passed = trimmed == "[PASS]" || (trimmed.starts_with("[PASS]") && trimmed.len() < 40);
+        if passed {
+            self.remove_msgs(&panel, &text_ids);
+            let alias = self.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone())).unwrap_or_default();
+            self.system(&panel, &member, format!("@{alias} 略過（沒有要補充的）"), false);
+        }
+        let mut targets: Vec<String> = Vec::new();
+        if !passed && !trimmed.is_empty() {
+            let members: Vec<Member> = self.with_ws(&panel, |ws| ws.members.clone());
+            let alias = members.iter().find(|m| m.id == member).map(|m| m.alias.clone()).unwrap_or_default();
+            // Repetition guard.
+            let repeated = self.rt(&panel, |r| {
+                let q = r.recent.entry(member.clone()).or_default();
+                q.push_back(normalize(trimmed));
+                while q.len() > REPEAT_LIMIT {
+                    q.pop_front();
+                }
+                q.len() == REPEAT_LIMIT && q.iter().all(|t| t == &q[0])
+            });
+            if repeated {
+                self.trip(&panel, format!("@{alias} 連續 {REPEAT_LIMIT} 次說了幾乎一樣的話，已暫停。"), mentions(trimmed, &members, Some(&member)));
+            } else {
+                for to in mentions(trimmed, &members, Some(&member)) {
+                    let to_alias = members.iter().find(|m| m.id == to).map(|m| m.alias.clone()).unwrap_or_default();
+                    let verdict = self.rt(&panel, |r| {
+                        if r.paused {
+                            return Err(None);
+                        }
+                        if r.chain_turns >= CHAIN_LIMIT {
+                            return Err(Some(format!("agent 之間已經互動 {CHAIN_LIMIT} 輪了。")));
+                        }
+                        let key = if member < to { (member.clone(), to.clone()) } else { (to.clone(), member.clone()) };
+                        let n = r.pairs.entry(key).or_insert(0);
+                        if *n >= PAIR_LIMIT {
+                            return Err(Some(format!("@{alias} 和 @{to_alias} 已經來回 {PAIR_LIMIT} 次了。")));
+                        }
+                        *n += 1;
+                        r.chain_turns += 1;
+                        Ok(())
+                    });
+                    match verdict {
+                        Ok(()) => targets.push(to),
+                        Err(Some(reason)) => self.trip(&panel, reason, vec![to]),
+                        Err(None) => {
+                            self.rt(&panel, |r| r.blocked.insert(to));
+                        }
+                    }
+                }
+            }
+        }
+        let again = self.rt(&panel, |r| r.pending.remove(&member));
+        if again {
+            targets.push(member.clone());
+        }
+        for t in targets {
+            self.trigger(&panel, &t, &cwd).await;
+        }
+    }
+
+    fn trip(&self, panel: &str, reason: String, held: Vec<String>) {
+        let first = self.rt(panel, |r| {
+            let first = !r.paused;
+            r.paused = true;
+            r.blocked.extend(held);
+            first
+        });
+        if first {
+            self.push_msg(panel, msg("system", Body::Guard { text: format!("{reason}要讓它們繼續嗎？"), resolved: false }, false));
+        }
     }
 
     pub async fn decide(&self, request_id: &str, decision: &str) -> Result<(), String> {
@@ -244,6 +428,11 @@ impl Hub {
                 }
             });
         }
+        self.rt(panel, |r| {
+            r.pending.clear();
+            r.blocked.clear();
+        });
+        self.resolve_guards(panel);
         self.system(panel, "system", "已停止", false);
     }
 
@@ -297,12 +486,57 @@ impl Hub {
         w.flush().await.map_err(|e| e.to_string())
     }
 
-    async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, text: &str, cwd: &str) -> Result<(), String> {
+    /// Send an agent everything it hasn't seen yet (other people's text), as one user turn.
+    async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
+        let (batch, upto) = self.with_ws(panel, |ws| {
+            let names: HashMap<String, String> = ws.members.iter().map(|x| (x.id.clone(), x.alias.clone())).collect();
+            let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && x.from != m.id).collect();
+            let upto = ws.next_seq;
+            let lines: Vec<String> = unseen
+                .iter()
+                .filter_map(|x| match &x.body {
+                    Body::Text { text } if x.from == "you" => {
+                        let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
+                        Some(format!("[human → {to}]: {text}"))
+                    }
+                    Body::Text { text } => Some(format!("[@{}]: {}", names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), text)),
+                    _ => None,
+                })
+                .collect();
+            (lines, upto)
+        });
+        // Trim very long history (e.g. an agent joining late).
+        let mut batch = batch;
+        let mut omitted = 0;
+        while batch.len() > HISTORY_MSGS || (batch.len() > 1 && batch.iter().map(|l| l.len()).sum::<usize>() > HISTORY_CHARS) {
+            batch.remove(0);
+            omitted += 1;
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let roster = self.with_ws(panel, |ws| {
+            ws.members.iter().map(|x| format!("@{}{}", x.alias, x.model.as_ref().map(|mm| format!(" ({mm})")).unwrap_or_default())).collect::<Vec<_>>().join(", ")
+        });
+        let (ver, seen_ver) = self.rt(panel, |r| (r.roster_version, r.roster_seen.get(&m.id).copied()));
+        let mut text = String::new();
+        if seen_ver != Some(ver) {
+            text.push_str(&format!("[Recursion] Members of this chat: {roster}. You are @{}.\n", m.alias));
+            self.rt(panel, |r| r.roster_seen.insert(m.id.clone(), ver));
+        }
+        if omitted > 0 {
+            text.push_str(&format!("[Recursion] ({omitted} earlier messages omitted)\n"));
+        }
+        text.push_str(&batch.join("\n\n"));
+
         let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
         if !running {
             self.spawn(panel, m, cwd).await?;
         }
-        self.update_member(panel, &m.id, |m| m.status = MemberStatus::Thinking);
+        self.update_member(panel, &m.id, |x| {
+            x.status = MemberStatus::Thinking;
+            x.seen = upto;
+        });
         self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
     }
 
@@ -310,10 +544,16 @@ impl Hub {
         let env = self.env().await;
         let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
         let prompt = format!(
-            "You are running inside Recursion, a desktop workspace where a human works with coding agents. \
-             Your alias in this chat is @{}. Your replies are rendered as Markdown in a chat panel, so use Markdown \
-             (tables, lists, code blocks) where it helps. Reply in the user's language.",
-            m.alias
+            "You are @{alias}, an agent in a Recursion group chat: a human working with one or more AI agents in the same project.\n\
+             - New messages arrive prefixed with their speaker, e.g. `[human → everyone]: ...` or `[@other]: ...`. You only receive \
+             messages you have not seen yet; your own earlier replies are already in your context.\n\
+             - To ask another agent for something, mention them as @alias in your reply; they will read your whole reply. Do not \
+             @mention anyone unless you actually need their input, and never just to thank or agree with them.\n\
+             - If the human @mentioned you by name, you must respond and do what was asked (including asking other agents). \
+             Only when a message was sent to everyone and you truly have nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
+             - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
+             - Reply in the human's language.",
+            alias = m.alias
         );
         let mut cmd = Command::new(bin);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
@@ -390,17 +630,28 @@ struct ClaudeReader {
     blocks: HashMap<u64, String>,
     tools: HashMap<String, String>,
     streamed_api_ids: HashSet<String>,
+    turn_text: String,
+    turn_text_ids: Vec<String>,
 }
 
 impl ClaudeReader {
     fn new(hub: Arc<Hub>, panel: String, member: String, cwd: String, base_cost: f64) -> Self {
-        Self { hub, panel, member, cwd, base_cost, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new() }
+        Self { hub, panel, member, cwd, base_cost, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new() }
     }
 
     fn new_msg(&mut self, body: Body, streaming: bool) -> String {
-        let id = mid();
-        self.hub.push_msg(&self.panel, Message { id: id.clone(), ts: now_ms(), from: self.member.clone(), streaming, body });
-        id
+        let is_text = matches!(body, Body::Text { .. });
+        if let Body::Text { text } = &body {
+            if !self.turn_text.is_empty() {
+                self.turn_text.push_str("\n\n");
+            }
+            self.turn_text.push_str(text);
+        }
+        let m = self.hub.push_msg(&self.panel, msg(&self.member, body, streaming));
+        if is_text {
+            self.turn_text_ids.push(m.id.clone());
+        }
+        m.id
     }
 
     fn handle(&mut self, v: Value) {
@@ -449,6 +700,7 @@ impl ClaudeReader {
                         if ev["delta"]["type"] == "text_delta" {
                             if let (Some(id), Some(t)) = (self.blocks.get(&idx).cloned(), ev["delta"]["text"].as_str()) {
                                 let t = t.to_string();
+                                self.turn_text.push_str(&t);
                                 hub.with_ws(&panel, |ws| {
                                     if let Some(Message { body: Body::Text { text }, .. }) = ws.message_mut(&id) {
                                         text.push_str(&t);
@@ -554,6 +806,10 @@ impl ClaudeReader {
                     hub.system(&panel, &member, text, true);
                 }
                 self.blocks.clear();
+                let text = std::mem::take(&mut self.turn_text);
+                let ids = std::mem::take(&mut self.turn_text_ids);
+                let (hub, cwd) = (self.hub.clone(), self.cwd.clone());
+                tokio::spawn(async move { hub.turn_ended(panel, member, text, ids, cwd).await });
             }
             _ => {}
         }

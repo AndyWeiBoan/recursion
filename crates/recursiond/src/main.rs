@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -87,6 +87,7 @@ enum In {
     WsSend { panel: String, text: String },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
+    WsContinue { panel: String },
 }
 
 /// Messages to a UI client.
@@ -212,6 +213,11 @@ impl App {
             }
             WsStop { panel } => {
                 self.hub.stop(&panel).await;
+                changed = false;
+            }
+            WsContinue { panel } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.resume_chain(&panel, cwd).await;
                 changed = false;
             }
         }

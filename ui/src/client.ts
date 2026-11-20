@@ -111,6 +111,9 @@ export async function connect() {
             return { ...w, members };
           });
           break;
+        case "ws_msg_removed":
+          wsUpdate(m.panel, (w) => ({ ...w, messages: w.messages.filter((x) => x.id !== m.id) }));
+          break;
         case "ws_member_removed":
           wsUpdate(m.panel, (w) => ({ ...w, members: w.members.filter((x) => x.id !== m.member) }));
           break;

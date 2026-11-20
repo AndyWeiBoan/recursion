@@ -63,7 +63,8 @@ export type Cmd =
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_send"; panel: string; text: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
-  | { t: "ws_stop"; panel: string };
+  | { t: "ws_stop"; panel: string }
+  | { t: "ws_continue"; panel: string };
 
 export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission";
 
@@ -80,12 +81,13 @@ export interface Member {
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
 
-export type Msg = { id: string; ts: number; from: string; streaming: boolean } & (
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
   | { kind: "system"; text: string }
   | { kind: "error"; text: string }
+  | { kind: "guard"; text: string; resolved: boolean }
 );
 
 export interface Workspace {
