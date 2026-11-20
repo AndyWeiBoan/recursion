@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { send } from "./client";
+import { requestKind } from "./picker";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
 import { KIND_LABEL, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
@@ -92,8 +93,18 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         </button>
         <span className="title">{title}</span>
         <span className="tools">
-          <button title="左右分割（⌘D）" onClick={() => send({ t: "panel_split", panel: panel.id, dir: "row" })}>◫</button>
-          <button title="上下分割（⌘⇧D）" onClick={() => send({ t: "panel_split", panel: panel.id, dir: "column" })}>⊟</button>
+          <button
+            title="左右分割（⌘D）"
+            onClick={(e) => requestKind("左右分割", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "row", kind }))}
+          >
+            ◫
+          </button>
+          <button
+            title="上下分割（⌘⇧D）"
+            onClick={(e) => requestKind("上下分割", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "column", kind }))}
+          >
+            ⊟
+          </button>
           <button title="關閉（⌘W）" onClick={() => send({ t: "panel_close", panel: panel.id })}>✕</button>
         </span>
         {menu && (

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSnapshot, isMac, pickFolder, send, useSnapshot } from "./client";
+import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView } from "./Layout";
+import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { leaves, type Session, type State } from "./types";
 
@@ -48,6 +50,7 @@ function focusNeighbor(dir: "h" | "j" | "k" | "l") {
 function useShortcuts(toggleSidebar: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (pickerOpen()) return;
       const { state, terms } = getSnapshot();
       const { session, window } = activeOf(state);
       const k = e.key.toLowerCase();
@@ -80,11 +83,12 @@ function useShortcuts(toggleSidebar: () => void) {
       if (!session) return;
       if (k === "t") {
         stop();
-        send({ t: "window_create", session: session.id });
+        requestKind("新 window", null, (kind) => send({ t: "window_create", session: session.id, kind }));
       } else if (k === "d" && window) {
         stop();
         const down = isMac ? e.shiftKey : e.altKey;
-        send({ t: "panel_split", panel: window.focus, dir: down ? "column" : "row" });
+        const panel = window.focus;
+        requestKind(down ? "上下分割" : "左右分割", null, (kind) => send({ t: "panel_split", panel, dir: down ? "column" : "row", kind }));
       } else if (k === "w" && window) {
         stop();
         send({ t: "panel_close", panel: window.focus });
@@ -110,6 +114,8 @@ function useShortcuts(toggleSidebar: () => void) {
 export default function App() {
   const { state, terms, status, error } = useSnapshot();
   const [sidebar, setSidebar] = useState(true);
+  const [pick, setPick] = useState<PickRequest | null>(null);
+  useEffect(() => registerPicker(setPick), []);
   const toggleSidebar = useMemo(() => () => setSidebar((v) => !v), []);
   useShortcuts(toggleSidebar);
   const { session, window } = activeOf(state);
@@ -144,6 +150,7 @@ export default function App() {
           <Empty status={status} error={error} hasState={!!state} />
         )}
       </main>
+      {pick && <KindPicker req={pick} close={closePicker} />}
     </div>
   );
 }
@@ -271,7 +278,11 @@ function Tabs({ session }: { session: Session }) {
           </button>
         </div>
       ))}
-      <button className="icon-btn" title={`新 window（${isMac ? "⌘T" : "Ctrl+Shift+T"}）`} onClick={() => send({ t: "window_create", session: session.id })}>
+      <button
+        className="icon-btn"
+        title={`新 window（${isMac ? "⌘T" : "Ctrl+Shift+T"}）`}
+        onClick={(e) => requestKind("新 window", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "window_create", session: session.id, kind }))}
+      >
         ＋
       </button>
       <div className="tabs-fill" data-tauri-drag-region />
