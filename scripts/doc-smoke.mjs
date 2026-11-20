@@ -64,6 +64,8 @@ send({ t: "doc_get", session, doc: docId });
 const got = await until((m) => m.t === "doc" && m.doc === docId, 5000);
 check(/<table/i.test(got?.html ?? ""), "doc HTML saved and served");
 await until((m) => m.t === "ws_member" && m.member.id === claude && m.member.status === "idle", 60000);
+const usage = await until((m) => m.t === "ws_msg" && m.msg.from === claude && m.msg.turn && m.msg.usage, 5000);
+check(usage?.msg.usage.output > 0 && usage.msg.usage.cost_usd > 0, `claude turn usage recorded (${JSON.stringify(usage?.msg.usage)})`);
 
 if (!process.env.SKIP_CODEX) {
   send({ t: "ws_add_agent", panel, kind: "codex", alias: "codex", model: null });
@@ -78,6 +80,8 @@ if (!process.env.SKIP_CODEX) {
     for (const m of msgs.slice(mark)) if (m.t === "error" || m.t === "ws_round" || (m.t === "ws_member" && m.member.id === codex)) console.log("  ~", m.t, m.msg ?? m.member?.status ?? JSON.stringify(m.active));
   if (process.env.DEBUG)
     for (const m of msgs) if (m.t === "ws_msg" && m.msg.from === codex) console.log("  ·", m.msg.kind, m.msg.name ?? "", (m.msg.summary ?? m.msg.text ?? "").slice(0, 160));
+  const cu = msgs.findLast((m) => m.t === "ws_msg" && m.msg.from === codex && m.msg.turn && m.msg.usage);
+  check(cu?.msg.usage.output > 0, `codex turn usage recorded (${JSON.stringify(cu?.msg.usage)})`);
   const usedTool = msgs.some((m) => m.t === "ws_msg" && m.msg.from === codex && m.msg.kind === "tool" && /doc_read/.test(m.msg.name + m.msg.summary));
   check(usedTool, "codex called doc_read");
   console.log("  codex said:", answer?.msg.text.slice(0, 200));

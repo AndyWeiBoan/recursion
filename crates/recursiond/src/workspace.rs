@@ -79,8 +79,25 @@ pub struct Message {
     pub to: Vec<String>,
     #[serde(default)]
     pub streaming: bool,
+    /// First message of an agent's turn: starts a new header row in the UI.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn: bool,
+    /// What the whole turn cost; set on the turn's first message when the turn ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TurnUsage>,
     #[serde(flatten)]
     pub body: Body,
+}
+
+/// Tokens used by one agent turn. `input` includes cached tokens; `cached` is the cache-read part.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TurnUsage {
+    pub input: u64,
+    pub cached: u64,
+    pub output: u64,
+    /// Claude reports a price; Codex (subscription) does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -228,7 +245,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

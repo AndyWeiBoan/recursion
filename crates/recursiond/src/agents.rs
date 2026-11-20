@@ -4,7 +4,7 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
-use crate::workspace::{mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, Workspace};
+use crate::workspace::{mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, TurnUsage, Workspace};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -90,6 +90,8 @@ struct Runtime {
     cwd: String,
     roster_version: u64,
     roster_seen: HashMap<String, u64>,
+    /// member → id of the first message of its turn in progress.
+    turn_first: HashMap<String, String>,
 }
 
 pub struct Hub {
@@ -115,7 +117,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, usage: None, body }
 }
 
 impl Hub {
@@ -152,6 +154,14 @@ impl Hub {
         let list = models::list(&self.env().await, kind).await?;
         cache.insert(key, (std::time::Instant::now(), list.clone()));
         Ok(list)
+    }
+
+    /// Close an agent's turn: record what it cost on the turn's first message.
+    fn finish_turn(&self, panel: &str, member: &str, usage: Option<TurnUsage>) {
+        let first = self.rt(panel, |r| r.turn_first.remove(member));
+        if let (Some(id), Some(u)) = (first, usage) {
+            self.update_msg(panel, &id, |m| m.usage = Some(u));
+        }
     }
 
     pub fn set_port(&self, port: u16) {
@@ -226,7 +236,15 @@ impl Hub {
         self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws, "round": { "active": round["active"], "queued": round["queued"] } }))
     }
 
-    fn push_msg(&self, panel: &str, msg: Message) -> Message {
+    fn push_msg(&self, panel: &str, mut msg: Message) -> Message {
+        // The first thing an agent says in a turn opens it (the UI starts a new header there).
+        let speaking = msg.from != "you" && !matches!(msg.body, Body::System { .. }) && self.with_ws(panel, |ws| ws.members.iter().any(|m| m.id == msg.from && m.status != MemberStatus::Idle));
+        if speaking {
+            msg.turn = self.rt(panel, |r| !r.turn_first.contains_key(&msg.from));
+            if msg.turn {
+                self.rt(panel, |r| r.turn_first.insert(msg.from.clone(), msg.id.clone()));
+            }
+        }
         let m = self.with_ws(panel, |ws| ws.push(msg));
         self.emit(json!({ "t": "ws_msg", "panel": panel, "msg": &m }));
         self.mark_dirty(panel);
@@ -637,6 +655,7 @@ impl Hub {
         }
         text.push_str(&batch.join("\n\n"));
 
+        self.rt(panel, |r| r.turn_first.remove(&m.id));
         let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
         if !running {
             match m.kind {
@@ -734,6 +753,8 @@ struct ClaudeReader {
     member: String,
     cwd: String,
     base_cost: f64,
+    /// `total_cost_usd` is cumulative for the process; this is its value at the last turn end.
+    last_cost: f64,
     /// content block index → our message id, for the message currently streaming
     blocks: HashMap<u64, String>,
     tools: HashMap<String, String>,
@@ -744,7 +765,7 @@ struct ClaudeReader {
 
 impl ClaudeReader {
     fn new(hub: Arc<Hub>, panel: String, member: String, cwd: String, base_cost: f64) -> Self {
-        Self { hub, panel, member, cwd, base_cost, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new() }
+        Self { hub, panel, member, cwd, base_cost, last_cost: 0.0, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new() }
     }
 
     fn new_msg(&mut self, body: Body, streaming: bool) -> String {
@@ -909,6 +930,18 @@ impl ClaudeReader {
                         m.cost_usd = base + c;
                     }
                 });
+                let u = &v["usage"];
+                let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                let usage = TurnUsage {
+                    input: n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens"),
+                    cached: n("cache_read_input_tokens"),
+                    output: n("output_tokens"),
+                    cost_usd: cost.map(|c| (c - self.last_cost).max(0.0)),
+                };
+                if let Some(c) = cost {
+                    self.last_cost = c;
+                }
+                hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
                 if v["is_error"].as_bool().unwrap_or(false) && v["subtype"] != "error_during_execution" {
                     let text = v["result"].as_str().unwrap_or("Claude 回報錯誤").to_string();
                     hub.system(&panel, &member, text, true);

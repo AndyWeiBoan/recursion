@@ -272,6 +272,7 @@ body.dragging iframe, body.dragging .xterm { pointer-events: none; }
 .agent-col > * { max-width: 100%; }
 .name { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--dim); font-family: var(--mono); }
 .name b { font-size: 12.5px; }
+.name .usage { color: #8a8d99; }
 .mention { color: #ffb46b; background: #ffb46b1f; border-radius: 4px; padding: 0 3px; }
 .bubble.you .mention { color: #fff; background: #ffffff26; }
 .m-tool { padding: 2px 2px; }

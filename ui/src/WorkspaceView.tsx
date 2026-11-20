@@ -3,7 +3,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { onReconnect, openExternal, send, useModels, useWorkspace } from "./client";
-import type { AgentKind, Member, Msg } from "./types";
+import type { AgentKind, Member, Msg, TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -48,6 +48,23 @@ const STATUS_LABEL: Record<Member["status"], string> = {
 function time(ts: number) {
   const d = new Date(ts);
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function tokens(n: number) {
+  return n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(n < 1e4 ? 1 : 0)}k` : `${(n / 1e6).toFixed(1)}M`;
+}
+
+function UsageTag({ u }: { u: TurnUsage }) {
+  const cost = u.cost_usd === undefined ? "" : u.cost_usd < 0.01 ? " · <$0.01" : ` · $${u.cost_usd.toFixed(2)}`;
+  const detail = `這一輪：輸入 ${u.input.toLocaleString()} tokens（其中快取 ${u.cached.toLocaleString()}）、輸出 ${u.output.toLocaleString()} tokens${
+    u.cost_usd === undefined ? "" : `、約 $${u.cost_usd.toFixed(4)}`
+  }`;
+  return (
+    <span className="usage" title={detail}>
+      {tokens(u.input + u.output)} tokens
+      {cost}
+    </span>
+  );
 }
 
 export function WorkspaceView({ panel, focused }: { panel: string; focused: boolean }) {
@@ -266,7 +283,7 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
     >
       {messages.map((m, i) => {
         const prev = messages[i - 1];
-        const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard";
+        const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
         return <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} />;
       })}
       {waiting.map((b) => (
@@ -415,6 +432,7 @@ const MessageView = memo(function MessageView({
             <b style={{ color: who ? colorFor(who.id) : undefined }}>@{who?.alias ?? "agent"}</b>
             {who && <span>{who.model ?? who.kind}</span>}
             <span>{time(m.ts)}</span>
+            {m.usage && <UsageTag u={m.usage} />}
           </div>
         )}
         {body}

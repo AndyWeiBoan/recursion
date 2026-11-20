@@ -96,7 +96,15 @@ export interface Member {
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean } & (
+/** Tokens one agent turn used; `input` includes `cached`. Codex has no price. */
+export interface TurnUsage {
+  input: number;
+  cached: number;
+  output: number;
+  cost_usd?: number;
+}
+
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }

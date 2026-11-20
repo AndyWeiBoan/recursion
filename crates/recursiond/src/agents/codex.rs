@@ -5,7 +5,7 @@
 //! `item/fileChange/requestApproval`) and are answered from the permission cards.
 
 use super::{group_prompt, msg, Hub, PendingPerm, Proc};
-use crate::workspace::{Body, Member, MemberStatus, PermState};
+use crate::workspace::{Body, Member, MemberStatus, PermState, TurnUsage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -198,11 +198,13 @@ struct Reader {
     items: HashMap<String, String>,
     turn_text: String,
     turn_text_ids: Vec<String>,
+    /// Sum of per-request usage (`tokenUsage.last`) since the turn started.
+    turn_usage: TurnUsage,
 }
 
 impl Reader {
     fn new(hub: Arc<Hub>, panel: String, member: String, cwd: String, rpc: Arc<Rpc>) -> Self {
-        Reader { hub, panel, member, cwd, rpc, items: HashMap::new(), turn_text: String::new(), turn_text_ids: Vec::new() }
+        Reader { hub, panel, member, cwd, rpc, items: HashMap::new(), turn_text: String::new(), turn_text_ids: Vec::new(), turn_usage: TurnUsage::default() }
     }
 
     fn push(&mut self, item_id: &str, body: Body, streaming: bool) -> String {
@@ -385,8 +387,17 @@ impl Reader {
                 let text = params["error"]["message"].as_str().or(params["message"].as_str()).unwrap_or("Codex 回報錯誤").to_string();
                 hub.system(&panel, &member, text, true);
             }
+            "thread/tokenUsage/updated" => {
+                let last = &params["tokenUsage"]["last"];
+                let n = |k: &str| last[k].as_u64().unwrap_or(0);
+                self.turn_usage.input += n("inputTokens");
+                self.turn_usage.cached += n("cachedInputTokens");
+                self.turn_usage.output += n("outputTokens");
+            }
             "turn/completed" => {
                 let turn = &params["turn"];
+                let usage = std::mem::take(&mut self.turn_usage);
+                hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
                 *self.rpc.turn_id.lock().unwrap() = None;
                 if turn["status"] == "failed" {
                     let text = turn["error"]["message"].as_str().unwrap_or("Codex 這一輪失敗了").to_string();
