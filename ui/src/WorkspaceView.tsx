@@ -5,7 +5,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
 import { onAddAgentRequest, onReconnect, openExternal, send, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
-import { chatsOf, leaves, type AgentKind, type Member, type Msg, type TurnUsage } from "./types";
+import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -66,6 +66,40 @@ function UsageTag({ u }: { u: TurnUsage }) {
       {tokens(u.input + u.output)} tokens
       {cost}
     </span>
+  );
+}
+
+/** What a doc page sent back, as a card: field → value when it is a JSON object, text otherwise. */
+function DocSubmission({ via, panel }: { via: DocVia; panel: string }) {
+  let fields: [string, string][] | null = null;
+  try {
+    const v = JSON.parse(via.data);
+    if (v && typeof v === "object" && !Array.isArray(v))
+      fields = Object.entries(v).map(([k, x]) => [k, Array.isArray(x) ? x.join("、") : typeof x === "object" && x !== null ? JSON.stringify(x) : String(x)]);
+  } catch {}
+  return (
+    <div className="doc-sub">
+      <button className="doc-sub-head" onClick={() => send({ t: "doc_open", panel, doc: via.doc })} title="打開這份文件">
+        <span className="m-doc-ic" aria-hidden="true">
+          ▤
+        </span>
+        <span>
+          你在<b>「{via.title}」</b>送出
+        </span>
+      </button>
+      {fields ? (
+        <dl className="doc-sub-fields">
+          {fields.map(([k, v]) => (
+            <div key={k}>
+              <dt>{k}</dt>
+              <dd>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <div className="doc-sub-text">{via.data}</div>
+      )}
+    </div>
   );
 }
 
@@ -380,7 +414,7 @@ const MessageView = memo(function MessageView({
     return (
       <div className="row you">
         <div className="bubble-col">
-          <div className="bubble you" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />
+          {m.via ? <DocSubmission via={m.via} panel={panel} /> : <div className="bubble you" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />}
           <div className="meta">
             → {to} · {time(m.ts)}
           </div>

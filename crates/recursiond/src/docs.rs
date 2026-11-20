@@ -46,6 +46,10 @@ fn tools() -> Value {
 Use it for anything long or visual: reports, big tables, comparisons, diagrams (inline SVG, or Mermaid from a CDN), dashboards, \
 interactive explainers. Write one complete, self-contained HTML page; scripts and CDN libraries are allowed. \
 Pass `id` to replace an existing document (same card, updated content) instead of creating a new one. \
+The page can talk back: `recursion.reply(data)` sends `data` (string or JSON) to you as the human's next message, \
+so send only what the human chose or entered (e.g. {\"database\": \"SQLite\"}), not your own text; you answer after it arrives. \
+`recursion.sendPrompt(text)` posts `text` to the whole chat as the human. Call them from a button or form submit, \
+e.g. to collect choices or answers from a form you designed. \
 Keep your chat reply short and point to the document.",
             "inputSchema": {
                 "type": "object",
@@ -113,7 +117,7 @@ impl App {
                         return text(format!("No document with id `{id}`. Omit `id` to create a new one."), true);
                     }
                 }
-                let written = self.state.lock().unwrap().write_doc(&session, id, title, alias.to_string(), now_ms());
+                let written = self.state.lock().unwrap().write_doc(&session, id, title, alias.to_string(), panel, member, now_ms());
                 let (doc, created) = match written {
                     Ok(r) => r,
                     Err(e) => return text(e.to_string(), true),
@@ -160,6 +164,53 @@ To revise it, call doc_write again with id \"{}\".",
             m => return Some(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("method not found: {m}") } })),
         };
         Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    }
+}
+
+const MAX_PAGE_MESSAGE: usize = 8000;
+const PAGE_MESSAGE_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl App {
+    /// A doc page called `recursion.reply` / `recursion.sendPrompt`. It is posted as the human
+    /// (the human clicked something in it), labelled with the doc, so nothing happens unseen.
+    pub async fn doc_action(&self, session: &str, doc: &str, action: &str, data: &str) -> Result<(), String> {
+        let (d, cwd) = {
+            let st = self.state.lock().unwrap();
+            let s = st.sessions.iter().find(|s| s.id == session).ok_or("找不到 session")?;
+            (s.docs.iter().find(|d| d.id == doc).cloned().ok_or("找不到文件")?, s.cwd.clone())
+        };
+        // A page script could loop; one message per doc every couple of seconds is plenty for clicks.
+        {
+            let mut last = self.doc_last.lock().unwrap();
+            let now = std::time::Instant::now();
+            if last.get(doc).is_some_and(|t| now.duration_since(*t) < PAGE_MESSAGE_GAP) {
+                return Err(format!("文件「{}」送訊息太快了，已略過", d.title));
+            }
+            last.insert(doc.to_string(), now);
+        }
+        let data = data.trim();
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.chars().count() > MAX_PAGE_MESSAGE {
+            return Err(format!("文件「{}」送出的內容太長（上限 {MAX_PAGE_MESSAGE} 字）", d.title));
+        }
+        let chat_alive = self.state.lock().unwrap().panels.get(&d.chat).is_some_and(|p| p.kind == crate::model::PanelKind::Workspace);
+        if !chat_alive {
+            return Err(format!("寫這份文件的群聊已經關掉了，「{}」的訊息沒有送出", d.title));
+        }
+        let body = if data.contains('\n') || data.starts_with('{') || data.starts_with('[') { format!("```\n{data}\n```") } else { data.to_string() };
+        let text = match action {
+            "reply" => {
+                // To whoever wrote it, under their current name; everyone if they left.
+                let to = self.hub.alias_of(&d.chat, &d.member).map(|a| format!("@{a} ")).unwrap_or_default();
+                format!("{to}（來自文件「{}」）\n{body}", d.title)
+            }
+            "prompt" => format!("（來自文件「{}」）\n{body}", d.title),
+            other => return Err(format!("未知的文件動作：{other}")),
+        };
+        let via = crate::workspace::DocVia { doc: d.id.clone(), title: d.title.clone(), data: data.to_string() };
+        self.hub.send(&d.chat, text, cwd, Some(via)).await
     }
 }
 

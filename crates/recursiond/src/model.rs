@@ -68,6 +68,11 @@ pub struct Doc {
     pub author: String,
     pub rev: u64,
     pub updated: u64,
+    /// Chat panel and member id of the last writer: where the page's `recursion.reply` goes.
+    #[serde(default)]
+    pub chat: String,
+    #[serde(default)]
+    pub member: String,
 }
 
 /// Browser panels show a doc when their url is `doc:<id>`.
@@ -387,16 +392,18 @@ impl State {
 
     /// Create or replace a doc's metadata. `id: None` (or an unknown id) creates a new doc.
     /// Returns the doc and whether it is new.
-    pub fn write_doc(&mut self, session: &str, id: Option<&str>, title: String, author: String, now: u64) -> Res<(Doc, bool)> {
+    pub fn write_doc(&mut self, session: &str, id: Option<&str>, title: String, author: String, chat: &str, member: &str, now: u64) -> Res<(Doc, bool)> {
         let s = self.session_mut(session)?;
         if let Some(d) = id.and_then(|id| s.docs.iter_mut().find(|d| d.id == id)) {
             d.title = title;
             d.author = author;
             d.rev += 1;
             d.updated = now;
+            d.chat = chat.into();
+            d.member = member.into();
             return Ok((d.clone(), false));
         }
-        let d = Doc { id: new_id(), title, author, rev: 1, updated: now };
+        let d = Doc { id: new_id(), title, author, rev: 1, updated: now, chat: chat.into(), member: member.into() };
         s.docs.push(d.clone());
         Ok((d, true))
     }
@@ -558,14 +565,14 @@ mod tests {
         let mut st = State::default();
         let sid = st.create_session("s".into(), "/tmp".into(), PanelKind::Workspace);
         let chat = st.sessions[0].windows[0].focus.clone();
-        let (d, created) = st.write_doc(&sid, None, "T".into(), "claude".into(), 1).unwrap();
+        let (d, created) = st.write_doc(&sid, None, "T".into(), "claude".into(), &chat, "m1", 1).unwrap();
         assert!(created);
         let p = st.open_doc(&chat, &d.id, false).unwrap();
         assert_eq!(st.panels[&p].url.as_deref(), Some(doc_url(&d.id).as_str()));
         assert_eq!(st.sessions[0].windows[0].focus, chat, "focus stays on the chat");
         assert_eq!(st.open_doc(&chat, &d.id, true).unwrap(), p, "reuses the open panel");
         assert_eq!(st.sessions[0].windows[0].focus, p);
-        let (d2, created) = st.write_doc(&sid, Some(&d.id), "T2".into(), "codex".into(), 2).unwrap();
+        let (d2, created) = st.write_doc(&sid, Some(&d.id), "T2".into(), "codex".into(), &chat, "m2", 2).unwrap();
         assert!(!created);
         assert_eq!((d2.rev, d2.author.as_str(), st.sessions[0].docs.len()), (2, "codex", 1));
     }

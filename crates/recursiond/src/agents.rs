@@ -4,7 +4,7 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
-use crate::workspace::{mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, TurnUsage, Workspace};
+use crate::workspace::{display_tool_name, mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, TurnUsage, Workspace};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -117,7 +117,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, usage: None, body }
 }
 
 impl Hub {
@@ -187,6 +187,10 @@ impl Hub {
             }
         };
         format!("http://127.0.0.1:{}/mcp/{key}", self.port.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn alias_of(&self, panel: &str, member: &str) -> Option<String> {
+        self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone()))
     }
 
     /// Who an MCP key belongs to: (panel, member id, alias).
@@ -403,7 +407,7 @@ impl Hub {
 
     /// A human message. It is shown right away; the round starts once the human has been quiet
     /// for MERGE_WINDOW_MS, or — if a round is running — right after that round ends.
-    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String) -> Result<(), String> {
+    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>) -> Result<(), String> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Ok(());
@@ -416,6 +420,7 @@ impl Hub {
         let all = targeted.is_empty() || targeted.len() == members.len();
         let mut m = msg("you", Body::Text { text }, false);
         m.to = if all { vec![] } else { targeted.clone() };
+        m.via = via;
         self.push_msg(panel, m);
         let gen = self.rt(panel, |r| {
             r.cwd = cwd.clone();
@@ -854,7 +859,7 @@ impl ClaudeReader {
                             }
                             "tool_use" => {
                                 let tid = block["id"].as_str().unwrap_or("").to_string();
-                                let name = block["name"].as_str().unwrap_or("tool").to_string();
+                                let name = display_tool_name(block["name"].as_str().unwrap_or("tool"));
                                 let id = self.new_msg(Body::Tool { tool_use_id: tid.clone(), name, summary: String::new(), detail: String::new(), result: None, is_error: false }, true);
                                 self.tools.insert(tid, id.clone());
                                 self.blocks.insert(idx, id);
@@ -913,7 +918,7 @@ impl ClaudeReader {
                                     }
                                 }),
                                 None => {
-                                    let id = self.new_msg(Body::Tool { tool_use_id: tid.clone(), name, summary, detail, result: None, is_error: false }, false);
+                                    let id = self.new_msg(Body::Tool { tool_use_id: tid.clone(), name: display_tool_name(&name), summary, detail, result: None, is_error: false }, false);
                                     self.tools.insert(tid, id);
                                 }
                             }
@@ -1025,6 +1030,11 @@ fn group_prompt(alias: &str) -> String {
          - For anything long or visual (reports, big tables, diagrams, dashboards), call the `doc_write` tool (Recursion MCP server) \
          to save an HTML document: the human gets a card that opens it in its own panel, and every agent in the chat can read it \
          with `doc_read`. Then keep your chat reply short. Revise a document by passing its id instead of making a new one.\n\
+         - Documents can talk back. Inside the page, `recursion.reply(data)` delivers `data` (string or JSON) to you as the \
+         human's next message, and `recursion.sendPrompt(text)` posts to the whole chat. So when you want the human to choose, \
+         fill in or answer something, make a document with a form or buttons that calls `recursion.reply(...)` on submit, \
+         sending only what the human picked or typed (e.g. `{{\"database\": \"SQLite\"}}`); your advice comes after, in the chat. \
+         Never ask them to copy text back into the chat.\n\
          - Reply in the human's language."
     )
 }

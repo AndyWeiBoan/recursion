@@ -87,11 +87,22 @@ pub struct Message {
     /// First message of an agent's turn: starts a new header row in the UI.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub turn: bool,
+    /// Sent from a doc page (`recursion.reply` / `sendPrompt`) rather than typed: shown as a card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<DocVia>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
     #[serde(flatten)]
     pub body: Body,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocVia {
+    pub doc: String,
+    pub title: String,
+    /// What the page sent, as it sent it (the message text adds the label and @mention for agents).
+    pub data: String,
 }
 
 /// Tokens used by one agent turn. `input` includes cached tokens; `cached` is the cache-read part.
@@ -181,6 +192,21 @@ impl Workspace {
 }
 
 /// One-line summary of a tool call for the transcript, plus a fuller detail string.
+/// Our own MCP tools, however the CLI spells them (`mcp__recursion__doc_write`, `recursion.doc_write`).
+fn recursion_tool(name: &str) -> Option<&str> {
+    name.strip_prefix("mcp__recursion__").or_else(|| name.strip_prefix("recursion."))
+}
+
+/// The tool name as shown in the chat.
+pub fn display_tool_name(name: &str) -> String {
+    match recursion_tool(name) {
+        Some("doc_write") => "寫文件".into(),
+        Some("doc_read") => "讀文件".into(),
+        Some("doc_list") => "列出文件".into(),
+        _ => name.to_string(),
+    }
+}
+
 pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (String, String) {
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let rel = |p: String| {
@@ -196,6 +222,9 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
         "WebSearch" => s("query"),
         "Task" | "Agent" => s("description"),
         "TodoWrite" => "更新待辦清單".into(),
+        _ if recursion_tool(name) == Some("doc_write") => format!("「{}」{}", s("title"), if s("id").is_empty() { "" } else { "（更新）" }),
+        _ if recursion_tool(name) == Some("doc_read") => s("id"),
+        _ if recursion_tool(name) == Some("doc_list") => String::new(),
         _ => {
             let j = input.to_string();
             j.chars().take(120).collect()
@@ -208,6 +237,7 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
         }
         "Write" => s("content"),
         "Edit" => format!("- {}\n+ {}", s("old_string"), s("new_string")),
+        _ if recursion_tool(name) == Some("doc_write") => s("html"),
         _ => serde_json::to_string_pretty(input).unwrap_or_default(),
     };
     let one_line: String = summary.lines().next().unwrap_or("").chars().take(200).collect();
@@ -250,7 +280,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

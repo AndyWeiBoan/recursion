@@ -5,7 +5,7 @@
 //! `item/fileChange/requestApproval`) and are answered from the permission cards.
 
 use super::{group_prompt, msg, Hub, PendingPerm, Proc};
-use crate::workspace::{Body, Member, MemberStatus, PermState, TurnUsage};
+use crate::workspace::{display_tool_name, summarize_tool, tool_result_text, Body, Member, MemberStatus, PermState, TurnUsage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -293,8 +293,8 @@ impl Reader {
                     }
                     "mcpToolCall" => {
                         let name = format!("{}.{}", item["server"].as_str().unwrap_or("mcp"), item["tool"].as_str().unwrap_or("tool"));
-                        let args: String = item["arguments"].to_string().chars().take(120).collect();
-                        self.push(&id, Body::Tool { tool_use_id: id.clone(), name, summary: args, detail: item["arguments"].to_string(), result: None, is_error: false }, true);
+                        let (summary, detail) = summarize_tool(&name, &item["arguments"], &self.cwd);
+                        self.push(&id, Body::Tool { tool_use_id: id.clone(), name: display_tool_name(&name), summary, detail, result: None, is_error: false }, true);
                     }
                     "webSearch" => {
                         self.push(&id, Body::Tool { tool_use_id: id.clone(), name: "WebSearch".into(), summary: item["query"].as_str().unwrap_or("").to_string(), detail: String::new(), result: None, is_error: false }, true);
@@ -359,7 +359,10 @@ impl Reader {
                         });
                     }
                     _ => {
-                        let text: String = item["result"].to_string().chars().take(2000).collect();
+                        // MCP results are {content: [{type: "text", text}]}; show the text, not the envelope.
+                        let r = &item["result"];
+                        let text = if r["content"].is_array() { tool_result_text(&r["content"]) } else if r.is_null() { item["error"]["message"].as_str().unwrap_or("").to_string() } else { r.to_string() };
+                        let text: String = text.chars().take(2000).collect();
                         hub.update_msg(&panel, &id, |m| {
                             m.streaming = false;
                             if let Body::Tool { result, .. } = &mut m.body {

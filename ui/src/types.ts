@@ -79,7 +79,8 @@ export type Cmd =
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
   | { t: "ws_roster" }
-  | { t: "doc_get"; session: string; doc: string };
+  | { t: "doc_get"; session: string; doc: string }
+  | { t: "doc_action"; session: string; doc: string; action: "reply" | "prompt"; data: string };
 
 export type AgentKind = "claude" | "codex";
 
@@ -108,7 +109,14 @@ export interface TurnUsage {
   cost_usd?: number;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; usage?: TurnUsage } & (
+/** A message a doc page sent in the human's name (`recursion.reply` / `sendPrompt`). */
+export interface DocVia {
+  doc: string;
+  title: string;
+  data: string;
+}
+
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }

@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 11;
+pub const PROTOCOL: u32 = 13;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -57,6 +57,8 @@ struct App {
     save: Notify,
     term_infos: Mutex<HashMap<String, TermInfo>>,
     hub: Arc<agents::Hub>,
+    /// Last time each doc page sent a message (rate limit).
+    doc_last: Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// Messages from a UI client.
@@ -94,6 +96,7 @@ enum In {
     DocOpen { panel: String, doc: String },
     WsRoster,
     DocGet { session: String, doc: String },
+    DocAction { session: String, doc: String, action: String, data: String },
 }
 
 /// Messages to a UI client.
@@ -214,6 +217,10 @@ impl App {
             DocOpen { panel, doc } => {
                 self.state.lock().unwrap().open_doc(&panel, &doc, true).map_err(e)?;
             }
+            DocAction { session, doc, action, data } => {
+                self.doc_action(&session, &doc, &action, &data).await?;
+                changed = false;
+            }
             DocGet { session, doc } => {
                 reply = Some(serde_json::to_string(&Out::Doc { session: &session, doc: &doc, html: docs::read(&session, &doc) }).unwrap());
                 changed = false;
@@ -240,7 +247,7 @@ impl App {
             }
             WsSend { panel, text } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.send(&panel, text, cwd).await?;
+                self.hub.send(&panel, text, cwd, None).await?;
                 changed = false;
             }
             WsPerm { request_id, decision } => {
@@ -400,6 +407,7 @@ async fn main() -> anyhow::Result<()> {
         save: Notify::new(),
         term_infos: Mutex::new(HashMap::new()),
         hub: agents::Hub::new(),
+        doc_last: Default::default(),
     });
 
     // Debounced saver.

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
 import { requestKind } from "./picker";
 import { WorkspaceView } from "./WorkspaceView";
@@ -180,13 +180,43 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
   );
 }
 
+/** Gives a doc page `recursion.reply(data)` and `recursion.sendPrompt(text)`; both reach us via postMessage. */
+const DOC_BRIDGE = `<script>(function () {
+  function post(action, data) {
+    if (typeof data !== "string") { try { data = JSON.stringify(data, null, 2); } catch (e) { data = String(data); } }
+    parent.postMessage({ recursion: 1, action: action, data: data }, "*");
+  }
+  window.recursion = { reply: function (d) { post("reply", d); }, sendPrompt: function (t) { post("prompt", t); } };
+})();</script>`;
+
+/** Put the bridge first thing in <head>, keeping a leading doctype (standards mode) intact. */
+function withBridge(html: string) {
+  const head = /<head[^>]*>/i.exec(html);
+  if (head) return html.slice(0, head.index + head[0].length) + DOC_BRIDGE + html.slice(head.index + head[0].length);
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(html);
+  if (doctype) return doctype[0] + DOC_BRIDGE + html.slice(doctype[0].length);
+  return DOC_BRIDGE + html;
+}
+
 /** A session doc: agent-written HTML in a sandboxed iframe. No `allow-same-origin`, so its scripts
- *  run in an opaque origin and can't reach this page, the daemon token or Tauri. */
+ *  run in an opaque origin and can't reach this page, the daemon token or Tauri; all they can do
+ *  is post a message, which goes to the chat in the human's name, labelled with the doc. */
 function DocBody({ session, doc, rev }: { session: string; doc: string; rev: number }) {
   const html = useDocHtml(session, doc, rev);
-  if (html === null) return <div className="br-empty"><p>這份文件已經不存在。</p></div>;
-  if (html === undefined) return <div className="br-empty"><p className="dim">載入中…</p></div>;
-  return <iframe className="doc-frame" title={doc} srcDoc={html} sandbox="allow-scripts allow-forms allow-modals" />;
+  const frame = useRef<HTMLIFrameElement>(null);
+  const src = useMemo(() => (html ? withBridge(html) : html), [html]);
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== frame.current?.contentWindow || e.data?.recursion !== 1) return;
+      const { action, data } = e.data;
+      if ((action === "reply" || action === "prompt") && typeof data === "string") send({ t: "doc_action", session, doc, action, data });
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [session, doc]);
+  if (src === null) return <div className="br-empty"><p>這份文件已經不存在。</p></div>;
+  if (src === undefined) return <div className="br-empty"><p className="dim">載入中…</p></div>;
+  return <iframe ref={frame} className="doc-frame" title={doc} srcDoc={src} sandbox="allow-scripts allow-forms allow-modals" />;
 }
 
 function BrowserBody({ panel }: { panel: Panel }) {
