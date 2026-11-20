@@ -1,0 +1,32 @@
+{
+  "name": "recursion",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "vite": "vite",
+    "build:ui": "vite build",
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
+    "app": "tauri build",
+    "smoke": "cargo build -p recursiond && node scripts/smoke.mjs",
+    "test": "cargo test -p recursiond && pnpm typecheck && pnpm smoke"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.5",
+    "@tauri-apps/plugin-dialog": "2.8.4",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.6",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.7.0",
+    "typescript": "5.9.3",
+    "vite": "5.4.21"
+  }
+}

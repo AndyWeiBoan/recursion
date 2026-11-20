@@ -1,0 +1,359 @@
+//! recursiond — the long-running Recursion service.
+//!
+//! Owns the workspace model and all terminal processes. UI clients connect over a
+//! localhost WebSocket (port + token are written to ~/.recursion/daemon.json).
+
+mod model;
+mod pty;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, State as AxState};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
+use base64::Engine;
+use futures_util::{SinkExt, StreamExt};
+use model::{Dir, PanelKind, State};
+use pty::{TermEvent, TermInfo, Terms};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{broadcast, Notify};
+
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+fn home() -> PathBuf {
+    if let Ok(dir) = std::env::var("RECURSION_HOME") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir().expect("no home dir").join(".recursion")
+}
+
+#[derive(Serialize, Deserialize)]
+struct Discovery {
+    port: u16,
+    token: String,
+    pid: u32,
+    version: String,
+}
+
+struct App {
+    state: Mutex<State>,
+    terms: Terms,
+    token: String,
+    /// Fires after every model change: broadcasts a snapshot and schedules a save.
+    changed: broadcast::Sender<()>,
+    save: Notify,
+    term_infos: Mutex<HashMap<String, TermInfo>>,
+}
+
+/// Messages from a UI client.
+#[derive(Deserialize, Debug)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum In {
+    SessionCreate { name: String, cwd: String },
+    SessionDelete { session: String },
+    SessionRename { session: String, name: String },
+    SessionGroup { session: String, group: String },
+    SessionSelect { session: String },
+    WindowCreate { session: String, kind: Option<PanelKind> },
+    WindowSelect { session: String, window: String },
+    WindowRename { session: String, window: String, name: String },
+    WindowClose { session: String, window: String },
+    PanelSplit { panel: String, dir: Dir, kind: Option<PanelKind> },
+    PanelClose { panel: String },
+    PanelFocus { panel: String },
+    PanelKind { panel: String, kind: PanelKind },
+    PanelUrl { panel: String, url: String },
+    LayoutResize { window: String, split: String, sizes: Vec<f32> },
+    TermAttach { panel: String, cols: u16, rows: u16 },
+    TermInput { panel: String, data: String },
+    TermResize { panel: String, cols: u16, rows: u16 },
+    TermRestart { panel: String, cols: u16, rows: u16 },
+}
+
+/// Messages to a UI client.
+#[derive(Serialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+enum Out<'a> {
+    State { state: &'a State, terms: &'a HashMap<String, TermInfo> },
+    Replay { panel: &'a str, data: String },
+    Out { panel: &'a str, data: String },
+    Exit { panel: &'a str },
+    Error { msg: String },
+}
+
+impl App {
+    fn snapshot(&self) -> String {
+        let st = self.state.lock().unwrap();
+        let infos = self.term_infos.lock().unwrap();
+        serde_json::to_string(&Out::State { state: &st, terms: &infos }).unwrap()
+    }
+
+    fn mark_changed(&self) {
+        let _ = self.changed.send(());
+        self.save.notify_one();
+    }
+
+    fn save_now(&self) {
+        let json = serde_json::to_vec_pretty(&*self.state.lock().unwrap()).unwrap();
+        let path = home().join("state.json");
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    fn kill_panels(&self, panels: &[String]) {
+        panels.iter().for_each(|p| self.terms.kill(p));
+    }
+
+    /// Apply one client command. Returns an optional direct reply for the sender.
+    fn handle(&self, msg: In) -> Result<Option<String>, String> {
+        use In::*;
+        let e = |e: model::ModelError| e.to_string();
+        let mut changed = true;
+        let mut reply = None;
+        match msg {
+            SessionCreate { name, cwd } => {
+                self.state.lock().unwrap().create_session(name, cwd);
+            }
+            SessionDelete { session } => {
+                let removed = self.state.lock().unwrap().delete_session(&session).map_err(e)?;
+                self.kill_panels(&removed);
+            }
+            SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
+            SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
+            SessionSelect { session } => self.state.lock().unwrap().select_session(&session).map_err(e)?,
+            WindowCreate { session, kind } => {
+                self.state.lock().unwrap().create_window(&session, kind.unwrap_or(model::PanelKind::Terminal)).map_err(e)?;
+            }
+            WindowSelect { session, window } => self.state.lock().unwrap().select_window(&session, &window).map_err(e)?,
+            WindowRename { session, window, name } => {
+                self.state.lock().unwrap().rename_window(&session, &window, name).map_err(e)?
+            }
+            WindowClose { session, window } => {
+                let removed = self.state.lock().unwrap().close_window(&session, &window).map_err(e)?;
+                self.kill_panels(&removed);
+            }
+            PanelSplit { panel, dir, kind } => {
+                self.state.lock().unwrap().split_panel(&panel, dir, kind.unwrap_or(model::PanelKind::Terminal)).map_err(e)?;
+            }
+            PanelClose { panel } => {
+                let removed = self.state.lock().unwrap().close_panel(&panel).map_err(e)?;
+                self.kill_panels(&removed);
+            }
+            PanelFocus { panel } => self.state.lock().unwrap().focus_panel(&panel).map_err(e)?,
+            PanelKind { panel, kind } => {
+                self.state.lock().unwrap().set_panel_kind(&panel, kind).map_err(e)?;
+                if kind != model::PanelKind::Terminal {
+                    self.terms.kill(&panel);
+                }
+            }
+            PanelUrl { panel, url } => self.state.lock().unwrap().set_panel_url(&panel, url).map_err(e)?,
+            LayoutResize { window, split, sizes } => self.state.lock().unwrap().resize(&window, &split, &sizes).map_err(e)?,
+            TermAttach { panel, cols, rows } | TermRestart { panel, cols, rows } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                let back = self.terms.ensure(&panel, &cwd, cols.max(2), rows.max(2)).map_err(|e| e.to_string())?;
+                reply = Some(serde_json::to_string(&Out::Replay { panel: &panel, data: B64.encode(back) }).unwrap());
+                changed = false;
+            }
+            TermInput { panel, data } => {
+                self.terms.write(&panel, data.as_bytes());
+                changed = false;
+            }
+            TermResize { panel, cols, rows } => {
+                self.terms.resize(&panel, cols.max(2), rows.max(2));
+                changed = false;
+            }
+        }
+        if changed {
+            self.mark_changed();
+        }
+        Ok(reply)
+    }
+}
+
+#[derive(Deserialize)]
+struct Auth {
+    token: String,
+}
+
+async fn health(AxState(app): AxState<Arc<App>>, Query(q): Query<Auth>) -> impl IntoResponse {
+    if q.token == app.token {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::UNAUTHORIZED, "bad token")
+    }
+}
+
+async fn ws(ws: WebSocketUpgrade, AxState(app): AxState<Arc<App>>, Query(q): Query<Auth>) -> impl IntoResponse {
+    if q.token != app.token {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    ws.on_upgrade(move |socket| client(socket, app)).into_response()
+}
+
+async fn client(socket: WebSocket, app: Arc<App>) {
+    let (mut tx, mut rx) = socket.split();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let _ = out_tx.send(app.snapshot());
+
+    // Fan-in: model changes + terminal output → this client.
+    let mut changed = app.changed.subscribe();
+    let mut term_rx = app.terms.tx.subscribe();
+    let fan = {
+        let (app, out_tx) = (app.clone(), out_tx.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    r = changed.recv() => match r {
+                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => { let _ = out_tx.send(app.snapshot()); }
+                        Err(_) => break,
+                    },
+                    r = term_rx.recv() => match r {
+                        Ok(TermEvent::Output { panel, data }) => {
+                            let _ = out_tx.send(serde_json::to_string(&Out::Out { panel: &panel, data: B64.encode(data) }).unwrap());
+                        }
+                        Ok(TermEvent::Exit { panel }) => {
+                            let _ = out_tx.send(serde_json::to_string(&Out::Exit { panel: &panel }).unwrap());
+                            app.mark_changed();
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(_) => break,
+                    },
+                }
+            }
+        })
+    };
+    let writer = tokio::spawn(async move {
+        while let Some(m) = out_rx.recv().await {
+            if tx.send(Message::Text(m.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(Ok(msg)) = rx.next().await {
+        let Message::Text(text) = msg else { continue };
+        let reply = match serde_json::from_str::<In>(&text) {
+            Ok(cmd) => app.handle(cmd).unwrap_or_else(|e| Some(serde_json::to_string(&Out::Error { msg: e }).unwrap())),
+            Err(e) => Some(serde_json::to_string(&Out::Error { msg: format!("bad message: {e}") }).unwrap()),
+        };
+        if let Some(r) = reply {
+            let _ = out_tx.send(r);
+        }
+    }
+    fan.abort();
+    writer.abort();
+}
+
+fn load_state() -> State {
+    std::fs::read(home().join("state.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Is another daemon already serving? (discovery file + live health check)
+async fn existing_daemon() -> bool {
+    let Ok(raw) = std::fs::read(home().join("daemon.json")) else { return false };
+    let Ok(d) = serde_json::from_slice::<Discovery>(&raw) else { return false };
+    let url = format!("127.0.0.1:{}", d.port);
+    let Ok(Ok(mut s)) = tokio::time::timeout(std::time::Duration::from_millis(500), tokio::net::TcpStream::connect(&url)).await else {
+        return false;
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let req = format!("GET /health?token={} HTTP/1.0\r\nHost: localhost\r\n\r\n", d.token);
+    if s.write_all(req.as_bytes()).await.is_err() {
+        return false;
+    }
+    let mut buf = vec![0u8; 256];
+    let n = tokio::time::timeout(std::time::Duration::from_millis(500), s.read(&mut buf)).await.ok().and_then(|r| r.ok()).unwrap_or(0);
+    String::from_utf8_lossy(&buf[..n]).contains(" 200 ")
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
+    std::fs::create_dir_all(home())?;
+    if existing_daemon().await {
+        tracing::info!("recursiond already running");
+        return Ok(());
+    }
+
+    let token: String = {
+        use rand::Rng;
+        rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(32).map(char::from).collect()
+    };
+    let (changed, _) = broadcast::channel(64);
+    let app = Arc::new(App {
+        state: Mutex::new(load_state()),
+        terms: Terms::new(),
+        token: token.clone(),
+        changed,
+        save: Notify::new(),
+        term_infos: Mutex::new(HashMap::new()),
+    });
+
+    // Debounced saver.
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                app.save.notified().await;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                app.save_now();
+            }
+        });
+    }
+    // Foreground-process poller (lets the UI hand Ctrl+H/J/K/L to nvim).
+    {
+        let app = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                let infos = app.terms.infos();
+                let differs = *app.term_infos.lock().unwrap() != infos;
+                if differs {
+                    *app.term_infos.lock().unwrap() = infos;
+                    let _ = app.changed.send(());
+                }
+            }
+        });
+    }
+
+    let port: u16 = std::env::var("RECURSION_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let port = listener.local_addr()?.port();
+    let disc = Discovery { port, token, pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into() };
+    let disc_path = home().join("daemon.json");
+    std::fs::write(&disc_path, serde_json::to_vec_pretty(&disc)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&disc_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    tracing::info!(port, "recursiond listening");
+
+    let router = Router::new().route("/health", get(health)).route("/ws", get(ws)).with_state(app.clone());
+    let shutdown = {
+        let app = app.clone();
+        async move {
+            #[cfg(unix)]
+            {
+                let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+                tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
+            }
+            #[cfg(not(unix))]
+            let _ = tokio::signal::ctrl_c().await;
+            app.save_now();
+            app.terms.kill_all();
+            let _ = std::fs::remove_file(home().join("daemon.json"));
+        }
+    };
+    axum::serve(listener, router).with_graceful_shutdown(shutdown).await?;
+    Ok(())
+}

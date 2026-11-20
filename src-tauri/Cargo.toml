@@ -1,0 +1,20 @@
+[package]
+name = "recursion-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "recursion_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+libc = "0.2"
