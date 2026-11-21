@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 13;
+pub const PROTOCOL: u32 = 14;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -95,6 +95,9 @@ enum In {
     ModelsList { kind: AgentKind },
     DocOpen { panel: String, doc: String },
     WsRoster,
+    ThreadOpen { panel: String, msg: String, quote: String, text: String },
+    ThreadSend { panel: String, thread: String, text: String },
+    ThreadBring { panel: String, thread: String },
     DocGet { session: String, doc: String },
     DocAction { session: String, doc: String, action: String, data: String },
 }
@@ -204,6 +207,22 @@ impl App {
             }
             WsAttach { panel } => {
                 reply = Some(self.hub.snapshot(&panel).to_string());
+                changed = false;
+            }
+            ThreadOpen { panel, msg, quote, text } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                let id = self.hub.thread_open(&panel, &msg, &quote, &text, cwd).await?;
+                reply = Some(serde_json::json!({ "t": "thread_opened", "panel": panel, "thread": id }).to_string());
+                changed = false;
+            }
+            ThreadSend { panel, thread, text } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.thread_send(&panel, &thread, &text, cwd).await?;
+                changed = false;
+            }
+            ThreadBring { panel, thread } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.thread_bring(&panel, &thread, cwd).await?;
                 changed = false;
             }
             WsRoster => {

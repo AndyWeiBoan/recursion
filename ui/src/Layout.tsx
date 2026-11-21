@@ -5,7 +5,8 @@ import { WorkspaceView } from "./WorkspaceView";
 import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
 import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
-import { KIND_LABEL, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
+import { useZoomed } from "./threadsUI";
+import { KIND_LABEL, leaves, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
 interface Ctx {
   window: Window;
@@ -17,11 +18,11 @@ interface Ctx {
 }
 
 export function LayoutView({ ctx }: { ctx: Ctx }) {
-  return (
-    <div className="layout">
-      <NodeView node={ctx.window.root} ctx={ctx} />
-    </div>
-  );
+  // While a chat's thread drawer is open, that chat fills the window; the other panels are only
+  // hidden (terminals keep running) and come back exactly as they were when the drawer closes.
+  const zoomed = useZoomed();
+  const zoom = zoomed && leaves(ctx.window.root).includes(zoomed) ? ctx.panels[zoomed] : undefined;
+  return <div className="layout">{zoom ? <PanelView panel={zoom} ctx={ctx} /> : <NodeView node={ctx.window.root} ctx={ctx} />}</div>;
 }
 
 function NodeView({ node, ctx }: { node: Node; ctx: Ctx }) {

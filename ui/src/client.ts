@@ -1,5 +1,6 @@
 // Connection to recursiond plus a tiny external store for React.
 import { useEffect, useSyncExternalStore } from "react";
+import { setThreadView } from "./threadsUI";
 import type { AgentKind, Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "error";
@@ -82,6 +83,16 @@ export async function connect() {
           lastError = m.msg;
           console.warn("recursiond:", m.msg);
           toast(m.msg);
+          break;
+        case "ws_thread":
+          wsUpdate(m.panel, (w) => {
+            const list = w.threads ?? [];
+            const i = list.findIndex((x) => x.id === m.thread.id);
+            return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
+          });
+          break;
+        case "thread_opened":
+          setThreadView(m.panel, { kind: "thread", id: m.thread });
           break;
         case "ws_roster":
           for (const [panel, members] of Object.entries(m.panels)) rosterSet(panel, members as Member[]);

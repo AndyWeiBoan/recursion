@@ -15,6 +15,7 @@ use tokio::sync::broadcast;
 
 mod codex;
 mod models;
+mod threads;
 
 pub use models::ModelOption;
 
@@ -117,7 +118,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, usage: None, body }
 }
 
 impl Hub {
@@ -654,7 +655,7 @@ impl Hub {
     async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
         let (batch, upto) = self.with_ws(panel, |ws| {
             let names: HashMap<String, String> = ws.members.iter().map(|x| (x.id.clone(), x.alias.clone())).collect();
-            let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && x.from != m.id).collect();
+            let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && (x.from != m.id || x.from_thread.is_some())).collect();
             let upto = ws.next_seq;
             let lines: Vec<String> = unseen
                 .iter()
@@ -663,6 +664,12 @@ impl Hub {
                         let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
                         Some(format!("[human → {to}]: {text}"))
                     }
+                    Body::Text { text } if x.from_thread.is_some() => Some(format!(
+                        "[@{} — conclusion of thread #{}, brought back to the chat]: {}",
+                        names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()),
+                        x.from_thread.as_ref().map(|t| t.num).unwrap_or(0),
+                        text
+                    )),
                     Body::Text { text } => Some(format!("[@{}]: {}", names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), text)),
                     Body::Doc { doc, title, updated } => Some(format!(
                         "[@{} {} document `{doc}` \"{title}\" — read it with doc_read]",

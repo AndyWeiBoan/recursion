@@ -79,6 +79,9 @@ export type Cmd =
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
   | { t: "ws_roster" }
+  | { t: "thread_open"; panel: string; msg: string; quote: string; text: string }
+  | { t: "thread_send"; panel: string; thread: string; text: string }
+  | { t: "thread_bring"; panel: string; thread: string }
   | { t: "doc_get"; session: string; doc: string }
   | { t: "doc_action"; session: string; doc: string; action: "reply" | "prompt"; data: string };
 
@@ -116,7 +119,7 @@ export interface DocVia {
   data: string;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; usage?: TurnUsage } & (
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
@@ -126,9 +129,32 @@ export type Msg = { id: string; ts: number; from: string; seq: number; to?: stri
   | { kind: "doc"; doc: string; title: string; updated: boolean }
 );
 
+export type ThreadStatus = "replying" | "waiting" | "brought";
+
+export interface ThreadMsg {
+  /** "you", a member id, or "system". */
+  from: string;
+  text: string;
+  ts: number;
+}
+
+/** A side discussion about one main-chat message, in a fork of its author's conversation. */
+export interface Thread {
+  id: string;
+  num: number;
+  msg: string;
+  quote: string;
+  agent: string;
+  fork?: string | null;
+  messages: ThreadMsg[];
+  status: ThreadStatus;
+  updated: number;
+}
+
 export interface Workspace {
   members: Member[];
   messages: Msg[];
+  threads?: Thread[];
   round?: { active: boolean; queued: number };
 }
 

@@ -6,6 +6,7 @@ import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
+import { closeThreads, useZoomed } from "./threadsUI";
 import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
@@ -129,6 +130,11 @@ export default function App() {
     pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:")).map((p) => p.id)));
   }, [state]);
   useEffect(() => (pick ? overlay() : undefined), [pick]);
+  // A drawer's chat was closed or turned into something else: drop the zoom with it.
+  const zoomed = useZoomed();
+  useEffect(() => {
+    if (zoomed && state && state.panels[zoomed]?.kind !== "workspace") closeThreads(zoomed);
+  }, [state, zoomed]);
 
   return (
     <div className={`app${sidebar ? "" : " no-sidebar"}`}>

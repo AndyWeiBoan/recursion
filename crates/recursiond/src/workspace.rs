@@ -90,11 +90,20 @@ pub struct Message {
     /// Sent from a doc page (`recursion.reply` / `sendPrompt`) rather than typed: shown as a card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<DocVia>,
+    /// A thread's conclusion brought back to the main chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_thread: Option<ThreadRef>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
     #[serde(flatten)]
     pub body: Body,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadRef {
+    pub thread: String,
+    pub num: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -122,6 +131,50 @@ pub struct Workspace {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub next_seq: u64,
+    /// Side discussions about one message, each with a forked copy of its author's conversation.
+    #[serde(default)]
+    pub threads: Vec<Thread>,
+    #[serde(default)]
+    pub next_thread: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadStatus {
+    /// The agent is answering.
+    Replying,
+    /// The agent answered; the human's turn.
+    #[default]
+    Waiting,
+    /// Its conclusion was posted to the main chat.
+    Brought,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thread {
+    pub id: String,
+    /// Short number shown as #n, per chat.
+    pub num: u64,
+    /// The main-chat message it is about, and the part of it that was quoted.
+    pub msg: String,
+    pub quote: String,
+    /// Member who answers (the author of `msg`).
+    pub agent: String,
+    /// The CLI conversation of the fork (Claude session id / Codex thread id), once it exists.
+    #[serde(default)]
+    pub fork: Option<String>,
+    pub messages: Vec<ThreadMsg>,
+    #[serde(default)]
+    pub status: ThreadStatus,
+    pub updated: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadMsg {
+    /// "you", a member id, or "system" for errors.
+    pub from: String,
+    pub text: String,
+    pub ts: u64,
 }
 
 pub fn now_ms() -> u64 {
@@ -147,6 +200,8 @@ impl Workspace {
                 }
                 // Nothing is running right after a load.
                 w.members.iter_mut().for_each(|m| m.status = MemberStatus::Idle);
+                // A thread reply in flight died with the daemon.
+                w.threads.iter_mut().filter(|t| t.status == ThreadStatus::Replying).for_each(|t| t.status = ThreadStatus::Waiting);
                 w.messages.iter_mut().for_each(|m| {
                     m.streaming = false;
                     if let Body::Permission { state, .. } = &mut m.body {
@@ -280,7 +335,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

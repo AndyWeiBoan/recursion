@@ -4,6 +4,8 @@ import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
+import { openThreadsFor, ThreadDrawer } from "./ThreadDrawer";
+import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { onAddAgentRequest, onReconnect, openExternal, send, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type TurnUsage } from "./types";
 
@@ -17,7 +19,7 @@ export function colorFor(id: string) {
 }
 
 /** Markdown → sanitized HTML, with @alias mentions highlighted (outside tags and code). */
-function renderMarkdown(text: string, aliases: string[]): string {
+export function renderMarkdown(text: string, aliases: string[]): string {
   let html = DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
   if (aliases.length) {
     const known = new Set(aliases.map((a) => a.toLowerCase()).concat(["all", "全部", "所有人"]));
@@ -116,20 +118,29 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   const members = ws?.members ?? [];
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
   const busy = members.filter((m) => m.status !== "idle");
+  const ui = useThreadsUI(panel);
+  const threadCounts = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const t of ws?.threads ?? []) c.set(t.msg, (c.get(t.msg) ?? 0) + 1);
+    return c;
+  }, [ws?.threads]);
 
   if (!ws) return <div className="ws"><div className="ws-log" /></div>;
 
   return (
-    <div className="ws">
-      <MembersBar panel={panel} members={members} bigForm={members.length === 0 && ws.messages.length === 0} />
-      {members.length === 0 && ws.messages.length === 0 ? (
-        <div className="ws-log ws-center">
-          <AddAgent panel={panel} big />
-        </div>
-      ) : (
-        <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} />
-      )}
-      <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused} round={ws.round} />
+    <div className="ws-shell">
+      <div className="ws">
+        <MembersBar panel={panel} members={members} bigForm={members.length === 0 && ws.messages.length === 0} threads={ws.threads?.length ?? 0} drawerOpen={ui.open} />
+        {members.length === 0 && ws.messages.length === 0 ? (
+          <div className="ws-log ws-center">
+            <AddAgent panel={panel} big />
+          </div>
+        ) : (
+          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} />
+        )}
+        <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
+      </div>
+      {ui.open && <ThreadDrawer panel={panel} ws={ws} byId={byId} ui={ui} />}
     </div>
   );
 }
@@ -175,7 +186,7 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 }
 
 // Who is in the chat is listed in the sidebar tree; this bar keeps "add" and the account meters.
-function MembersBar({ panel, members, bigForm }: { panel: string; members: Member[]; bigForm: boolean }) {
+function MembersBar({ panel, members, bigForm, threads, drawerOpen }: { panel: string; members: Member[]; bigForm: boolean; threads: number; drawerOpen: boolean }) {
   const [adding, setAdding] = useState(false);
   useEffect(() => onAddAgentRequest(panel, () => setAdding(true)), [panel]);
   // The empty chat shows the big form instead; otherwise "add" must always be reachable,
@@ -195,6 +206,13 @@ function MembersBar({ panel, members, bigForm }: { panel: string; members: Membe
           </Modal>
         )}
       </div>
+      <button
+        className={`chip threads-btn${drawerOpen ? " on" : ""}`}
+        onClick={() => (drawerOpen ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
+        title="討論串（打開時會暫時收起旁邊的 split）"
+      >
+        💬 討論串{threads > 0 ? ` ${threads}` : ""}
+      </button>
       <span className="ws-meta">
         {usage?.five_hour !== undefined && <>5h {Math.round(usage.five_hour * 100)}%</>}
         {usage?.seven_day !== undefined && <> · 7d {Math.round(usage.seven_day * 100)}%</>}
@@ -342,7 +360,19 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   );
 }
 
-function Transcript({ panel, messages, byId, busy }: { panel: string; messages: Msg[]; byId: Map<string, Member>; busy: Member[] }) {
+function Transcript({
+  panel,
+  messages,
+  byId,
+  busy,
+  threadCounts,
+}: {
+  panel: string;
+  messages: Msg[];
+  byId: Map<string, Member>;
+  busy: Member[];
+  threadCounts: Map<string, number>;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const last = messages[messages.length - 1];
@@ -359,13 +389,46 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages.length, lastLen, busy.length]);
 
+  // Text selected inside one agent reply → a "discuss this" button next to it.
+  const [pick, setPick] = useState<{ x: number; y: number; msg: string; quote: string } | null>(null);
+  const readSelection = (at?: { x: number; y: number }) => {
+    const sel = window.getSelection();
+    const bubbleOf = (n: Node | null) => (n instanceof Element ? n : n?.parentElement)?.closest<HTMLElement>("[data-threadable]") ?? null;
+    const b = sel && !sel.isCollapsed ? bubbleOf(sel.anchorNode) : null;
+    const quote = sel?.toString().trim() ?? "";
+    if (!b || b !== bubbleOf(sel!.focusNode) || !box.current?.contains(b) || !quote) return setPick(null);
+    // Mouse: just under where the button was let go. Keyboard: under the end the caret moved to.
+    let p = at && { x: at.x + 4, y: at.y + 16 };
+    if (!p) {
+      const end = document.createRange();
+      end.setStart(sel!.focusNode!, sel!.focusOffset);
+      const r = end.getBoundingClientRect();
+      const all = sel!.getRangeAt(0).getBoundingClientRect();
+      p = r.height ? { x: r.left, y: r.bottom + 6 } : { x: all.left, y: all.bottom + 6 };
+    }
+    setPick({ ...p, msg: b.dataset.msg!, quote });
+  };
+  useEffect(() => {
+    const onChange = () => {
+      if (window.getSelection()?.isCollapsed) setPick(null);
+    };
+    document.addEventListener("selectionchange", onChange);
+    return () => document.removeEventListener("selectionchange", onChange);
+  }, []);
+
   return (
     <div
       className="ws-log"
       ref={box}
+      onMouseUp={(e) => {
+        const at = { x: e.clientX, y: e.clientY };
+        setTimeout(() => readSelection(at));
+      }}
+      onKeyUp={(e) => e.shiftKey && readSelection()}
       onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        setPick(null);
       }}
       onClick={(e) => {
         const a = (e.target as HTMLElement).closest("a");
@@ -378,7 +441,7 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
       {messages.map((m, i) => {
         const prev = messages[i - 1];
         const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
-        return <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} />;
+        return <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} />;
       })}
       {waiting.map((b) => (
         <div key={b.id} className="row agent">
@@ -388,6 +451,29 @@ function Transcript({ panel, messages, byId, busy }: { panel: string; messages: 
           </div>
         </div>
       ))}
+      {pick &&
+        createPortal(
+          <button
+            className="sel-thread"
+            style={{ left: pick.x, top: pick.y }}
+            ref={(el) => {
+              // Keep it fully on screen: its width is only known once it is drawn.
+              if (!el) return;
+              const w = el.offsetWidth, h = el.offsetHeight;
+              el.style.left = `${Math.max(8, Math.min(pick.x, window.innerWidth - w - 8))}px`;
+              el.style.top = `${Math.min(pick.y, window.innerHeight - h - 8)}px`;
+            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              openThreadsFor(panel, pick.msg, 0, pick.quote);
+              window.getSelection()?.removeAllRanges();
+              setPick(null);
+            }}
+          >
+            💬 討論這段
+          </button>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -399,6 +485,7 @@ const MessageView = memo(function MessageView({
   byId,
   first,
   aliases,
+  threads,
 }: {
   panel: string;
   m: Msg;
@@ -406,6 +493,8 @@ const MessageView = memo(function MessageView({
   byId: Map<string, Member>;
   first: boolean;
   aliases: string[];
+  /** Threads opened on this message. */
+  threads: number;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -440,8 +529,29 @@ const MessageView = memo(function MessageView({
   switch (m.kind) {
     case "text":
       body = (
-        <div className="bubble agent">
+        <div className="bubble agent" data-msg={m.id} data-threadable={!m.streaming && who ? "" : undefined}>
+          {m.from_thread && (
+            <button className="from-thread" onClick={() => openThreads(panel, { view: { kind: "thread", id: m.from_thread!.thread }, msg: null })}>
+              ↩ 討論串 #{m.from_thread.num} 的結論
+            </button>
+          )}
           <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
+          {!m.streaming && who && (
+            <button
+              className={`thread-btn${threads ? " has" : ""}`}
+              title={threads ? `${threads} 個討論串（反白一段文字再按，可以針對那段開新的）` : "開討論串（可以先反白一段文字）"}
+              // Keep the text selection: it becomes the quote.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => {
+                const sel = window.getSelection();
+                const bubble = e.currentTarget.parentElement!;
+                const quote = sel && !sel.isCollapsed && bubble.contains(sel.anchorNode) ? sel.toString().trim() : "";
+                openThreadsFor(panel, m.id, threads, quote);
+              }}
+            >
+              💬{threads ? ` ${threads}` : ""}
+            </button>
+          )}
         </div>
       );
       break;

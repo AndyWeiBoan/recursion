@@ -142,6 +142,8 @@ function PanelRow({
   name,
   rename,
   closeWindow,
+  folded,
+  onFold,
 }: {
   p: Panel;
   docs: Doc[];
@@ -154,6 +156,8 @@ function PanelRow({
   /** Present when this row stands for a whole window, which can then be renamed or closed. */
   rename?: (v: string) => void;
   closeWindow?: () => void;
+  folded: boolean;
+  onFold: () => void;
 }) {
   const d = describe(p, docs, terms);
   const [editing, setEditing] = useState(false);
@@ -166,6 +170,19 @@ function PanelRow({
         title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}${rename ? "（雙擊重新命名 window）" : ""}`}
       >
         {prefix}
+        {members.length > 0 ? (
+          <button
+            className={`sess-fold tree-fold${folded ? " closed" : ""}`}
+            aria-label={folded ? "展開 agent 列表" : "收合 agent 列表"}
+            aria-expanded={!folded}
+            onClick={(e) => (e.stopPropagation(), onFold())}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            ›
+          </button>
+        ) : (
+          <span className="sess-fold-space tree-fold" />
+        )}
         <span className={`tree-ic ic-${d.cls}`}>{d.icon}</span>
         {editing && rename ? (
           <InlineEdit value={name ?? ""} onSave={rename} onDone={() => setEditing(false)} />
@@ -182,7 +199,7 @@ function PanelRow({
         )}
         {rename && closeWindow && !editing && <WindowMenu onRename={() => setEditing(true)} onClose={closeWindow} />}
       </div>
-      {members.length > 0 && (
+      {members.length > 0 && !folded && (
         <div className="tree-agents">
           {members.map((m) => (
             <AgentRow key={m.id} m={m} panel={p.id} />
@@ -212,6 +229,7 @@ function SplitRow({
   return (
     <div className="tree-row tree-row-menu" onClick={onClick} onDoubleClick={() => setEditing(true)} title="雙擊重新命名 window">
       {num}
+      <span className="sess-fold-space tree-fold" />
       <span className="tree-ic ic-split">◫</span>
       {editing ? (
         <InlineEdit value={name} onSave={rename} onDone={() => setEditing(false)} />
@@ -254,9 +272,30 @@ function WindowMenu({ onRename, onClose }: { onRename: () => void; onClose: () =
   );
 }
 
+const FOLDED_KEY = "recursion.collapsedChats";
+
+function loadFolded(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 /** Session → windows → panels (with their kind) → agents of each chat. */
 export function SessionTree({ session, state, terms, roster }: { session: Session; state: State; terms: Record<string, TermInfo>; roster: Record<string, Member[]> }) {
   const docs = session.docs ?? [];
+  // Chats whose agent list is folded away, kept across restarts like folded sessions.
+  const [folded, setFolded] = useState<Set<string>>(loadFolded);
+  const fold = (id: string) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      try {
+        localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
   return (
     <div className="tree">
       {session.windows.map((w, i) => {
@@ -271,7 +310,7 @@ export function SessionTree({ session, state, terms, roster }: { session: Sessio
           const p = state.panels[ids[0]];
           return (
             <div key={w.id} className={`tree-win${on ? " on" : ""}`}>
-              <PanelRow p={p} docs={docs} terms={terms} members={roster[p.id] ?? []} onClick={select} prefix={num} name={name} rename={rename} closeWindow={closeWindow} />
+              <PanelRow p={p} docs={docs} terms={terms} members={roster[p.id] ?? []} onClick={select} prefix={num} name={name} rename={rename} closeWindow={closeWindow} folded={folded.has(p.id)} onFold={() => fold(p.id)} />
             </div>
           );
         }
@@ -280,7 +319,7 @@ export function SessionTree({ session, state, terms, roster }: { session: Sessio
             <SplitRow num={num} name={name} count={ids.length} onClick={select} rename={rename} closeWindow={closeWindow} />
             <div className="tree-panels">
               {ids.map((id) => (
-                <PanelRow key={id} p={state.panels[id]} docs={docs} terms={terms} members={roster[id] ?? []} onClick={() => send({ t: "panel_focus", panel: id })} />
+                <PanelRow key={id} p={state.panels[id]} docs={docs} terms={terms} members={roster[id] ?? []} onClick={() => send({ t: "panel_focus", panel: id })} folded={folded.has(id)} onFold={() => fold(id)} />
               ))}
             </div>
           </div>

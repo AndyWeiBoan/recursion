@@ -15,6 +15,7 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **Codex**：群聊裡可以加入 Codex（`codex app-server`，沙箱 workspace-write、需要越權時會跳核准），跟 Claude 互相 @。
 - **瀏覽器 panel**：系統內建的瀏覽器引擎（macOS WKWebView、Linux WebKitGTK），上一頁／下一頁／重新載入，記住最後的網址。
 - **Session 文件**：agent 用 `doc_write` 把長文、大表格、圖表存成 HTML 文件，對話裡是一張卡片，自動在旁邊的 panel 打開；其他 agent 也讀得到（`doc_read`）。
+- **討論串**：對 agent 的回覆（或反白的一段）開串，在分岔的對話裡跟原作者討論，主對話看不到；可搜尋，結論可帶回主對話。
 - **模型選單**直接問 CLI（Claude 的 initialize、Codex 的 `model/list`），跟它們自己的 `/model` 一致。
 
 ## 開發
@@ -30,6 +31,7 @@ pnpm test:agent # 用真的 Claude（haiku）跑單一 agent 端到端測試，�
 pnpm test:group # 兩個真的 Claude 的回合制端到端測試
 pnpm test:codex # Codex + Claude 同一個群聊的端到端測試
 pnpm test:doc   # Claude 寫 session 文件、Codex 讀回來（真的 agent，會用到少量額度）
+pnpm test:thread # 討論串：分岔、記憶、不外洩、帶回主對話（KIND=codex 改測 Codex）
 ```
 
 ## 結構

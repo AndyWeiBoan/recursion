@@ -15,7 +15,8 @@
     "test:agent": "cargo build -p recursiond && node scripts/agent-smoke.mjs",
     "test:group": "cargo build -p recursiond && node scripts/group-smoke.mjs",
     "test:codex": "cargo build -p recursiond && node scripts/codex-smoke.mjs",
-    "test:doc": "cargo build -p recursiond && node scripts/doc-smoke.mjs"
+    "test:doc": "cargo build -p recursiond && node scripts/doc-smoke.mjs",
+    "test:thread": "cargo build -p recursiond && node scripts/thread-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.5",
