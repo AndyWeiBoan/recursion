@@ -95,6 +95,13 @@ export async function connect() {
             return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
           });
           break;
+        case "ws_poll":
+          wsUpdate(m.panel, (w) => {
+            const list = w.polls ?? [];
+            const i = list.findIndex((x) => x.id === m.poll.id);
+            return { ...w, polls: i >= 0 ? list.map((x, k) => (k === i ? m.poll : x)) : [...list, m.poll] };
+          });
+          break;
         case "ws_artifact":
           wsUpdate(m.panel, (w) => {
             const list = w.artifacts ?? [];

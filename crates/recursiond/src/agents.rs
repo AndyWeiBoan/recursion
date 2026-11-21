@@ -15,7 +15,9 @@ use tokio::sync::broadcast;
 
 mod codex;
 mod models;
+mod polls;
 mod threads;
+pub use polls::tools as poll_tools;
 
 pub use models::ModelOption;
 
@@ -534,12 +536,18 @@ impl Hub {
             })
         });
         self.push_msg(panel, m);
+        self.queue_round(panel, if all { None } else { Some(targeted) }, cwd);
+        Ok(())
+    }
+
+    /// Something for the agents arrived (`targets` None = everyone): open a round for it once the
+    /// merge window passes and nobody is still speaking.
+    fn queue_round(self: &Arc<Self>, panel: &str, targets: Option<Vec<String>>, cwd: String) {
         let gen = self.rt(panel, |r| {
             r.cwd = cwd.clone();
-            if all {
-                r.queued_all = true;
-            } else {
-                r.queued_targets.get_or_insert_with(HashSet::new).extend(targeted);
+            match targets {
+                None => r.queued_all = true,
+                Some(t) => r.queued_targets.get_or_insert_with(HashSet::new).extend(t),
             }
             r.queued_count += 1;
             r.send_gen += 1;
@@ -554,7 +562,6 @@ impl Hub {
                 hub.start_round(&panel, &cwd).await;
             }
         });
-        Ok(())
     }
 
     /// "Interrupt this round and send now": stop agents, then open a round with the queued messages.
@@ -804,6 +811,7 @@ impl Hub {
                         text
                     )),
                     Body::Text { text } => Some(format!("[@{}]: {}", names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), text)),
+                    b @ (Body::Poll { .. } | Body::PollClosed { .. }) => Self::poll_line(b, &ws.polls, &names),
                     Body::Doc { doc, title, updated } => Some(format!(
                         "[@{} {} document `{doc}` \"{title}\" — read it with doc_read]",
                         names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()),
@@ -1187,6 +1195,8 @@ fn group_prompt(alias: &str) -> String {
          project's dev server such as http://localhost:5173) to get the page as text with numbered links, buttons and fields, then \
          `browse_click`, `browse_fill`, `browse_read` and `browse_screenshot`. It shares the human's logins, so never buy, post, \
          send, delete or change settings there without the human's explicit go-ahead.\n\
+         - The human may start a poll: vote with `poll_vote` (option letter and a one-sentence reason), then keep your reply \
+         to a sentence. You don't see the others' votes until it closes; `poll_list` / `poll_read` show past results.\n\
          - Reply in the human's language."
     )
 }

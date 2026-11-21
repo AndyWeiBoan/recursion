@@ -15,6 +15,7 @@
     "test:agent": "cargo build -p recursiond && node scripts/agent-smoke.mjs",
     "test:group": "cargo build -p recursiond && node scripts/group-smoke.mjs",
     "test:codex": "cargo build -p recursiond && node scripts/codex-smoke.mjs",
+    "test:poll": "cargo build -p recursiond && node scripts/poll-smoke.mjs",
     "test:doc": "cargo build -p recursiond && node scripts/doc-smoke.mjs",
     "test:thread": "cargo build -p recursiond && node scripts/thread-smoke.mjs",
     "test:browse": "cargo build -p recursiond -p recursion-app && node scripts/browse-smoke.mjs"

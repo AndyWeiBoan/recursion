@@ -2,7 +2,7 @@
 // Kept outside React: zooming re-mounts the chat panel, and the drawer must survive that.
 import { useSyncExternalStore } from "react";
 
-export type ThreadView = { kind: "list" } | { kind: "thread"; id: string } | { kind: "new"; msg: string; quote: string };
+export type ThreadView = { kind: "list" } | { kind: "thread"; id: string } | { kind: "new"; msg: string; quote: string } | { kind: "poll"; id: string };
 
 export interface ThreadsUI {
   open: boolean;
@@ -15,7 +15,7 @@ export interface ThreadsUI {
   filter: ArtifactFilter;
 }
 
-export type ArtifactFilter = "all" | "thread" | "doc" | "page";
+export type ArtifactFilter = "all" | "thread" | "doc" | "page" | "poll";
 
 const CLOSED: ThreadsUI = { open: false, view: { kind: "list" }, query: "", msg: null, filter: "all" };
 let state: Record<string, ThreadsUI> = {};

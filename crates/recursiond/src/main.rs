@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 21;
+pub const PROTOCOL: u32 = 22;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -103,6 +103,10 @@ enum In {
     WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String> },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
+    /// Start a poll; `vote` is the human's own pick (option index), if any.
+    PollCreate { panel: String, question: String, #[serde(default)] description: String, options: Vec<String>, #[serde(default)] vote: Option<usize> },
+    PollVote { panel: String, poll: String, option: usize },
+    PollClose { panel: String, poll: String },
     /// Stop one agent's reply; the rest of the round goes on.
     WsStopAgent { panel: String, member: String },
     WsSendNow { panel: String },
@@ -431,6 +435,19 @@ impl App {
             }
             WsStop { panel } => {
                 self.hub.stop(&panel).await;
+                changed = false;
+            }
+            PollCreate { panel, question, description, options, vote } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.poll_create(&panel, &question, &description, options, vote, cwd).await?;
+                changed = false;
+            }
+            PollVote { panel, poll, option } => {
+                self.hub.poll_vote(&panel, &poll, "you", option, "")?;
+                changed = false;
+            }
+            PollClose { panel, poll } => {
+                self.hub.poll_close(&panel, &poll);
                 changed = false;
             }
             WsStopAgent { panel, member } => {

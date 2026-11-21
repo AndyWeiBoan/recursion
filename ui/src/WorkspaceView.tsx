@@ -5,9 +5,10 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExt
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
+import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
-import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Thread, type TurnUsage } from "./types";
+import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -135,7 +136,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
             <AddAgent panel={panel} big />
           </div>
         ) : (
-          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} />
+          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} />
         )}
         <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
       </div>
@@ -195,7 +196,7 @@ export function ChatHead({ panel }: { panel: string }) {
   // including when every agent was removed from a chat that has history.
   if (!ws || (members.length === 0 && ws.messages.length === 0)) return <span className="title" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
-  const outputs = (ws.threads?.length ?? 0) + (ws.artifacts?.length ?? 0);
+  const outputs = (ws.threads?.length ?? 0) + (ws.artifacts?.length ?? 0) + (ws.polls?.length ?? 0);
   return (
     <span className="title chat-head">
       <span className="chat-faces">
@@ -216,7 +217,7 @@ export function ChatHead({ panel }: { panel: string }) {
       <button
         className={`chat-outputs${ui.open ? " on" : ""}`}
         onClick={() => (ui.open ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
-        title="產出：討論串、文件、網頁（打開時會暫時收起旁邊的 split）"
+        title="產出：討論串、文件、網頁、投票（打開時會暫時收起旁邊的 split）"
       >
         📎 產出{outputs > 0 ? ` ${outputs}` : ""}
       </button>
@@ -420,6 +421,7 @@ function Transcript({
   busy,
   threadCounts,
   threads,
+  polls,
 }: {
   panel: string;
   messages: Msg[];
@@ -427,7 +429,9 @@ function Transcript({
   busy: Member[];
   threadCounts: Map<string, number>;
   threads: Thread[];
+  polls: Poll[];
 }) {
+  const pollById = useMemo(() => new Map(polls.map((p) => [p.id, p])), [polls]);
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const last = messages[messages.length - 1];
@@ -529,7 +533,7 @@ function Transcript({
         const prev = messages[i - 1];
         const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
         return (
-          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} group={runs.get(m.id)} />
+          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} group={runs.get(m.id)} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} />
         );
       })}
       {waiting.map((b) => (
@@ -639,6 +643,7 @@ const MessageView = memo(function MessageView({
   aliases,
   threads,
   group,
+  poll,
 }: {
   panel: string;
   m: Msg;
@@ -650,8 +655,18 @@ const MessageView = memo(function MessageView({
   threads: number;
   /** For the first of several tool calls in a row: all of them, shown as one line. */
   group?: Msg[];
+  /** For a poll message: the poll. */
+  poll?: Poll;
 }) {
   const accounts = useAccounts();
+
+  if (m.kind === "poll") return poll ? <div className="row poll-row" data-msg={m.id}><PollCard panel={panel} p={poll} byId={byId} /></div> : null;
+  if (m.kind === "poll_closed")
+    return poll ? (
+      <button className="m-sys m-poll-closed" onClick={() => showInChat(poll.msg)} title="跳到投票卡">
+        📊 投票 #{poll.num} 結束：{outcome(poll)}
+      </button>
+    ) : null;
 
   if (m.from === "you" && m.kind === "text") {
     const to = m.to?.length ? m.to.map((id) => "@" + (byId.get(id)?.alias ?? "?")).join(" ") : "全部";
@@ -899,6 +914,7 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const replyId = useReplying(panel);
+  const [polling, setPolling] = useState(false);
   const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
   useEffect(() => {
     if ((focused || replyId) && !disabled) ref.current?.focus();
@@ -968,6 +984,14 @@ function Composer({
             </button>
           ))}
         </div>
+      )}
+      <button className="poll-btn" onClick={() => setPolling(true)} disabled={disabled} title="發起投票：每個 agent 選一個並附理由" aria-label="發起投票">
+        📊
+      </button>
+      {polling && (
+        <Modal title="發起投票" onClose={() => setPolling(false)}>
+          <PollForm panel={panel} onDone={() => setPolling(false)} />
+        </Modal>
       )}
       <textarea
         ref={ref}

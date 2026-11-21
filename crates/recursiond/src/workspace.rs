@@ -73,6 +73,10 @@ pub enum Body {
     Relogin { account: String, name: String, text: String, #[serde(default)] resolved: bool },
     /// Loop guard tripped; the UI offers "continue".
     Guard { text: String, #[serde(default)] resolved: bool },
+    /// The human started a poll; the card shows its live state from `Workspace.polls`.
+    Poll { poll: String },
+    /// A poll ended: the point where agents are told the result.
+    PollClosed { poll: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +163,126 @@ pub struct Workspace {
     /// Things the agents made for this chat (documents, pages they opened), listed beside threads.
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
+    #[serde(default)]
+    pub polls: Vec<Poll>,
+    #[serde(default)]
+    pub next_poll: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PollStatus {
+    #[default]
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Vote {
+    /// "you" or a member id.
+    pub voter: String,
+    pub option: usize,
+    #[serde(default)]
+    pub reason: String,
+    pub ts: u64,
+}
+
+/// A question with fixed options. Who voted for what stays hidden from the agents until it closes,
+/// so the later ones can't just follow the earlier ones.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Poll {
+    pub id: String,
+    /// Shown as #n, per chat.
+    pub num: u64,
+    pub question: String,
+    /// Background for the question (optional).
+    #[serde(default)]
+    pub description: String,
+    pub options: Vec<String>,
+    /// Members asked to vote (everyone in the chat when it started).
+    pub voters: Vec<String>,
+    pub votes: Vec<Vote>,
+    pub status: PollStatus,
+    pub created: u64,
+    #[serde(default)]
+    pub closed: Option<u64>,
+    /// The chat message that shows it.
+    #[serde(default)]
+    pub msg: String,
+}
+
+pub const POLL_OPTIONS_MAX: usize = 8;
+
+/// A, B, C… for option `i`.
+pub fn option_letter(i: usize) -> char {
+    (b'A' + i as u8) as char
+}
+
+impl Poll {
+    /// "B", "2" or the option's own text (any case) → its index.
+    pub fn parse_option(&self, s: &str) -> Option<usize> {
+        let s = s.trim().trim_end_matches([')', '.', '）']).trim();
+        let n = self.options.len();
+        if s.chars().count() == 1 {
+            let c = s.chars().next()?.to_ascii_uppercase();
+            if c.is_ascii_uppercase() && ((c as u8 - b'A') as usize) < n {
+                return Some((c as u8 - b'A') as usize);
+            }
+        }
+        if let Ok(k) = s.parse::<usize>() {
+            return (1..=n).contains(&k).then(|| k - 1);
+        }
+        self.options.iter().position(|o| o.trim().eq_ignore_ascii_case(s))
+    }
+
+    /// Records (or changes) a vote while the poll is open.
+    pub fn vote(&mut self, voter: &str, option: usize, reason: &str, ts: u64) -> Result<(), String> {
+        if self.status != PollStatus::Open {
+            return Err(format!("Poll #{} is already closed.", self.num));
+        }
+        if option >= self.options.len() {
+            return Err(format!("Poll #{} has no option {}.", self.num, option + 1));
+        }
+        self.votes.retain(|v| v.voter != voter);
+        self.votes.push(Vote { voter: voter.to_string(), option, reason: reason.trim().to_string(), ts });
+        Ok(())
+    }
+
+    /// Every agent asked who is still in the chat has voted.
+    pub fn agents_done(&self, members: &[String]) -> bool {
+        self.voters.iter().filter(|v| members.contains(v)).all(|v| self.votes.iter().any(|x| &x.voter == v))
+    }
+
+    pub fn close(&mut self, ts: u64) -> bool {
+        if self.status == PollStatus::Closed {
+            return false;
+        }
+        self.status = PollStatus::Closed;
+        self.closed = Some(ts);
+        true
+    }
+
+    /// The question and options as agents read them.
+    pub fn ballot(&self) -> String {
+        let opts: Vec<String> = self.options.iter().enumerate().map(|(i, o)| format!("{}) {o}", option_letter(i))).collect();
+        let about = if self.description.trim().is_empty() { String::new() } else { format!(" ({})", self.description.trim().replace('\n', " ")) };
+        format!("poll #{} (id `{}`): \"{}\"{about} — options: {}", self.num, self.id, self.question, opts.join("; "))
+    }
+
+    /// The result with who voted what and why; `name` turns a voter into "@alias" / "the human".
+    pub fn result(&self, name: &dyn Fn(&str) -> String) -> String {
+        let mut out = format!("Poll #{} \"{}\" — {} vote(s):", self.num, self.question, self.votes.len());
+        for (i, o) in self.options.iter().enumerate() {
+            let who: Vec<String> = self.votes.iter().filter(|v| v.option == i).map(|v| name(&v.voter)).collect();
+            out.push_str(&format!("\n  {}) {o}: {}{}", option_letter(i), who.len(), if who.is_empty() { String::new() } else { format!(" ({})", who.join(", ")) }));
+        }
+        let reasons: Vec<String> = self.votes.iter().filter(|v| !v.reason.is_empty()).map(|v| format!("\n  {} chose {}: {}", name(&v.voter), option_letter(v.option), v.reason)).collect();
+        if !reasons.is_empty() {
+            out.push_str("\nReasons:");
+            out.push_str(&reasons.concat());
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +465,9 @@ pub fn display_tool_name(name: &str) -> String {
         Some("browse_click") => "🌐 點擊".into(),
         Some("browse_fill") => "🌐 填寫".into(),
         Some("browse_screenshot") => "🌐 截圖".into(),
+        Some("poll_vote") => "📊 投票".into(),
+        Some("poll_list") => "📊 列出投票".into(),
+        Some("poll_read") => "📊 看投票".into(),
         _ => name.to_string(),
     }
 }
@@ -369,6 +496,8 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
             format!("#{} ← {}", input.get("ref").map(|v| v.to_string()).unwrap_or_default(), s("value").chars().take(60).collect::<String>())
         }
         _ if recursion_tool(name).is_some_and(|t| t.starts_with("browse_")) => String::new(),
+        // What it voted shows on the poll card when the poll closes, not in the tool line before.
+        _ if recursion_tool(name).is_some_and(|t| t.starts_with("poll_")) => input.get("poll").and_then(|v| v.as_str()).map(|p| if p.starts_with('#') { p.to_string() } else { String::new() }).unwrap_or_default(),
         _ => {
             let j = input.to_string();
             j.chars().take(120).collect()
@@ -382,6 +511,7 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
         "Write" => s("content"),
         "Edit" => format!("- {}\n+ {}", s("old_string"), s("new_string")),
         _ if recursion_tool(name) == Some("doc_write") => s("html"),
+        _ if recursion_tool(name) == Some("poll_vote") => String::new(),
         _ => serde_json::to_string_pretty(input).unwrap_or_default(),
     };
     let one_line: String = summary.lines().next().unwrap_or("").chars().take(200).collect();
@@ -517,5 +647,36 @@ mod mention_tests {
         assert_eq!((b.title.as_str(), b.by.as_str(), b.created, b.updated), ("A", "m2", 1, 2), "keeps the title when none is given");
         ws.record_artifact(ArtifactKind::Doc, "https://a.test/", "doc", "m1", 3);
         assert_eq!(ws.artifacts.len(), 2, "a different kind is a different artifact");
+    }
+    #[test]
+    fn polls_parse_options_and_hide_nothing_after_closing() {
+        let mut p = Poll {
+            id: "p".into(),
+            num: 1,
+            question: "Q".into(),
+            description: String::new(),
+            options: vec!["Ship it".into(), "Wait".into()],
+            voters: vec!["a".into(), "b".into()],
+            votes: vec![],
+            status: PollStatus::Open,
+            created: 0,
+            closed: None,
+            msg: String::new(),
+        };
+        assert_eq!(p.parse_option("b"), Some(1));
+        assert_eq!(p.parse_option("A)"), Some(0));
+        assert_eq!(p.parse_option("2"), Some(1));
+        assert_eq!(p.parse_option("ship it"), Some(0));
+        assert_eq!(p.parse_option("C"), None);
+        assert_eq!(p.parse_option("3"), None);
+        p.vote("a", 0, "fast", 1).unwrap();
+        p.vote("a", 1, "changed my mind", 2).unwrap();
+        assert_eq!(p.votes.len(), 1, "a second vote replaces the first");
+        assert!(!p.agents_done(&["a".into(), "b".into()]));
+        assert!(p.agents_done(&["a".into()]), "agents who left don't hold it open");
+        assert!(p.close(3) && !p.close(4));
+        assert!(p.vote("b", 0, "", 5).is_err());
+        let r = p.result(&|v| format!("@{v}"));
+        assert!(r.contains("B) Wait: 1 (@a)") && r.contains("@a chose B: changed my mind"), "{r}");
     }
 }

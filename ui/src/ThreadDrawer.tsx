@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
 import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
 import { Avatar, renderMarkdown } from "./WorkspaceView";
-import type { Artifact, Member, Thread, Workspace } from "./types";
+import { PollRow, PollView } from "./Polls";
+import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
 
 const STATUS: Record<Thread["status"], string> = { replying: "回覆中…", waiting: "等你回", brought: "已帶回" };
 
@@ -60,6 +61,12 @@ export function ThreadDrawer({ panel, ws, byId, ui }: { panel: string; ws: Works
     >
       {ui.view.kind === "list" && <OutputList panel={panel} ws={ws} byId={byId} ui={ui} />}
       {ui.view.kind === "new" && <NewThread panel={panel} msg={ui.view.msg} quote={ui.view.quote} who={byId.get(ws.messages.find((m) => m.id === (ui.view as { msg: string }).msg)?.from ?? "")} />}
+      {ui.view.kind === "poll" &&
+        (() => {
+          const id = ui.view.id;
+          const p = (ws.polls ?? []).find((x) => x.id === id);
+          return p ? <PollView panel={panel} p={p} byId={byId} /> : <div className="td-empty">找不到這次投票</div>;
+        })()}
       {ui.view.kind === "thread" &&
         (() => {
           const id = ui.view.id;
@@ -75,6 +82,7 @@ const KINDS: { id: ArtifactFilter; label: string }[] = [
   { id: "thread", label: "討論串" },
   { id: "doc", label: "文件" },
   { id: "page", label: "網頁" },
+  { id: "poll", label: "投票" },
 ];
 const ICON = { thread: "💬", doc: "📄", page: "🌐" };
 const KIND_WORD = { doc: "文件", page: "網頁" };
@@ -100,16 +108,31 @@ function host(url: string) {
   }
 }
 
-type Item = { kind: "thread"; at: number; t: Thread } | { kind: "doc" | "page"; at: number; a: Artifact };
+type Item = { kind: "thread"; at: number; t: Thread } | { kind: "doc" | "page"; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll };
+
+/** `#n` → poll number, `@x` → nobody (polls have no author), else fuzzy over 投票, question, options. */
+function pollMatches(p: Poll, query: string) {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((tok) => {
+      if (/^#\d+$/.test(tok)) return p.num === Number(tok.slice(1));
+      if (tok.startsWith("@")) return false;
+      return fuzzy(tok, `投票 ${p.question} ${p.options.join(" ")}`.toLowerCase());
+    });
+}
 
 /** The drawer's list: threads, documents and pages of this chat, newest first. */
 function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byId: Map<string, Member>; ui: ThreadsUI }) {
   const threads = ws.threads ?? [];
   const artifacts = ws.artifacts ?? [];
+  const polls = ws.polls ?? [];
   const anchor = ui.msg ? ws.messages.find((m) => m.id === ui.msg) : undefined;
   // A message's 💬 badge asks for its threads only.
   const filter = anchor ? "thread" : ui.filter;
-  const count = (k: ArtifactFilter) => (k === "all" ? threads.length + artifacts.length : k === "thread" ? threads.length : artifacts.filter((a) => a.kind === k).length);
+  const count = (k: ArtifactFilter) =>
+    k === "all" ? threads.length + artifacts.length + polls.length : k === "thread" ? threads.length : k === "poll" ? polls.length : artifacts.filter((a) => a.kind === k).length;
   const shown = useMemo(() => {
     const items: Item[] = [];
     if (filter === "all" || filter === "thread")
@@ -117,13 +140,16 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
     if (!anchor)
       for (const a of artifacts)
         if ((filter === "all" || filter === a.kind) && artifactMatches(a, ui.query, byId.get(a.by)?.alias ?? "")) items.push({ kind: a.kind, at: a.updated, a });
+    if (!anchor && (filter === "all" || filter === "poll"))
+      for (const p of polls) if (pollMatches(p, ui.query)) items.push({ kind: "poll", at: p.closed ?? p.created, p });
     return items.sort((x, y) => y.at - x.at);
-  }, [threads, artifacts, filter, anchor, ui.msg, ui.query, byId]);
+  }, [threads, artifacts, polls, filter, anchor, ui.msg, ui.query, byId]);
   const empty = {
-    all: "還沒有產出。討論串、agent 寫的文件、agent 開過的網頁都會列在這裡。",
+    all: "還沒有產出。討論串、agent 寫的文件、agent 開過的網頁、投票都會列在這裡。",
     thread: "還沒有討論串。在 agent 的回覆上按右鍵討論整則，或反白一段文字討論那段。",
     doc: "還沒有文件。agent 寫的文件會列在這裡。",
     page: "還沒有網頁。agent 用瀏覽器開過的網頁會列在這裡。",
+    poll: "還沒有投票。按輸入框左邊的 📊 發起一個。",
   }[filter];
   return (
     <>
@@ -162,8 +188,16 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
         />
       </div>
       <div className="td-list">
-        {shown.map((it) => (it.kind === "thread" ? <ThreadRow key={it.t.id} panel={panel} t={it.t} who={byId.get(it.t.agent)} /> : <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />))}
-        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length > 0 && ui.query ? "沒有符合的產出" : empty}</div>}
+        {shown.map((it) =>
+          it.kind === "thread" ? (
+            <ThreadRow key={it.t.id} panel={panel} t={it.t} who={byId.get(it.t.agent)} />
+          ) : it.kind === "poll" ? (
+            <PollRow key={it.p.id} panel={panel} p={it.p} />
+          ) : (
+            <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />
+          ),
+        )}
+        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length + polls.length > 0 && ui.query ? "沒有符合的產出" : empty}</div>}
       </div>
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>

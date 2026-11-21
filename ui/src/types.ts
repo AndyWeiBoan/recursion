@@ -82,6 +82,9 @@ export type Cmd =
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
   | { t: "ws_send"; panel: string; text: string; reply_to?: string }
   | { t: "ws_stop_agent"; panel: string; member: string }
+  | { t: "poll_create"; panel: string; question: string; description: string; options: string[]; vote?: number | null }
+  | { t: "poll_vote"; panel: string; poll: string; option: number }
+  | { t: "poll_close"; panel: string; poll: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
@@ -163,7 +166,34 @@ export type Msg = { id: string; ts: number; from: string; seq: number; to?: stri
   | { kind: "guard"; text: string; resolved: boolean }
   | { kind: "relogin"; account: string; name: string; text: string; resolved: boolean }
   | { kind: "doc"; doc: string; title: string; updated: boolean }
+  | { kind: "poll"; poll: string }
+  | { kind: "poll_closed"; poll: string }
 );
+
+export interface Vote {
+  /** "you" or a member id. */
+  voter: string;
+  option: number;
+  reason: string;
+  ts: number;
+}
+
+export interface Poll {
+  id: string;
+  num: number;
+  question: string;
+  /** Background for the question; may be empty. */
+  description: string;
+  options: string[];
+  /** Members asked to vote. */
+  voters: string[];
+  votes: Vote[];
+  status: "open" | "closed";
+  created: number;
+  closed?: number | null;
+  /** The chat message showing it. */
+  msg: string;
+}
 
 export type ThreadStatus = "replying" | "waiting" | "brought";
 
@@ -193,6 +223,7 @@ export interface Workspace {
   members: Member[];
   messages: Msg[];
   threads?: Thread[];
+  polls?: Poll[];
   /** Documents and pages the agents made for this chat. */
   artifacts?: Artifact[];
   round?: { active: boolean; queued: number };
