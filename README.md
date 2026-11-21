@@ -15,7 +15,8 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **Codex**：群聊裡可以加入 Codex（`codex app-server`，沙箱 workspace-write、需要越權時會跳核准），跟 Claude 互相 @。
 - **瀏覽器 panel**：系統內建的瀏覽器引擎（macOS WKWebView、Linux WebKitGTK），上一頁／下一頁／重新載入，記住最後的網址。
 - **Session 文件**：agent 用 `doc_write` 把長文、大表格、圖表存成 HTML 文件，對話裡是一張卡片，自動在旁邊的 panel 打開；其他 agent 也讀得到（`doc_read`）。
-- **討論串**：雙擊 agent 的回覆討論整則，或反白一段文字討論那段；在分岔的對話裡跟原作者討論，主對話看不到；可搜尋（整則／片段），結論可帶回主對話。
+- **討論串**：在 agent 的回覆上按右鍵討論整則，或反白一段文字討論那段；在分岔的對話裡跟原作者討論，主對話看不到；可搜尋（整則／片段），結論可帶回主對話。
+- **回覆**：在任何訊息上按右鍵 →「回覆」，送出的訊息會帶著被回覆的那段，點一下跳回原訊息；agent 也會知道你在回哪一則。
 - **agent 的瀏覽器**：每個 agent 在群聊旁有自己的瀏覽器 panel，用 `browse_open`／`browse_read`／`browse_click`／`browse_fill`／`browse_screenshot` 開網頁、填表單、截圖，你看得到它在做什麼（目前 Linux；macOS 還沒做）。
 - **多帳號**：側欄「帳號」管理 Claude／Codex 的多個登入（每個帳號一個設定資料夾，設定、skills 等連回原本的 `~/.claude`／`~/.codex`），顯示 email、方案、5 小時／7 天用量；加 agent 時選帳號；登入過期時聊天裡出現「重新登入」卡片。
 - **模型選單**直接問 CLI（Claude 的 initialize、Codex 的 `model/list`），跟它們自己的 `/model` 一致。

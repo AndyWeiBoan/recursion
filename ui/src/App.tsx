@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSnapshot, isMac, pickFolder, send, useAccounts, useRoster, useSnapshot, useToast } from "./client";
 import { KindPicker, type PickRequest } from "./KindPicker";
-import { LayoutView } from "./Layout";
+import { LayoutView, shield } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
@@ -148,20 +148,25 @@ function useSidebarWidth() {
     const start = e.clientX - width;
     let last = width;
     setDragging(true);
+    const unshield = shield("col-resize");
     const move = (ev: PointerEvent) => {
       last = clampSide(ev.clientX - start);
       setWidth(last);
     };
+    let done = false;
     const up = () => {
+      if (done) return;
+      done = true;
       el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", up);
-      el.removeEventListener("pointercancel", up);
+      for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.removeEventListener(t, up);
+      window.removeEventListener("blur", up);
       setDragging(false);
+      unshield();
       save(last);
     };
     el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
-    el.addEventListener("pointercancel", up);
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.addEventListener(t, up);
+    window.addEventListener("blur", up);
   };
   const reset = () => (setWidth(SIDE_DEFAULT), save(SIDE_DEFAULT));
   return { width, dragging, onPointerDown, reset };

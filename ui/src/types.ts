@@ -80,7 +80,8 @@ export type Cmd =
   | { t: "account_remove"; account: string }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
-  | { t: "ws_send"; panel: string; text: string }
+  | { t: "ws_send"; panel: string; text: string; reply_to?: string }
+  | { t: "ws_stop_agent"; panel: string; member: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
@@ -146,7 +147,14 @@ export interface DocVia {
   data: string;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; usage?: TurnUsage } & (
+/** The message a human message answers, as it read when sent. `from` is "you" or a member id. */
+export interface ReplyRef {
+  msg: string;
+  from: string;
+  text: string;
+}
+
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }

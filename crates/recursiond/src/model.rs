@@ -424,7 +424,17 @@ impl State {
             .iter()
             .flat_map(|w| w.panel_ids())
             .find(|p| self.panels.get(p).is_some_and(|x| x.url.as_deref() == Some(url.as_str())));
-        if let Some(p) = existing {
+        // Not open yet: switch a panel that shows another document (this window's first), so
+        // documents take turns in one panel instead of piling up.
+        let is_doc = |p: &String| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.url.as_deref().is_some_and(|u| u.starts_with("doc:")));
+        let windows = &self.sessions[si].windows;
+        let reuse = existing.clone().or_else(|| {
+            windows[wi].panel_ids().into_iter().find(|p| is_doc(p)).or_else(|| windows.iter().flat_map(|w| w.panel_ids()).find(|p| is_doc(p)))
+        });
+        if let Some(p) = reuse {
+            if existing.is_none() {
+                self.set_panel_url(&p, url)?;
+            }
             if focus {
                 self.focus_panel(&p)?;
             }
@@ -627,5 +637,9 @@ mod tests {
         let (d2, created) = st.write_doc(&sid, Some(&d.id), "T2".into(), "codex".into(), &chat, "m2", 2).unwrap();
         assert!(!created);
         assert_eq!((d2.rev, d2.author.as_str(), st.sessions[0].docs.len()), (2, "codex", 1));
+        let (other, _) = st.write_doc(&sid, None, "Other".into(), "claude".into(), &chat, "m1", 3).unwrap();
+        assert_eq!(st.open_doc(&chat, &other.id, false).unwrap(), p, "another document switches the same panel");
+        assert_eq!(st.panels[&p].url.as_deref(), Some(doc_url(&other.id).as_str()));
+        assert_eq!(st.sessions[0].windows[0].panel_ids().len(), 2, "no new split");
     }
 }

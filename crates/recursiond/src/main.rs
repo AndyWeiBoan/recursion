@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 19;
+pub const PROTOCOL: u32 = 21;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -48,6 +48,9 @@ struct Discovery {
     version: String,
     #[serde(default)]
     protocol: u32,
+    /// When it started (ms since epoch): the app replaces it if its binary was rebuilt since.
+    #[serde(default)]
+    started: u64,
 }
 
 struct App {
@@ -97,9 +100,11 @@ enum In {
     WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String>, account: Option<String> },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
-    WsSend { panel: String, text: String },
+    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String> },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
+    /// Stop one agent's reply; the rest of the round goes on.
+    WsStopAgent { panel: String, member: String },
     WsSendNow { panel: String },
     ModelsList { kind: AgentKind },
     DocOpen { panel: String, doc: String },
@@ -415,9 +420,9 @@ impl App {
                 self.hub.remove_agent(&panel, &member).await;
                 changed = false;
             }
-            WsSend { panel, text } => {
+            WsSend { panel, text, reply_to } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.send(&panel, text, cwd, None).await?;
+                self.hub.send(&panel, text, cwd, None, reply_to.as_deref()).await?;
                 changed = false;
             }
             WsPerm { request_id, decision } => {
@@ -426,6 +431,10 @@ impl App {
             }
             WsStop { panel } => {
                 self.hub.stop(&panel).await;
+                changed = false;
+            }
+            WsStopAgent { panel, member } => {
+                self.hub.stop_member(&panel, &member).await;
                 changed = false;
             }
             WsSendNow { panel } => {
@@ -644,7 +653,7 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("RECURSION_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let port = listener.local_addr()?.port();
-    let disc = Discovery { port, token, pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into(), protocol: PROTOCOL };
+    let disc = Discovery { port, token, pid: std::process::id(), version: env!("CARGO_PKG_VERSION").into(), protocol: PROTOCOL, started: app.started };
     let disc_path = home().join("daemon.json");
     std::fs::write(&disc_path, serde_json::to_vec_pretty(&disc)?)?;
     #[cfg(unix)]

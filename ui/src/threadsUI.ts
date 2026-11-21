@@ -41,6 +41,13 @@ export function openThreads(panel: string, patch: Partial<ThreadsUI>) {
   notify();
 }
 
+/** Keep the drawer open but show the chat's splits again (something it opened is in one of them). */
+export function unzoom() {
+  if (!zoomed) return;
+  zoomed = null;
+  notify();
+}
+
 export function closeThreads(panel: string) {
   state = { ...state, [panel]: { ...(state[panel] ?? CLOSED), open: false } };
   if (zoomed === panel) zoomed = null;

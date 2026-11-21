@@ -2,7 +2,7 @@
 // → one thread (its quote, talk, reply box), or the document / page opened in its panel.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
-import { closeThreads, openThreads, setThreadSearch, setThreadView, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
+import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
 import { Avatar, renderMarkdown } from "./WorkspaceView";
 import type { Artifact, Member, Thread, Workspace } from "./types";
 
@@ -121,7 +121,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
   }, [threads, artifacts, filter, anchor, ui.msg, ui.query, byId]);
   const empty = {
     all: "還沒有產出。討論串、agent 寫的文件、agent 開過的網頁都會列在這裡。",
-    thread: "還沒有討論串。雙擊 agent 的回覆討論整則，或反白一段文字討論那段。",
+    thread: "還沒有討論串。在 agent 的回覆上按右鍵討論整則，或反白一段文字討論那段。",
     doc: "還沒有文件。agent 寫的文件會列在這裡。",
     page: "還沒有網頁。agent 用瀏覽器開過的網頁會列在這裡。",
   }[filter];
@@ -204,8 +204,8 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
     <div className="td-row">
       <button
         className="td-open"
-        // The drawer hides the chat's splits, where it opens: close it so it shows.
-        onClick={() => (send({ t: "artifact_open", panel, artifact: a.id }), closeThreads(panel))}
+        // The drawer hides the chat's splits, where it opens: show them again, and keep the list.
+        onClick={() => (send({ t: "artifact_open", panel, artifact: a.id }), unzoom())}
         title={a.kind === "page" ? `在 @${who?.alias ?? "agent"} 的瀏覽器打開 ${a.target}` : "打開文件"}
       >
         <span className="td-num">
@@ -226,7 +226,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
 /** Whether a thread is about the whole reply or a selected part of it. */
 function Kind({ whole }: { whole: boolean }) {
   return (
-    <span className={`td-kind ${whole ? "whole" : "part"}`} title={whole ? "討論整則回覆（雙擊訊息開的）" : "討論反白的一段"}>
+    <span className={`td-kind ${whole ? "whole" : "part"}`} title={whole ? "討論整則回覆" : "討論反白的一段"}>
       {whole ? "整則" : "片段"}
     </span>
   );

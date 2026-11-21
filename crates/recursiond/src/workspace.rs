@@ -98,12 +98,27 @@ pub struct Message {
     /// A thread's conclusion brought back to the main chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_thread: Option<ThreadRef>,
+    /// The message the human was answering (their "回覆").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyRef>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
     #[serde(flatten)]
     pub body: Body,
 }
+
+/// What a reply points at, copied when sent so it still reads right if the original changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplyRef {
+    pub msg: String,
+    /// "you" or a member id.
+    pub from: String,
+    /// The start of its text.
+    pub text: String,
+}
+
+pub const REPLY_EXCERPT: usize = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ThreadRef {
@@ -409,7 +424,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

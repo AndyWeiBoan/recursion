@@ -29,8 +29,9 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
   const acct = accountName(useAccounts(), m);
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState(false);
+  const busy = m.status !== "idle";
   return (
-    <div className={`tree-agent st-${m.status}`} onClick={() => send({ t: "panel_focus", panel })} title={STATUS_LABEL[m.status]}>
+    <div className={`tree-agent st-${m.status}${busy ? " busy" : ""}`} onClick={() => send({ t: "panel_focus", panel })} title={STATUS_LABEL[m.status]}>
       <Avatar m={m} size={16} />
       <span className="tree-agent-main">
         <span className="tree-agent-name">
@@ -41,19 +42,39 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
               @{m.alias}
             </b>
           )}
-          {!editing && (
-            <>
+          {!editing &&
+            (busy ? (
+              <span className="tree-agent-model tree-agent-busy">
+                {STATUS_LABEL[m.status]}
+                <span className="dots" aria-hidden="true">
+                  <i>.</i>
+                  <i>.</i>
+                  <i>.</i>
+                </span>
+              </span>
+            ) : (
               <span className="tree-agent-model" title={acct ? `帳號：${acct}` : undefined}>
                 {m.model ?? m.kind}
                 {acct && ` · ${acct}`}
               </span>
-              <i className="st-dot" />
-            </>
-          )}
+            ))}
         </span>
         <ContextBar m={m} />
       </span>
-      {!editing && (
+      {!editing && busy && (
+        <button
+          className="tree-stop"
+          aria-label={`停止 @${m.alias}`}
+          title={`停止 @${m.alias}（其他 agent 繼續）`}
+          onClick={(e) => {
+            e.stopPropagation();
+            send({ t: "ws_stop_agent", panel, member: m.id });
+          }}
+        >
+          ■
+        </button>
+      )}
+      {!editing && !busy && (
         <button
           className="sess-more"
           aria-label={`@${m.alias} 的選單`}

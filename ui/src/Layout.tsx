@@ -33,6 +33,17 @@ function NodeView({ node, ctx }: { node: Node; ctx: Ctx }) {
   return <SplitView node={node} ctx={ctx} />;
 }
 
+/** A see-through cover over the whole window for the length of a drag, so documents (iframes) and
+ *  terminals underneath can't take the pointer. Their own styles stay untouched: WebKitGTK stops
+ *  touchpad scrolling in an iframe whose pointer-events were switched off and back on. */
+export function shield(cursor: string) {
+  const d = document.createElement("div");
+  d.className = "drag-shield";
+  d.style.cursor = cursor;
+  document.body.appendChild(d);
+  return () => d.remove();
+}
+
 function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx: Ctx }) {
   const ref = useRef<HTMLDivElement>(null);
   const [local, setLocal] = useState<number[] | null>(null);
@@ -54,15 +65,26 @@ function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx:
       latest = base.map((s, k) => (k === i ? a : k === i + 1 ? pair - a : s));
       setLocal(latest);
     };
+    // The divider keeps the pointer until it is let go, wherever that happens; any way the drag can
+    // end must end it, or the panels stay unclickable (they ignore the mouse while dragging).
+    const el = ev.currentTarget as HTMLElement;
+    el.setPointerCapture(ev.pointerId);
+    let done = false;
     const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.classList.remove("dragging");
+      if (done) return;
+      done = true;
+      el.removeEventListener("pointermove", move);
+      for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.removeEventListener(t, up);
+      window.removeEventListener("blur", up);
+      document.body.classList.remove("dragging", "dragging-row", "dragging-col");
+      unshield();
       send({ t: "layout_resize", window: ctx.window.id, split: node.id, sizes: latest });
     };
     document.body.classList.add("dragging", node.dir === "row" ? "dragging-row" : "dragging-col");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up, { once: true });
+    const unshield = shield(node.dir === "row" ? "col-resize" : "row-resize");
+    el.addEventListener("pointermove", move);
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.addEventListener(t, up);
+    window.addEventListener("blur", up);
   };
 
   return (

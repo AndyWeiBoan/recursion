@@ -220,7 +220,7 @@ impl App {
             other => return Err(format!("未知的文件動作：{other}")),
         };
         let via = crate::workspace::DocVia { doc: d.id.clone(), title: d.title.clone(), data: data.to_string() };
-        self.hub.send(&d.chat, text, cwd, Some(via)).await
+        self.hub.send(&d.chat, text, cwd, Some(via), None).await
     }
 }
 

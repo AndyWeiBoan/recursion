@@ -1,10 +1,10 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
 import DOMPurify from "dompurify";
 import { marked } from "marked";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
-import { openThreadsFor, openWholeThread, ThreadDrawer } from "./ThreadDrawer";
+import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Thread, type TurnUsage } from "./types";
@@ -137,7 +137,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
         ) : (
           <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} />
         )}
-        <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
+        <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
       </div>
       {ui.open && <ThreadDrawer panel={panel} ws={ws} byId={byId} ui={ui} />}
     </div>
@@ -392,12 +392,26 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   );
 }
 
-/** The agent reply a double-click on `t` opens a thread for, unless it landed on something clickable. */
-function wholeTarget(t: EventTarget): HTMLElement | null {
-  const el = t as HTMLElement;
-  if (el.closest?.("a, button, input, textarea, select, summary, .m-tool")) return null;
-  return el.closest?.<HTMLElement>("[data-threadable]") ?? null;
+// The message each chat's composer is replying to. Outside React: the menu sets it, the composer shows it.
+let replying: Record<string, string | null> = {};
+const replySubs = new Set<() => void>();
+function setReplying(panel: string, msg: string | null) {
+  replying = { ...replying, [panel]: msg };
+  replySubs.forEach((f) => f());
 }
+function useReplying(panel: string) {
+  return useSyncExternalStore(
+    (f) => (replySubs.add(f), () => replySubs.delete(f)),
+    () => replying[panel] ?? null,
+  );
+}
+
+/** Who wrote a message, as shown above a reply. */
+const authorName = (from: string, byId: Map<string, Member>) => (from === "you" ? "你" : "@" + (byId.get(from)?.alias ?? "已離開"));
+/** One line of a message's text for a reply preview. */
+const excerpt = (text: string) => text.replace(/[#>*_`|\-]+/g, " ").replace(/\s+/g, " ").trim();
+
+type CtxMenu = { x: number; y: number; msg: Msg; threadable: boolean; quote: string };
 
 function Transcript({
   panel,
@@ -430,6 +444,24 @@ function Transcript({
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [messages.length, lastLen, busy.length]);
 
+  const [menu, setMenu] = useState<CtxMenu | null>(null);
+  // Tool calls one agent makes back to back (within one turn) show as one line.
+  const { runs, inRun } = useMemo(() => {
+    const runs = new Map<string, Msg[]>();
+    const inRun = new Set<string>();
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.kind !== "tool") continue;
+      let j = i + 1;
+      while (j < messages.length && messages[j].kind === "tool" && messages[j].from === m.from && !messages[j].turn) j++;
+      if (j - i > 1) {
+        runs.set(m.id, messages.slice(i, j));
+        for (const x of messages.slice(i + 1, j)) inRun.add(x.id);
+      }
+      i = j - 1;
+    }
+    return { runs, inRun };
+  }, [messages]);
   // Text selected inside one agent reply → a "discuss this" button next to it.
   const [pick, setPick] = useState<{ x: number; y: number; msg: string; quote: string } | null>(null);
   const readSelection = (at?: { x: number; y: number }) => {
@@ -466,21 +498,23 @@ function Transcript({
         setTimeout(() => readSelection(at));
       }}
       onKeyUp={(e) => e.shiftKey && readSelection()}
-      // Double-click a reply = discuss the whole of it. Its second press must not select a word.
-      onMouseDown={(e) => {
-        if (e.detail === 2 && wholeTarget(e.target)) e.preventDefault();
-      }}
-      onDoubleClick={(e) => {
-        const b = wholeTarget(e.target);
-        if (!b) return;
-        window.getSelection()?.removeAllRanges();
+      // Right-click a message: reply to it, discuss it (whole or the selected part), copy.
+      onContextMenu={(e) => {
+        const el = (e.target as HTMLElement).closest<HTMLElement>("[data-msg]");
+        if (!el || (e.target as HTMLElement).closest("a, input, textarea")) return;
+        const msg = messages.find((x) => x.id === el.dataset.msg);
+        if (!msg || msg.kind !== "text") return;
+        e.preventDefault();
+        const sel = window.getSelection();
+        const quote = sel && !sel.isCollapsed && el.contains(sel.anchorNode) && el.contains(sel.focusNode) ? sel.toString().trim() : "";
         setPick(null);
-        openWholeThread(panel, b.dataset.msg!, threads);
+        setMenu({ x: e.clientX, y: e.clientY, msg, threadable: el.dataset.threadable !== undefined, quote });
       }}
       onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         setPick(null);
+        setMenu(null);
       }}
       onClick={(e) => {
         const a = (e.target as HTMLElement).closest("a");
@@ -491,15 +525,18 @@ function Transcript({
       }}
     >
       {messages.map((m, i) => {
+        if (inRun.has(m.id)) return null;
         const prev = messages[i - 1];
         const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
-        return <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} />;
+        return (
+          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} group={runs.get(m.id)} />
+        );
       })}
       {waiting.map((b) => (
         <div key={b.id} className="row agent">
           <Avatar m={b} />
           <div className="ws-busy">
-            <span className="spin">✳</span> @{b.alias} {STATUS_LABEL[b.status]}… <span className="dim">esc 停止</span>
+            <span className="spin">✳</span> @{b.alias} {STATUS_LABEL[b.status]}… <span className="dim">esc 全部停止</span>
           </div>
         </div>
       ))}
@@ -526,7 +563,70 @@ function Transcript({
           </button>,
           document.body,
         )}
+      {menu && <MessageMenu panel={panel} menu={menu} threads={threads} onClose={() => setMenu(null)} />}
     </div>
+  );
+}
+
+function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: CtxMenu; threads: Thread[]; onClose: () => void }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const restore = overlay(); // native browser panels would draw on top of it
+    const away = (e: Event) => {
+      if (!(e.target as HTMLElement).closest?.(".ctx-menu")) close.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close.current();
+      }
+    };
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", close.current);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", close.current);
+      restore();
+    };
+  }, []);
+  const m = menu.msg;
+  const text = m.kind === "text" ? m.text : "";
+  const hasWhole = threads.some((t) => t.msg === m.id && t.whole);
+  const act = (f: () => void) => () => (f(), onClose());
+  return createPortal(
+    <div
+      className="menu ctx-menu"
+      role="menu"
+      style={{ left: menu.x, top: menu.y }}
+      ref={(el) => {
+        // Keep it fully on screen: its size is only known once it is drawn.
+        if (!el) return;
+        el.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - el.offsetWidth - 8))}px`;
+        el.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - el.offsetHeight - 8))}px`;
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button role="menuitem" onClick={act(() => setReplying(panel, m.id))}>
+        ↩ 回覆
+      </button>
+      {menu.threadable && (
+        <button role="menuitem" onClick={act(() => openWholeThread(panel, m.id, threads))}>
+          💬 {hasWhole ? "打開整則的討論串" : "討論整則"}
+        </button>
+      )}
+      {menu.threadable && menu.quote && (
+        <button role="menuitem" onClick={act(() => (openThreadsFor(panel, m.id, 0, menu.quote), window.getSelection()?.removeAllRanges()))}>
+          💬 討論選取的這段
+        </button>
+      )}
+      <button role="menuitem" onClick={act(() => void navigator.clipboard?.writeText(menu.quote || text))}>
+        ⧉ {menu.quote ? "複製選取的字" : "複製整則"}
+      </button>
+    </div>,
+    document.body,
   );
 }
 
@@ -538,6 +638,7 @@ const MessageView = memo(function MessageView({
   first,
   aliases,
   threads,
+  group,
 }: {
   panel: string;
   m: Msg;
@@ -547,16 +648,27 @@ const MessageView = memo(function MessageView({
   aliases: string[];
   /** Threads opened on this message. */
   threads: number;
+  /** For the first of several tool calls in a row: all of them, shown as one line. */
+  group?: Msg[];
 }) {
   const accounts = useAccounts();
-  const [open, setOpen] = useState(false);
 
   if (m.from === "you" && m.kind === "text") {
     const to = m.to?.length ? m.to.map((id) => "@" + (byId.get(id)?.alias ?? "?")).join(" ") : "全部";
     return (
       <div className="row you">
         <div className="bubble-col">
-          {m.via ? <DocSubmission via={m.via} panel={panel} /> : <div className="bubble you" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />}
+          {m.reply_to && (
+            <button className="reply-ref" onClick={() => showInChat(m.reply_to!.msg)} title="跳到被回覆的訊息">
+              <span className="reply-who">↩ {authorName(m.reply_to.from, byId)}</span>
+              <span className="reply-text">{excerpt(m.reply_to.text)}</span>
+            </button>
+          )}
+          {m.via ? (
+            <DocSubmission via={m.via} panel={panel} />
+          ) : (
+            <div className="bubble you" data-msg={m.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />
+          )}
           <div className="meta">
             → {to} · {time(m.ts)}
           </div>
@@ -608,7 +720,7 @@ const MessageView = memo(function MessageView({
           {!m.streaming && who && threads > 0 && (
             <button
               className="thread-btn has"
-              title={`${threads} 個討論串（雙擊訊息：討論整則；反白一段：討論那段）`}
+              title={`${threads} 個討論串（在訊息上按右鍵可以開新的）`}
               // Keep the text selection: it becomes the quote.
               onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => {
@@ -624,26 +736,9 @@ const MessageView = memo(function MessageView({
         </div>
       );
       break;
-    case "tool": {
-      const firstLine = (m.result ?? "").split("\n").find((l) => l.trim()) ?? "";
-      body = (
-        <div className={`m-tool${m.is_error ? " err" : ""}`}>
-          <button className="m-tool-head" onClick={() => setOpen((v) => !v)} title="點擊展開">
-            <span className="tool-ic">{open ? "▾" : "▸"}</span>
-            <b>{m.name}</b>
-            {m.summary && <span className="m-tool-sum">{m.summary}</span>}
-          </button>
-          <div className="m-tool-res">⎿ {m.result == null ? "執行中…" : firstLine || "（沒有輸出）"}</div>
-          {open && (
-            <div className="m-tool-detail">
-              {m.detail && <pre>{m.detail}</pre>}
-              {m.result && <pre className="res">{m.result}</pre>}
-            </div>
-          )}
-        </div>
-      );
+    case "tool":
+      body = group && group.length > 1 ? <ToolGroup tools={group} /> : <ToolView m={m} />;
       break;
-    }
     case "permission":
       body = (
         <div className={`m-perm st-${m.state}`}>
@@ -719,9 +814,72 @@ const MessageView = memo(function MessageView({
   );
 });
 
+type ToolMsg = Extract<Msg, { kind: "tool" }>;
+
+function ToolView({ m }: { m: Msg }) {
+  const [open, setOpen] = useState(false);
+  if (m.kind !== "tool") return null;
+  const firstLine = (m.result ?? "").split("\n").find((l) => l.trim()) ?? "";
+  return (
+    <div className={`m-tool${m.is_error ? " err" : ""}`}>
+      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} title="點擊展開">
+        <span className="tool-ic">{open ? "▾" : "▸"}</span>
+        <b>{m.name}</b>
+        {m.summary && <span className="m-tool-sum">{m.summary}</span>}
+      </button>
+      <div className="m-tool-res">⎿ {m.result == null ? "執行中…" : firstLine || "（沒有輸出）"}</div>
+      {open && (
+        <div className="m-tool-detail">
+          {m.detail && <pre>{m.detail}</pre>}
+          {m.result && <pre className="res">{m.result}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Several tool calls in a row, as one line: what's running now, or how many and which. Click to list them. */
+function ToolGroup({ tools }: { tools: Msg[] }) {
+  const [open, setOpen] = useState(false);
+  const ts = tools as ToolMsg[];
+  const running = ts.find((t) => t.result == null);
+  const failed = ts.filter((t) => t.is_error).length;
+  const counts = new Map<string, number>();
+  for (const t of ts) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+  const names = [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join("、");
+  return (
+    <div className={`m-tools${failed ? " err" : ""}${running ? " live" : ""}`}>
+      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} title={open ? "收起" : "展開每一個工具"}>
+        <span className="tool-ic">{open ? "▾" : "▸"}</span>
+        {running && !open ? (
+          <>
+            <span className="spin" aria-hidden="true">⟳</span>
+            <b>{running.name}</b>
+            {running.summary && <span className="m-tool-sum">{running.summary}</span>}
+            <span className="m-tools-n">第 {ts.indexOf(running) + 1} 個</span>
+          </>
+        ) : (
+          <span className="m-tools-sum">
+            用了 {ts.length} 個工具：{names}
+            {failed > 0 && <span className="m-tools-fail">　{failed} 個失敗</span>}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="m-tools-list">
+          {ts.map((t) => (
+            <ToolView key={t.id} m={t} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Composer({
   panel,
   members,
+  messages,
   disabled,
   busy,
   focused,
@@ -729,6 +887,7 @@ function Composer({
 }: {
   panel: string;
   members: Member[];
+  messages: Msg[];
   disabled: boolean;
   busy: boolean;
   focused: boolean;
@@ -739,9 +898,11 @@ function Composer({
   const [caret, setCaret] = useState(0);
   const [menuOff, setMenuOff] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const replyId = useReplying(panel);
+  const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
   useEffect(() => {
-    if (focused && !disabled) ref.current?.focus();
-  }, [focused, disabled]);
+    if ((focused || replyId) && !disabled) ref.current?.focus();
+  }, [focused, disabled, replyId]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -773,7 +934,8 @@ function Composer({
   };
   const submit = () => {
     if (!text.trim() || disabled) return;
-    send({ t: "ws_send", panel, text });
+    send({ t: "ws_send", panel, text, reply_to: reply?.id });
+    setReplying(panel, null);
     setText("");
     setCaret(0);
   };
@@ -784,6 +946,17 @@ function Composer({
         <div className="queue-bar">
           <span>已排隊 {queued} 則，本回合結束後送出</span>
           <button onClick={() => send({ t: "ws_send_now", panel })}>中斷本回合，立即送出</button>
+        </div>
+      )}
+      {reply && reply.kind === "text" && (
+        <div className="reply-bar">
+          <button className="reply-ref" onClick={() => showInChat(reply.id)} title="跳到這則訊息">
+            <span className="reply-who">↩ 回覆 {authorName(reply.from, new Map(members.map((x) => [x.id, x])))}</span>
+            <span className="reply-text">{excerpt(reply.text)}</span>
+          </button>
+          <button className="reply-x" onClick={() => setReplying(panel, null)} aria-label="取消回覆" title="取消回覆（Esc）">
+            ✕
+          </button>
         </div>
       )}
       {showMenu && (
@@ -820,21 +993,19 @@ function Composer({
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             submit();
+          } else if (e.key === "Escape" && reply) {
+            e.preventDefault();
+            setReplying(panel, null);
           } else if (e.key === "Escape" && busy) {
             e.preventDefault();
             send({ t: "ws_stop", panel });
           }
         }}
       />
-      {busy ? (
-        <button className="stop-btn" onClick={() => send({ t: "ws_stop", panel })} title="停止（esc）">
-          ■ 停止
-        </button>
-      ) : (
-        <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()} title="送出（Enter）">
-          ↑
-        </button>
-      )}
+      {/* Stopping lives on each agent in the sidebar (and Esc stops all); sending while they work queues. */}
+      <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()} title={busy ? "送出（Enter）：這一輪結束後送給 agent" : "送出（Enter）"}>
+        ↑
+      </button>
     </div>
   );
 }

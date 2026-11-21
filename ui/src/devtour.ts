@@ -341,17 +341,18 @@ export async function start(project: string) {
   await click(q(".thread-drawer .td-x")!);
   await sleep(1500);
 
-  // 9. Double-click = whole message
-  caption(9, "雙擊整則訊息", "針對整則回覆開討論串；再雙擊一次會回到同一個");
+  // 9. Right-click = whole message
+  caption(9, "右鍵 →「討論整則」", "針對整則回覆開討論串；已經有的話會打開同一個");
   const first = agentBubbles()[0];
   first.scrollIntoView({ block: "center" });
   await sleep(600);
   await moveToEl(first);
   await sleep(200);
   ripple();
-  await sleep(120);
-  ripple();
-  first.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  const r = first.getBoundingClientRect();
+  first.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20 }));
+  await sleep(900);
+  await click(byText(".ctx-menu button", "討論整則")!);
   await sleep(2800);
   await click(byText(".thread-drawer .td-back", "返回")!);
   await sleep(600);

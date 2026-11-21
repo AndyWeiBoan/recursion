@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 19;
+const PROTOCOL: u32 = 21;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -20,6 +20,20 @@ struct DaemonInfo {
     protocol: u32,
     #[serde(default)]
     pid: u32,
+    /// When the daemon started (ms since epoch); 0 from daemons older than this field.
+    #[serde(default)]
+    started: u64,
+}
+
+/// The daemon speaks our protocol and runs the binary that is on disk now. A rebuilt binary
+/// (dev, or an upgrade that kept the protocol) means the running one has old code.
+fn current(info: &DaemonInfo) -> bool {
+    let built = std::fs::metadata(daemon_binary())
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
+    info.protocol == PROTOCOL && built.is_none_or(|b| b <= info.started)
 }
 
 fn home() -> PathBuf {
@@ -79,10 +93,10 @@ fn spawn_daemon() -> std::io::Result<()> {
 #[tauri::command]
 fn daemon_info() -> Result<DaemonInfo, String> {
     if let Some(info) = read_discovery().filter(healthy) {
-        if info.protocol == PROTOCOL {
+        if current(&info) {
             return Ok(info);
         }
-        // Outdated daemon (app was upgraded): stop it; layout is persisted, so nothing is lost but running shells.
+        // Outdated daemon (app upgraded, or its binary rebuilt): stop it; layout is persisted, so nothing is lost but running shells.
         #[cfg(unix)]
         unsafe {
             libc::kill(info.pid as i32, libc::SIGTERM);
@@ -96,7 +110,7 @@ fn daemon_info() -> Result<DaemonInfo, String> {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         std::thread::sleep(Duration::from_millis(150));
-        if let Some(info) = read_discovery().filter(|i| i.protocol == PROTOCOL).filter(healthy) {
+        if let Some(info) = read_discovery().filter(current).filter(healthy) {
             return Ok(info);
         }
     }

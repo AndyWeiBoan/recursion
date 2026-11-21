@@ -119,7 +119,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, usage: None, body }
 }
 
 impl Hub {
@@ -507,7 +507,7 @@ impl Hub {
 
     /// A human message. It is shown right away; the round starts once the human has been quiet
     /// for MERGE_WINDOW_MS, or — if a round is running — right after that round ends.
-    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>) -> Result<(), String> {
+    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>) -> Result<(), String> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Ok(());
@@ -521,6 +521,18 @@ impl Hub {
         let mut m = msg("you", Body::Text { text }, false);
         m.to = if all { vec![] } else { targeted.clone() };
         m.via = via;
+        m.reply_to = reply_to.and_then(|id| {
+            self.with_ws(panel, |ws| {
+                ws.messages.iter().find(|x| x.id == id).and_then(|x| match &x.body {
+                    Body::Text { text } => Some(crate::workspace::ReplyRef {
+                        msg: x.id.clone(),
+                        from: x.from.clone(),
+                        text: text.chars().take(crate::workspace::REPLY_EXCERPT).collect(),
+                    }),
+                    _ => None,
+                })
+            })
+        });
         self.push_msg(panel, m);
         let gen = self.rt(panel, |r| {
             r.cwd = cwd.clone();
@@ -626,28 +638,46 @@ impl Hub {
     async fn interrupt_all(self: &Arc<Self>, panel: &str) {
         let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().filter(|m| m.status != MemberStatus::Idle).map(|m| m.id.clone()).collect());
         for member in members {
-            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), member.clone())).and_then(|p| p.codex.clone());
-            match rpc {
-                Some(rpc) => rpc.interrupt(self, panel, &member).await,
-                None => {
-                    let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
+            self.interrupt(panel, &member).await;
+        }
+    }
+
+    /// Stop one agent's turn; the others keep going.
+    pub async fn stop_member(self: &Arc<Self>, panel: &str, member: &str) {
+        let Some(alias) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member && m.status != MemberStatus::Idle).map(|m| m.alias.clone())) else {
+            return;
+        };
+        self.rt(panel, |r| r.pending.remove(member));
+        self.interrupt(panel, member).await;
+        self.system(panel, "system", &format!("已停止 @{alias}"), false);
+    }
+
+    /// Interrupt one agent's turn, killing it if it doesn't stop within a few seconds.
+    async fn interrupt(self: &Arc<Self>, panel: &str, member: &str) {
+        let member = member.to_string();
+        let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), member.clone())).and_then(|p| p.codex.clone());
+        match rpc {
+            Some(rpc) => rpc.interrupt(self, panel, &member).await,
+            None => {
+                let _ = self.write(panel, &member, json!({ "type": "control_request", "request_id": mid(), "request": { "subtype": "interrupt" } })).await;
+            }
+        }
+        let (hub, panel, member) = (self.clone(), panel.to_string(), member.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            let busy = hub.with_ws(&panel, |ws| ws.members.iter().any(|m| m.id == member && m.status != MemberStatus::Idle));
+            if busy {
+                hub.kill(&panel, &member).await;
+                hub.update_member(&panel, &member, |m| m.status = MemberStatus::Idle);
+                // It never reported the end of its turn: hand it the next round now if one is waiting.
+                let (again, cwd) = hub.rt(&panel, |r| (r.pending.remove(&member), r.cwd.clone()));
+                if again {
+                    spawn_trigger(hub.clone(), panel.clone(), member.clone(), cwd);
+                } else {
+                    spawn_member_done(hub.clone(), panel.clone(), member.clone(), cwd);
                 }
             }
-            let (hub, panel, member) = (self.clone(), panel.to_string(), member.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                let busy = hub.with_ws(&panel, |ws| ws.members.iter().any(|m| m.id == member && m.status != MemberStatus::Idle));
-                if busy {
-                    hub.kill(&panel, &member).await;
-                    hub.update_member(&panel, &member, |m| m.status = MemberStatus::Idle);
-                    // It never reported the end of its turn: hand it the next round now if one is waiting.
-                    let (again, cwd) = hub.rt(&panel, |r| (r.pending.remove(&member), r.cwd.clone()));
-                    if again {
-                        spawn_trigger(hub.clone(), panel.clone(), member.clone(), cwd);
-                    }
-                }
-            });
-        }
+        });
     }
 
     pub async fn decide(&self, request_id: &str, decision: &str) -> Result<(), String> {
@@ -761,7 +791,11 @@ impl Hub {
                 .filter_map(|x| match &x.body {
                     Body::Text { text } if x.from == "you" => {
                         let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
-                        Some(format!("[human → {to}]: {text}"))
+                        let re = x.reply_to.as_ref().map(|r| {
+                            let who = if r.from == "you" { "their own earlier message".to_string() } else { format!("@{}'s message", names.get(&r.from).cloned().unwrap_or_else(|| "agent".into())) };
+                            format!(", replying to {who}: \"{}{}\"", r.text.replace('\n', " "), if r.text.chars().count() >= crate::workspace::REPLY_EXCERPT { "…" } else { "" })
+                        });
+                        Some(format!("[human → {to}{}]: {text}", re.unwrap_or_default()))
                     }
                     Body::Text { text } if x.from_thread.is_some() => Some(format!(
                         "[@{} — conclusion of thread #{}, brought back to the chat]: {}",
