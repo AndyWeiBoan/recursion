@@ -257,6 +257,34 @@ impl Hub {
     }
 
     /// The card in the chat for a document an agent just wrote.
+    /// Notes something an agent made in the chat's 產出 list.
+    pub fn record_artifact(&self, panel: &str, kind: crate::workspace::ArtifactKind, target: &str, title: &str, by: &str) {
+        let a = self.with_ws(panel, |ws| ws.record_artifact(kind, target, title, by, crate::workspace::now_ms()));
+        self.emit(json!({ "t": "ws_artifact", "panel": panel, "artifact": a }));
+        self.mark_dirty(panel);
+    }
+
+    /// Lists documents this chat made that its 產出 list doesn't have yet.
+    pub fn adopt_docs(&self, panel: &str, docs: &[crate::model::Doc]) {
+        let added = self.with_ws(panel, |ws| {
+            let mut n = 0;
+            for d in docs {
+                if !ws.artifacts.iter().any(|a| a.kind == crate::workspace::ArtifactKind::Doc && a.target == d.id) {
+                    ws.record_artifact(crate::workspace::ArtifactKind::Doc, &d.id, &d.title, &d.member, d.updated);
+                    n += 1;
+                }
+            }
+            n
+        });
+        if added > 0 {
+            self.mark_dirty(panel);
+        }
+    }
+
+    pub fn artifact(&self, panel: &str, id: &str) -> Option<crate::workspace::Artifact> {
+        self.with_ws(panel, |ws| ws.artifacts.iter().find(|a| a.id == id).cloned())
+    }
+
     pub fn post_doc(&self, panel: &str, member: &str, doc: &crate::model::Doc, updated: bool) {
         self.push_msg(panel, msg(member, Body::Doc { doc: doc.id.clone(), title: doc.title.clone(), updated }, false));
     }

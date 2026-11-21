@@ -95,6 +95,13 @@ export async function connect() {
             return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
           });
           break;
+        case "ws_artifact":
+          wsUpdate(m.panel, (w) => {
+            const list = w.artifacts ?? [];
+            const i = list.findIndex((x) => x.id === m.artifact.id);
+            return { ...w, artifacts: i >= 0 ? list.map((x, k) => (k === i ? m.artifact : x)) : [...list, m.artifact] };
+          });
+          break;
         case "daemon_info":
           daemonInfo = m;
           accountSubs.forEach((f) => f());

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
 import { requestKind } from "./picker";
-import { WorkspaceView } from "./WorkspaceView";
+import { ChatHead, WorkspaceView } from "./WorkspaceView";
 import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
 import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
@@ -108,7 +108,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         <button className="kind" onClick={() => setMenu((v) => !v)} title="切換 panel 種類">
           {KIND_LABEL[panel.kind]} ▾
         </button>
-        <span className="title">{title}</span>
+        {panel.kind === "workspace" ? <ChatHead panel={panel.id} /> : <span className="title">{title}</span>}
         <span className="tools">
           <button
             title="左右分割（⌘D）"

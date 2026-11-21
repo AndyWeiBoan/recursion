@@ -87,6 +87,10 @@ const last = msgs.findLast((m) => m.t === "state");
 const browser = Object.values(last.state.panels).find((p) => p.kind === "browser");
 check(browser?.agent === agent, "the agent got its own browser panel");
 check(browser?.url?.startsWith(`${base}/hello`), `panel remembers where it ended up (${browser?.url})`);
+const pages = new Map(msgs.filter((m) => m.t === "ws_artifact" && m.artifact.kind === "page").map((m) => [m.artifact.id, m.artifact]));
+const titles = [...pages.values()].map((a) => a.title);
+console.log("產出 pages:", [...pages.values()].map((a) => `${a.title} ${a.target}`).join(" | "));
+check(titles.includes("Test Shop") && titles.includes("Hello") && [...pages.values()].every((a) => a.by === agent), "pages it visited are in the chat's 產出");
 
 ws.close();
 app.kill();

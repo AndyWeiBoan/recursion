@@ -141,6 +141,7 @@ impl App {
                 }
                 self.mark_changed();
                 self.hub.post_doc(panel, member, &doc, !created);
+                self.hub.record_artifact(panel, crate::workspace::ArtifactKind::Doc, &doc.id, &doc.title, member);
                 let verb = if created { "Created" } else { "Updated" };
                 text(
                     format!(

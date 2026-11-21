@@ -191,6 +191,10 @@ impl App {
                 self.mark_changed();
             }
         }
+        // Each page it lands on goes in the chat's 產出 list.
+        if let Some(url) = r["url"].as_str().filter(|u| u.starts_with("http")) {
+            self.hub.record_artifact(chat, crate::workspace::ArtifactKind::Page, url, r["title"].as_str().unwrap_or(""), member);
+        }
         Ok(match op {
             "open" | "read" => text(page_text(&r), false),
             "screenshot" => {

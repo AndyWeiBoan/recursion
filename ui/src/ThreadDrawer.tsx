@@ -1,9 +1,10 @@
-// Threads drawer on the right of a chat panel: searchable list → one thread (its quote, talk, reply box).
+// 產出 drawer on the right of a chat panel: one searchable list of its threads, documents and pages
+// → one thread (its quote, talk, reply box), or the document / page opened in its panel.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
-import { closeThreads, openThreads, setThreadSearch, setThreadView, type ThreadsUI } from "./threadsUI";
+import { closeThreads, openThreads, setThreadSearch, setThreadView, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
 import { Avatar, renderMarkdown } from "./WorkspaceView";
-import type { Member, Msg, Thread, Workspace } from "./types";
+import type { Artifact, Member, Thread, Workspace } from "./types";
 
 const STATUS: Record<Thread["status"], string> = { replying: "回覆中…", waiting: "等你回", brought: "已帶回" };
 
@@ -57,7 +58,7 @@ export function ThreadDrawer({ panel, ws, byId, ui }: { panel: string; ws: Works
         }
       }}
     >
-      {ui.view.kind === "list" && <ThreadList panel={panel} threads={threads} messages={ws.messages} byId={byId} ui={ui} />}
+      {ui.view.kind === "list" && <OutputList panel={panel} ws={ws} byId={byId} ui={ui} />}
       {ui.view.kind === "new" && <NewThread panel={panel} msg={ui.view.msg} quote={ui.view.quote} who={byId.get(ws.messages.find((m) => m.id === (ui.view as { msg: string }).msg)?.from ?? "")} />}
       {ui.view.kind === "thread" &&
         (() => {
@@ -69,25 +70,80 @@ export function ThreadDrawer({ panel, ws, byId, ui }: { panel: string; ws: Works
   );
 }
 
-function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; threads: Thread[]; messages: Msg[]; byId: Map<string, Member>; ui: ThreadsUI }) {
-  const anchor = ui.msg ? messages.find((m) => m.id === ui.msg) : undefined;
-  const shown = useMemo(
-    () =>
-      threads
-        .filter((t) => !ui.msg || t.msg === ui.msg)
-        .filter((t) => matches(t, ui.query, byId.get(t.agent)?.alias ?? ""))
-        .sort((a, b) => b.updated - a.updated),
-    [threads, ui.msg, ui.query, byId],
-  );
+const KINDS: { id: ArtifactFilter; label: string }[] = [
+  { id: "all", label: "全部" },
+  { id: "thread", label: "討論串" },
+  { id: "doc", label: "文件" },
+  { id: "page", label: "網頁" },
+];
+const ICON = { thread: "💬", doc: "📄", page: "🌐" };
+const KIND_WORD = { doc: "文件", page: "網頁" };
+
+/** `@claude` → agent, `#n` → threads only, anything else → fuzzy over the title, address and kind. */
+function artifactMatches(a: Artifact, query: string, alias: string) {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((tok) => {
+      if (/^#\d+$/.test(tok)) return false;
+      if (tok.startsWith("@")) return alias.toLowerCase().includes(tok.slice(1));
+      return fuzzy(tok, `${KIND_WORD[a.kind]} ${a.title} ${a.target} ${alias}`.toLowerCase());
+    });
+}
+
+function host(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+type Item = { kind: "thread"; at: number; t: Thread } | { kind: "doc" | "page"; at: number; a: Artifact };
+
+/** The drawer's list: threads, documents and pages of this chat, newest first. */
+function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byId: Map<string, Member>; ui: ThreadsUI }) {
+  const threads = ws.threads ?? [];
+  const artifacts = ws.artifacts ?? [];
+  const anchor = ui.msg ? ws.messages.find((m) => m.id === ui.msg) : undefined;
+  // A message's 💬 badge asks for its threads only.
+  const filter = anchor ? "thread" : ui.filter;
+  const count = (k: ArtifactFilter) => (k === "all" ? threads.length + artifacts.length : k === "thread" ? threads.length : artifacts.filter((a) => a.kind === k).length);
+  const shown = useMemo(() => {
+    const items: Item[] = [];
+    if (filter === "all" || filter === "thread")
+      for (const t of threads) if ((!ui.msg || t.msg === ui.msg) && matches(t, ui.query, byId.get(t.agent)?.alias ?? "")) items.push({ kind: "thread", at: t.updated, t });
+    if (!anchor)
+      for (const a of artifacts)
+        if ((filter === "all" || filter === a.kind) && artifactMatches(a, ui.query, byId.get(a.by)?.alias ?? "")) items.push({ kind: a.kind, at: a.updated, a });
+    return items.sort((x, y) => y.at - x.at);
+  }, [threads, artifacts, filter, anchor, ui.msg, ui.query, byId]);
+  const empty = {
+    all: "還沒有產出。討論串、agent 寫的文件、agent 開過的網頁都會列在這裡。",
+    thread: "還沒有討論串。雙擊 agent 的回覆討論整則，或反白一段文字討論那段。",
+    doc: "還沒有文件。agent 寫的文件會列在這裡。",
+    page: "還沒有網頁。agent 用瀏覽器開過的網頁會列在這裡。",
+  }[filter];
   return (
     <>
       <header className="td-head">
-        <b>討論串</b>
-        <span className="dim">{threads.length}</span>
-        <button className="td-x" onClick={() => closeThreads(panel)} aria-label="關閉討論串" title="關閉（Esc）">
+        <b>產出</b>
+        <span className="dim">{count("all")}</span>
+        <button className="td-x" onClick={() => closeThreads(panel)} aria-label="關閉產出" title="關閉（Esc）">
           ✕
         </button>
       </header>
+      {!anchor && (
+        <div className="td-tabs" role="tablist">
+          {KINDS.map((k) => (
+            <button key={k.id} role="tab" aria-selected={filter === k.id} className={filter === k.id ? "on" : ""} onClick={() => setThreadSearch(panel, { filter: k.id })}>
+              {k.label}
+              {k.id !== "all" && count(k.id) > 0 && <span className="dim"> {count(k.id)}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="td-search">
         {anchor && (
           <span className="td-chip" title="只看這則回覆的討論串">
@@ -106,29 +162,8 @@ function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; thr
         />
       </div>
       <div className="td-list">
-        {shown.map((t) => {
-          const who = byId.get(t.agent);
-          return (
-            <div key={t.id} className={`td-row st-${t.status}`}>
-              <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
-                <span className="td-num">#{t.num}</span>
-                <span className="td-main">
-                  <span className="td-quote">
-                    <Kind whole={!!t.whole} />「{t.quote.replace(/\s+/g, " ")}」
-                  </span>
-                  <span className="td-meta">
-                    @{who?.alias ?? "已離開"} · {t.messages.filter((m) => m.from !== "system").length} 則 · <i className="td-dot" />
-                    {STATUS[t.status]}
-                  </span>
-                </span>
-              </button>
-              <button className="td-goto" onClick={() => showInChat(t.msg)} title="在主對話中找到原訊息" aria-label={`#${t.num} 的原訊息`}>
-                ↖
-              </button>
-            </div>
-          );
-        })}
-        {shown.length === 0 && <div className="td-empty">{threads.length ? "沒有符合的討論串" : "還沒有討論串。雙擊 agent 的回覆討論整則，或反白一段文字討論那段。"}</div>}
+        {shown.map((it) => (it.kind === "thread" ? <ThreadRow key={it.t.id} panel={panel} t={it.t} who={byId.get(it.t.agent)} /> : <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />))}
+        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length > 0 && ui.query ? "沒有符合的產出" : empty}</div>}
       </div>
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>
@@ -136,6 +171,55 @@ function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; thr
         </button>
       )}
     </>
+  );
+}
+
+function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }) {
+  return (
+    <div className={`td-row st-${t.status}`}>
+      <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
+        <span className="td-num">
+          <span className="td-icon">{ICON.thread}</span>#{t.num}
+        </span>
+        <span className="td-main">
+          <span className="td-quote">
+            <Kind whole={!!t.whole} />「{t.quote.replace(/\s+/g, " ")}」
+          </span>
+          <span className="td-meta">
+            @{who?.alias ?? "已離開"} · {t.messages.filter((m) => m.from !== "system").length} 則 · <i className="td-dot" />
+            {STATUS[t.status]}
+          </span>
+        </span>
+      </button>
+      <button className="td-goto" onClick={() => showInChat(t.msg)} title="在主對話中找到原訊息" aria-label={`#${t.num} 的原訊息`}>
+        ↖
+      </button>
+    </div>
+  );
+}
+
+function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Member }) {
+  const title = a.title || (a.kind === "page" ? host(a.target) : "未命名文件");
+  return (
+    <div className="td-row">
+      <button
+        className="td-open"
+        // The drawer hides the chat's splits, where it opens: close it so it shows.
+        onClick={() => (send({ t: "artifact_open", panel, artifact: a.id }), closeThreads(panel))}
+        title={a.kind === "page" ? `在 @${who?.alias ?? "agent"} 的瀏覽器打開 ${a.target}` : "打開文件"}
+      >
+        <span className="td-num">
+          <span className="td-icon">{ICON[a.kind]}</span>
+        </span>
+        <span className="td-main">
+          <span className="td-quote">{title}</span>
+          <span className="td-meta">
+            @{who?.alias ?? "已離開"} · {a.kind === "page" ? `${host(a.target)} · ` : ""}
+            {time(a.updated)}
+          </span>
+        </span>
+      </button>
+    </div>
   );
 }
 

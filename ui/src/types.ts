@@ -86,6 +86,7 @@ export type Cmd =
   | { t: "ws_send_now"; panel: string }
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
+  | { t: "artifact_open"; panel: string; artifact: string }
   | { t: "ws_roster" }
   | { t: "thread_open"; panel: string; msg: string; quote: string; text: string }
   | { t: "thread_send"; panel: string; thread: string; text: string }
@@ -184,7 +185,21 @@ export interface Workspace {
   members: Member[];
   messages: Msg[];
   threads?: Thread[];
+  /** Documents and pages the agents made for this chat. */
+  artifacts?: Artifact[];
   round?: { active: boolean; queued: number };
+}
+
+export interface Artifact {
+  id: string;
+  kind: "doc" | "page";
+  /** Doc id, or the page's url. */
+  target: string;
+  title: string;
+  /** Member id of the agent that made it. */
+  by: string;
+  created: number;
+  updated: number;
 }
 
 export function leaves(n: Node): string[] {

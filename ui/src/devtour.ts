@@ -219,9 +219,9 @@ export async function start(project: string) {
   await click(model, () => setValue(model, [...model.options].find((o) => /sonnet/i.test(o.text + o.value))!.value));
   await sleep(500);
   await click(q(".add-card.big .add-submit")!);
-  const add = await waitFor(() => q(".ws-members .chip.add"));
+  const add = await waitFor(() => q(".chat-head .chat-add"));
   await sleep(900);
-  caption(2, "再加一個 agent", "按「＋ agent」，這次選 Codex");
+  caption(2, "再加一個 agent", "按標題列的「＋」，這次選 Codex");
   await click(add);
   const form = await waitFor(() => q(".add-card:not(.big)"));
   await click(byText(".add-card:not(.big) .kind-card", "Codex")!);

@@ -130,7 +130,6 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   return (
     <div className="ws-shell">
       <div className="ws">
-        <MembersBar panel={panel} members={members} bigForm={members.length === 0 && ws.messages.length === 0} threads={ws.threads?.length ?? 0} drawerOpen={ui.open} />
         {members.length === 0 && ws.messages.length === 0 ? (
           <div className="ws-log ws-center">
             <AddAgent panel={panel} big />
@@ -185,40 +184,48 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   );
 }
 
-// Who is in the chat is listed in the sidebar tree; this bar keeps "add" and the account meters.
-function MembersBar({ panel, members, bigForm, threads, drawerOpen }: { panel: string; members: Member[]; bigForm: boolean; threads: number; drawerOpen: boolean }) {
+/** The chat's part of its panel header: who is in it, add an agent, the 產出 drawer, what it cost. */
+export function ChatHead({ panel }: { panel: string }) {
+  const ws = useWorkspace(panel);
+  const ui = useThreadsUI(panel);
   const [adding, setAdding] = useState(false);
   useEffect(() => onAddAgentRequest(panel, () => setAdding(true)), [panel]);
+  const members = ws?.members ?? [];
   // The empty chat shows the big form instead; otherwise "add" must always be reachable,
   // including when every agent was removed from a chat that has history.
-  if (bigForm) return <div className="ws-members is-empty" />;
+  if (!ws || (members.length === 0 && ws.messages.length === 0)) return <span className="title" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
-  const usage = members.find((m) => m.usage?.five_hour !== undefined)?.usage;
+  const outputs = (ws.threads?.length ?? 0) + (ws.artifacts?.length ?? 0);
   return (
-    <div className="ws-members">
-      <div className="chip-wrap">
-        <button className="chip add" onClick={() => setAdding((v) => !v)}>
-          ＋ agent
+    <span className="title chat-head">
+      <span className="chat-faces">
+        {members.map((m) => (
+          <span key={m.id} className={`chat-face st-${m.status}`} title={`@${m.alias} · ${m.model ?? m.kind}`}>
+            <Avatar m={m} size={18} />
+          </span>
+        ))}
+        <button className="chat-add" onClick={() => setAdding((v) => !v)} title="新增 agent" aria-label="新增 agent">
+          ＋
         </button>
-        {adding && (
-          <Modal title="新增 agent" onClose={() => setAdding(false)}>
-            <AddAgent panel={panel} onDone={() => setAdding(false)} />
-          </Modal>
-        )}
-      </div>
-      <button
-        className={`chip threads-btn${drawerOpen ? " on" : ""}`}
-        onClick={() => (drawerOpen ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
-        title="討論串（打開時會暫時收起旁邊的 split）"
-      >
-        💬 討論串{threads > 0 ? ` ${threads}` : ""}
-      </button>
-      <span className="ws-meta">
-        {usage?.five_hour !== undefined && <>5h {Math.round(usage.five_hour * 100)}%</>}
-        {usage?.seven_day !== undefined && <> · 7d {Math.round(usage.seven_day * 100)}%</>}
-        {cost > 0 && <> · ${cost.toFixed(2)}</>}
       </span>
-    </div>
+      {adding && (
+        <Modal title="新增 agent" onClose={() => setAdding(false)}>
+          <AddAgent panel={panel} onDone={() => setAdding(false)} />
+        </Modal>
+      )}
+      <button
+        className={`chat-outputs${ui.open ? " on" : ""}`}
+        onClick={() => (ui.open ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
+        title="產出：討論串、文件、網頁（打開時會暫時收起旁邊的 split）"
+      >
+        📎 產出{outputs > 0 ? ` ${outputs}` : ""}
+      </button>
+      {cost > 0 && (
+        <span className="chat-cost" title="這個群聊到目前花的錢（帳號用量在側欄下面）">
+          ${cost.toFixed(2)}
+        </span>
+      )}
+    </span>
   );
 }
 

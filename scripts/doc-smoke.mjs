@@ -63,6 +63,14 @@ check(withDoc?.state.sessions[0].windows[0].focus === panel, "chat panel kept th
 send({ t: "doc_get", session, doc: docId });
 const got = await until((m) => m.t === "doc" && m.doc === docId, 5000);
 check(/<table/i.test(got?.html ?? ""), "doc HTML saved and served");
+const art = await until((m) => m.t === "ws_artifact" && m.panel === panel && m.artifact.kind === "doc" && m.artifact.target === docId, 5000);
+check(art?.artifact.by === claude && art.artifact.title === card?.msg.title, "doc listed in the chat's 產出");
+const docPanel = opened && Object.entries(withDoc.state.panels).find(([, x]) => x.url === `doc:${docId}`)[0];
+send({ t: "panel_close", panel: docPanel });
+const closedAt = (await until((m) => m.t === "state" && !Object.values(m.state.panels).some((x) => x.url === `doc:${docId}`), 5000)) && msgs.length;
+send({ t: "artifact_open", panel, artifact: art?.artifact.id });
+const reopened = await until((m) => m.t === "state" && Object.values(m.state.panels).some((x) => x.url === `doc:${docId}`), 5000, closedAt || 0);
+check(!!closedAt && !!reopened, "產出 reopens a closed doc");
 const cardAt = msgs.indexOf(card);
 await until((m) => m.t === "ws_member" && m.member.id === claude && m.member.status === "idle", 60000, cardAt);
 send({ t: "ws_roster" });
@@ -89,7 +97,7 @@ if (!process.env.SKIP_CODEX) {
   check(cu?.msg.usage.output > 0, `codex turn usage recorded (${JSON.stringify(cu?.msg.usage)})`);
   const cm = msgs.findLast((m) => m.t === "ws_member" && m.member.id === codex)?.member;
   check(cm?.context_used > 0 && cm?.context_window > 0, `codex context tracked (${cm?.context_used}/${cm?.context_window})`);
-  const usedTool = msgs.some((m) => m.t === "ws_msg" && m.msg.from === codex && m.msg.kind === "tool" && /doc_read/.test(m.msg.name + m.msg.summary));
+  const usedTool = msgs.some((m) => m.t === "ws_msg" && m.msg.from === codex && m.msg.kind === "tool" && /doc_read|讀文件/.test(m.msg.name + m.msg.summary));
   check(usedTool, "codex called doc_read");
   console.log("  codex said:", answer?.msg.text.slice(0, 200));
 }

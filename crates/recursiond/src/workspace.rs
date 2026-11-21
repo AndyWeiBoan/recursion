@@ -141,6 +141,56 @@ pub struct Workspace {
     pub threads: Vec<Thread>,
     #[serde(default)]
     pub next_thread: u64,
+    /// Things the agents made for this chat (documents, pages they opened), listed beside threads.
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    /// A document; `target` is its doc id.
+    Doc,
+    /// A web page the agent opened in its browser; `target` is the url.
+    Page,
+}
+
+/// One entry in a chat's 產出 list. Same kind and target = the same artifact, updated in place.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Artifact {
+    pub id: String,
+    pub kind: ArtifactKind,
+    pub target: String,
+    pub title: String,
+    /// Member id of the agent that made it.
+    pub by: String,
+    pub created: u64,
+    pub updated: u64,
+}
+
+impl Workspace {
+    /// Adds an artifact, or refreshes the one with the same kind and target. Returns it.
+    pub fn record_artifact(&mut self, kind: ArtifactKind, target: &str, title: &str, by: &str, at: u64) -> Artifact {
+        if let Some(a) = self.artifacts.iter_mut().find(|a| a.kind == kind && a.target == target) {
+            if !title.is_empty() {
+                a.title = title.to_string();
+            }
+            a.by = by.to_string();
+            a.updated = at;
+            return a.clone();
+        }
+        let a = Artifact {
+            id: crate::model::new_id(),
+            kind,
+            target: target.to_string(),
+            title: title.to_string(),
+            by: by.to_string(),
+            created: at,
+            updated: at,
+        };
+        self.artifacts.push(a.clone());
+        a
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -443,4 +493,14 @@ mod mention_tests {
         assert_eq!(mentions("@全部 開始", &ms, None), vec!["a", "b"]);
     }
 
+    #[test]
+    fn same_target_is_the_same_artifact() {
+        let mut ws = Workspace::default();
+        let a = ws.record_artifact(ArtifactKind::Page, "https://a.test/", "A", "m1", 1);
+        let b = ws.record_artifact(ArtifactKind::Page, "https://a.test/", "", "m2", 2);
+        assert_eq!(a.id, b.id);
+        assert_eq!((b.title.as_str(), b.by.as_str(), b.created, b.updated), ("A", "m2", 1, 2), "keeps the title when none is given");
+        ws.record_artifact(ArtifactKind::Doc, "https://a.test/", "doc", "m1", 3);
+        assert_eq!(ws.artifacts.len(), 2, "a different kind is a different artifact");
+    }
 }

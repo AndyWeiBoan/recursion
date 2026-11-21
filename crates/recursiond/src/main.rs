@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 18;
+pub const PROTOCOL: u32 = 19;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -103,6 +103,8 @@ enum In {
     WsSendNow { panel: String },
     ModelsList { kind: AgentKind },
     DocOpen { panel: String, doc: String },
+    /// Open an entry of a chat's 產出 list: a document in its panel, a page in the agent's browser.
+    ArtifactOpen { panel: String, artifact: String },
     WsRoster,
     ThreadOpen { panel: String, msg: String, quote: String, text: String },
     ThreadSend { panel: String, thread: String, text: String },
@@ -267,6 +269,9 @@ impl App {
                 changed = false;
             }
             WsAttach { panel } => {
+                // Documents from before the 產出 list existed.
+                let docs: Vec<model::Doc> = self.state.lock().unwrap().session_of_panel(&panel).map(|s| s.docs.iter().filter(|d| d.chat == panel).cloned().collect()).unwrap_or_default();
+                self.hub.adopt_docs(&panel, &docs);
                 reply = Some(self.hub.snapshot(&panel).to_string());
                 changed = false;
             }
@@ -296,6 +301,20 @@ impl App {
             }
             DocOpen { panel, doc } => {
                 self.state.lock().unwrap().open_doc(&panel, &doc, true).map_err(e)?;
+            }
+            ArtifactOpen { panel, artifact } => {
+                let a = self.hub.artifact(&panel, &artifact).ok_or("找不到這個產出")?;
+                let mut st = self.state.lock().unwrap();
+                match a.kind {
+                    workspace::ArtifactKind::Doc => {
+                        st.open_doc(&panel, &a.target, true).map_err(e)?;
+                    }
+                    workspace::ArtifactKind::Page => {
+                        let (p, _) = st.agent_browser(&panel, &a.by).map_err(e)?;
+                        st.set_panel_url(&p, a.target).map_err(e)?;
+                        st.focus_panel(&p).map_err(e)?;
+                    }
+                }
             }
             DocAction { session, doc, action, data } => {
                 self.doc_action(&session, &doc, &action, &data).await?;

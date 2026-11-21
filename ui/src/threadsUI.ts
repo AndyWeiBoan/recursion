@@ -1,4 +1,4 @@
-// Thread drawer state per chat panel, plus the panel the layout is zoomed to while a drawer is open.
+// 產出 drawer (threads, documents, pages) state per chat panel, plus the panel the layout is zoomed to while a drawer is open.
 // Kept outside React: zooming re-mounts the chat panel, and the drawer must survive that.
 import { useSyncExternalStore } from "react";
 
@@ -11,9 +11,13 @@ export interface ThreadsUI {
   query: string;
   /** Only threads about this main-chat message (set by its 💬 badge). */
   msg: string | null;
+  /** Which kind of 產出 the list shows. */
+  filter: ArtifactFilter;
 }
 
-const CLOSED: ThreadsUI = { open: false, view: { kind: "list" }, query: "", msg: null };
+export type ArtifactFilter = "all" | "thread" | "doc" | "page";
+
+const CLOSED: ThreadsUI = { open: false, view: { kind: "list" }, query: "", msg: null, filter: "all" };
 let state: Record<string, ThreadsUI> = {};
 let zoomed: string | null = null;
 const subs = new Set<() => void>();
@@ -49,7 +53,7 @@ export function setThreadView(panel: string, view: ThreadView) {
   notify();
 }
 
-export function setThreadSearch(panel: string, patch: Partial<Pick<ThreadsUI, "query" | "msg">>) {
+export function setThreadSearch(panel: string, patch: Partial<Pick<ThreadsUI, "query" | "msg" | "filter">>) {
   state = { ...state, [panel]: { ...(state[panel] ?? CLOSED), ...patch } };
   notify();
 }
