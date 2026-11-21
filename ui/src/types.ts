@@ -83,7 +83,9 @@ export type Cmd =
   | { t: "thread_send"; panel: string; thread: string; text: string }
   | { t: "thread_bring"; panel: string; thread: string }
   | { t: "doc_get"; session: string; doc: string }
-  | { t: "doc_action"; session: string; doc: string; action: "reply" | "prompt"; data: string };
+  | { t: "doc_action"; session: string; doc: string; action: "reply" | "prompt"; data: string }
+  | { t: "browser_host" }
+  | { t: "browse_result"; id: number; ok: boolean; result?: unknown; error?: string };
 
 export type AgentKind = "claude" | "codex";
 
@@ -144,6 +146,8 @@ export interface Thread {
   num: number;
   msg: string;
   quote: string;
+  /** About the whole message, not a selected part. */
+  whole?: boolean;
   agent: string;
   fork?: string | null;
   messages: ThreadMsg[];

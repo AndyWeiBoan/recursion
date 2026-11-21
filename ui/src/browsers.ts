@@ -77,6 +77,21 @@ export function browserGo(panel: string, action: "back" | "forward" | "reload" |
   if (entries.has(panel)) call("browser_go", { panel, action });
 }
 
+/** One step of an agent driving its browser panel (see `browser_agent` in the app). The webview
+ *  is created hidden if the panel has never been on screen; `args.url` is the panel's page. */
+export async function agentBrowse(panel: string, op: string, args: { url?: string } & Record<string, unknown>): Promise<unknown> {
+  if (!nativeBrowser) throw new Error("這個視窗沒有內建瀏覽器");
+  const url = String(args.url ?? "");
+  const en = entries.get(panel);
+  // Whoever shows the panel next must not navigate it again: the agent's step already did.
+  if (en) en.url = url;
+  else entries.set(panel, { url, reshow: null });
+  const ensured = queue.then(() => invoke("browser_ensure", { panel, url }));
+  queue = ensured.catch(() => {});
+  await ensured;
+  return invoke("browser_agent", { panel, op, args });
+}
+
 /** Close webviews whose panel is gone or is no longer a browser. */
 export function pruneBrowsers(alive: Set<string>) {
   for (const id of [...entries.keys()]) {

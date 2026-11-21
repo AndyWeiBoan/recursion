@@ -69,10 +69,31 @@ fn emit<R: Runtime>(app: &AppHandle<R>, ev: BrowserEvent) {
 #[tauri::command]
 pub async fn browser_show<R: Runtime>(app: AppHandle<R>, panel: String, url: String, bounds: Bounds) -> Result<(), String> {
     if let Some(wv) = get(&app, &panel) {
-        place(&wv, bounds)?;
-        return wv.show().map_err(|e| e.to_string());
+        // Show first: a size set while hidden (an agent's webview starts hidden at AGENT_VIEW) is not applied.
+        wv.show().map_err(|e| e.to_string())?;
+        return place(&wv, bounds);
     }
-    let target = parse(&url)?;
+    create(&app, &panel, &url, bounds).map(|_| ())
+}
+
+/// Viewport for a page an agent opened while its panel is off screen.
+const AGENT_VIEW: Bounds = Bounds { x: 0.0, y: 0.0, w: 1280.0, h: 800.0 };
+
+/// Make sure the panel has a webview, creating it hidden (an agent is about to use it while the
+/// panel is off screen). True when it was just created and is already loading `url`.
+#[tauri::command]
+pub async fn browser_ensure<R: Runtime>(app: AppHandle<R>, panel: String, url: String) -> Result<bool, String> {
+    if get(&app, &panel).is_some() {
+        return Ok(false);
+    }
+    let wv = create(&app, &panel, &url, AGENT_VIEW)?;
+    wv.hide().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds) -> Result<Webview<R>, String> {
+    let panel = panel.to_string();
+    let target = parse(url)?;
     let window = app.get_window("main").ok_or("找不到主視窗")?;
     let (a, b, c) = (app.clone(), app.clone(), panel.clone());
     let p1 = panel.clone();
@@ -100,9 +121,7 @@ pub async fn browser_show<R: Runtime>(app: AppHandle<R>, panel: String, url: Str
         main.with_webview(|p| gtk_layer::remember_main(p.inner())).map_err(|e| e.to_string())?;
         wv.with_webview(move |p| gtk_layer::adopt(&p.inner(), bounds)).map_err(|e| e.to_string())?;
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = wv;
-    Ok(())
+    Ok(wv)
 }
 
 #[tauri::command]
@@ -147,6 +166,136 @@ pub fn browser_go<R: Runtime>(app: AppHandle<R>, panel: String, action: String) 
         _ => return Err(format!("未知動作：{action}")),
     };
     r.map_err(|e| e.to_string())
+}
+
+/// One step of an agent driving a browser panel: `open` (navigate, wait, read), `read`, `click`,
+/// `fill`, `screenshot`. Runs against the OS webview directly, since Tauri's `eval` returns nothing
+/// and these pages must never get Tauri IPC.
+#[tauri::command]
+pub async fn browser_agent<R: Runtime>(app: AppHandle<R>, panel: String, op: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let wv = get(&app, &panel).ok_or("瀏覽器還沒開")?;
+    #[cfg(target_os = "linux")]
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        wv.with_webview(move |p| {
+            let v = p.inner();
+            webkit2gtk::glib::MainContext::default().spawn_local(async move {
+                let _ = tx.send(agent::run(&v, &op, &args).await);
+            });
+        })
+        .map_err(|e| e.to_string())?;
+        match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => Err("瀏覽器中斷了".into()),
+            Err(_) => Err("瀏覽器 60 秒沒有回應".into()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (wv, op, args);
+        Err("macOS 還不支援 agent 操作瀏覽器".into())
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod agent {
+    use base64::Engine;
+    use javascriptcore::ValueExt;
+    use serde_json::{json, Value};
+    use std::time::{Duration, Instant};
+    use webkit2gtk::{glib, SnapshotOptions, SnapshotRegion, WebView, WebViewExt};
+
+    const PAGE: &str = include_str!("agent_page.js");
+    /// Screenshots are scaled down to at most this many pixels wide.
+    const SHOT_WIDTH: f64 = 1280.0;
+
+    async fn page(v: &WebView, op: &str, args: &Value) -> Result<Value, String> {
+        let body = format!("const op = {};\nconst args = {};\n{PAGE}", json!(op), args);
+        let r = v
+            .call_async_javascript_function_future(&body, None, Some("recursion-agent"), None)
+            .await
+            .map_err(|e| format!("網頁裡的程式出錯：{e}"))?;
+        let out: Value = serde_json::from_str(&r.to_str()).map_err(|e| format!("看不懂網頁回傳的資料：{e}"))?;
+        match out.get("error").and_then(|e| e.as_str()) {
+            Some(e) => Err(e.to_string()),
+            None => Ok(out),
+        }
+    }
+
+    /// Until the page has loaded (or 20 s): WebKit's own flag, then the document's.
+    async fn settle(v: &WebView) {
+        let end = Instant::now() + Duration::from_secs(20);
+        glib::timeout_future(Duration::from_millis(250)).await;
+        while Instant::now() < end {
+            if !v.is_loading() {
+                if let Ok(i) = page(v, "info", &json!({})).await {
+                    if i["ready"] == "complete" {
+                        return;
+                    }
+                }
+            }
+            glib::timeout_future(Duration::from_millis(150)).await;
+        }
+    }
+
+    async fn screenshot(v: &WebView) -> Result<Value, String> {
+        let shot = v.snapshot_future(SnapshotRegion::Visible, SnapshotOptions::NONE).await.map_err(|e| format!("截圖失敗：{e}"))?;
+        let src = gtk::cairo::ImageSurface::try_from(shot).map_err(|_| "截圖格式不對")?;
+        let (w, h) = (src.width() as f64, src.height() as f64);
+        if w < 2.0 || h < 2.0 {
+            return Err("畫面是空的（panel 可能還沒顯示過）".into());
+        }
+        let k = (SHOT_WIDTH / w).min(1.0);
+        let out = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, (w * k) as i32, (h * k) as i32).map_err(|e| e.to_string())?;
+        {
+            let cr = gtk::cairo::Context::new(&out).map_err(|e| e.to_string())?;
+            cr.scale(k, k);
+            cr.set_source_surface(&src, 0.0, 0.0).map_err(|e| e.to_string())?;
+            cr.paint().map_err(|e| e.to_string())?;
+        }
+        let mut png = Vec::new();
+        out.write_to_png(&mut png).map_err(|e| e.to_string())?;
+        Ok(json!({ "png": base64::engine::general_purpose::STANDARD.encode(png), "width": out.width(), "height": out.height() }))
+    }
+
+    pub async fn run(v: &WebView, op: &str, args: &Value) -> Result<Value, String> {
+        match op {
+            "open" => {
+                let url = args["url"].as_str().ok_or("缺少網址")?;
+                // Already there, or already loading it (a new webview, or the panel itself navigated).
+                if v.uri().as_deref() != Some(url) {
+                    v.load_uri(url);
+                }
+                settle(v).await;
+                page(v, "read", &json!({})).await
+            }
+            "read" => page(v, "read", args).await,
+            "click" | "fill" => {
+                let before = v.uri().map(|u| u.to_string());
+                let mut r = page(v, op, args).await?;
+                // A click may start a navigation: let it land before reporting where we are.
+                glib::timeout_future(Duration::from_millis(350)).await;
+                if v.is_loading() || v.uri().map(|u| u.to_string()) != before {
+                    settle(v).await;
+                    if let Ok(i) = page(v, "info", &json!({})).await {
+                        r["url"] = i["url"].clone();
+                        r["title"] = i["title"].clone();
+                        r["navigated"] = json!(true);
+                    }
+                }
+                Ok(r)
+            }
+            "screenshot" => {
+                let mut r = screenshot(v).await?;
+                if let Ok(i) = page(v, "info", &json!({})).await {
+                    r["url"] = i["url"].clone();
+                    r["title"] = i["title"].clone();
+                }
+                Ok(r)
+            }
+            other => Err(format!("未知的瀏覽器動作：{other}")),
+        }
+    }
 }
 
 /// Tauri on Linux packs every webview of a window into one vertical GtkBox, so a child webview
@@ -202,5 +351,6 @@ mod gtk_layer {
         child.set_margin_start(b.x.round() as i32);
         child.set_margin_top(b.y.round() as i32);
         child.set_size_request(b.w.max(1.0).round() as i32, b.h.max(1.0).round() as i32);
+        child.queue_resize();
     }
 }

@@ -56,7 +56,8 @@ impl Hub {
         if member.cli_session_id.is_none() {
             return Err(format!("@{} 還沒有對話可以分岔", member.alias));
         }
-        let quote = if quote.trim().is_empty() { whole } else { quote.trim().to_string() };
+        let is_whole = quote.trim().is_empty();
+        let quote = if is_whole { whole } else { quote.trim().to_string() };
         let quote: String = quote.chars().take(QUOTE_MAX).collect();
         let t = self.with_ws(panel, |ws| {
             ws.next_thread += 1;
@@ -65,6 +66,7 @@ impl Hub {
                 num: ws.next_thread,
                 msg: msg_id.to_string(),
                 quote,
+                whole: is_whole,
                 agent: member.id.clone(),
                 fork: None,
                 messages: vec![],
@@ -89,12 +91,17 @@ impl Hub {
         if t.status == ThreadStatus::Replying {
             return Err("agent 還在回覆這個討論串".into());
         }
-        let first = t.messages.is_empty();
         self.update_thread(panel, thread, |t| {
             t.messages.push(ThreadMsg { from: "you".into(), text: text.clone(), ts: now_ms() });
             t.status = ThreadStatus::Replying;
         });
-        let prompt = if first {
+        // Everything the agent has not answered yet: a turn that died (daemon restart, error)
+        // must not swallow what the human said before it.
+        let mut all = t.messages.clone();
+        all.push(ThreadMsg { from: "you".into(), text: text.clone(), ts: 0 });
+        let text = unanswered(&all, &t.agent);
+        // No fork yet means the agent has never seen this thread: introduce it.
+        let prompt = if t.fork.is_none() {
             let quoted = t.quote.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n");
             format!(
                 "[Recursion thread #{}] The human opened a side thread about this part of your earlier reply in the group chat:\n\n{quoted}\n\n\
@@ -172,6 +179,12 @@ impl Hub {
             }
         }
     }
+}
+
+/// The human's messages since the agent last answered, oldest first.
+fn unanswered(messages: &[ThreadMsg], agent: &str) -> String {
+    let since = messages.iter().rposition(|m| m.from == agent).map_or(0, |i| i + 1);
+    messages[since..].iter().filter(|m| m.from == "you").map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n\n")
 }
 
 /// One Claude reply in the fork. Returns (text, session id to resume next time).
@@ -297,4 +310,22 @@ async fn codex_turn(env: &AgentEnv, m: &Member, fork: Option<&str>, dir: &str, p
     }
     let _ = child.kill().await;
     Ok((text, tid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(from: &str, text: &str) -> ThreadMsg {
+        ThreadMsg { from: from.into(), text: text.into(), ts: 0 }
+    }
+
+    #[test]
+    fn a_dead_turn_does_not_swallow_earlier_messages() {
+        // First message's turn died with the daemon: no reply, no error line.
+        let msgs = [m("you", "重點是經濟虧損"), m("you", "?")];
+        assert_eq!(unanswered(&msgs, "a1"), "重點是經濟虧損\n\n?");
+        let msgs = [m("you", "q1"), m("a1", "r1"), m("system", "出錯了"), m("you", "q2"), m("you", "q3")];
+        assert_eq!(unanswered(&msgs, "a1"), "q2\n\nq3");
+    }
 }

@@ -39,6 +39,12 @@ pub fn delete_session(session: &str) {
 }
 
 fn tools() -> Value {
+    let mut all = doc_tools();
+    all.as_array_mut().unwrap().extend(crate::browse::tools());
+    all
+}
+
+fn doc_tools() -> Value {
     json!([
         {
             "name": "doc_write",
@@ -84,6 +90,9 @@ fn text(t: impl Into<String>, is_error: bool) -> Value {
 
 impl App {
     async fn call_tool(&self, panel: &str, member: &str, alias: &str, name: &str, args: &Value) -> Value {
+        if name.starts_with("browse_") {
+            return self.browse(panel, member, name, args).await;
+        }
         let Some(session) = self.state.lock().unwrap().session_of_panel(panel).map(|s| s.id.clone()) else {
             return text("This chat is no longer open.", true);
         };

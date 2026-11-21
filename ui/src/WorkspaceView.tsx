@@ -4,10 +4,10 @@ import { marked } from "marked";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
-import { openThreadsFor, ThreadDrawer } from "./ThreadDrawer";
+import { openThreadsFor, openWholeThread, ThreadDrawer } from "./ThreadDrawer";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { onAddAgentRequest, onReconnect, openExternal, send, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
-import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type TurnUsage } from "./types";
+import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Thread, type TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -136,7 +136,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
             <AddAgent panel={panel} big />
           </div>
         ) : (
-          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} />
+          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} />
         )}
         <Composer panel={panel} members={members} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
       </div>
@@ -360,18 +360,27 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   );
 }
 
+/** The agent reply a double-click on `t` opens a thread for, unless it landed on something clickable. */
+function wholeTarget(t: EventTarget): HTMLElement | null {
+  const el = t as HTMLElement;
+  if (el.closest?.("a, button, input, textarea, select, summary, .m-tool")) return null;
+  return el.closest?.<HTMLElement>("[data-threadable]") ?? null;
+}
+
 function Transcript({
   panel,
   messages,
   byId,
   busy,
   threadCounts,
+  threads,
 }: {
   panel: string;
   messages: Msg[];
   byId: Map<string, Member>;
   busy: Member[];
   threadCounts: Map<string, number>;
+  threads: Thread[];
 }) {
   const box = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -425,6 +434,17 @@ function Transcript({
         setTimeout(() => readSelection(at));
       }}
       onKeyUp={(e) => e.shiftKey && readSelection()}
+      // Double-click a reply = discuss the whole of it. Its second press must not select a word.
+      onMouseDown={(e) => {
+        if (e.detail === 2 && wholeTarget(e.target)) e.preventDefault();
+      }}
+      onDoubleClick={(e) => {
+        const b = wholeTarget(e.target);
+        if (!b) return;
+        window.getSelection()?.removeAllRanges();
+        setPick(null);
+        openWholeThread(panel, b.dataset.msg!, threads);
+      }}
       onScroll={(e) => {
         const el = e.currentTarget;
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -536,10 +556,10 @@ const MessageView = memo(function MessageView({
             </button>
           )}
           <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
-          {!m.streaming && who && (
+          {!m.streaming && who && threads > 0 && (
             <button
-              className={`thread-btn${threads ? " has" : ""}`}
-              title={threads ? `${threads} 個討論串（反白一段文字再按，可以針對那段開新的）` : "開討論串（可以先反白一段文字）"}
+              className="thread-btn has"
+              title={`${threads} 個討論串（雙擊訊息：討論整則；反白一段：討論那段）`}
               // Keep the text selection: it becomes the quote.
               onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => {
@@ -549,7 +569,7 @@ const MessageView = memo(function MessageView({
                 openThreadsFor(panel, m.id, threads, quote);
               }}
             >
-              💬{threads ? ` ${threads}` : ""}
+              💬 {threads}
             </button>
           )}
         </div>

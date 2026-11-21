@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 14;
+const PROTOCOL: u32 = 15;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -103,6 +103,17 @@ fn daemon_info() -> Result<DaemonInfo, String> {
     Err(format!("recursiond 沒有在 8 秒內啟動，請看 {}", home().join("daemon.log").display()))
 }
 
+/// Dev builds only: `RECURSION_TOUR=<project folder>` makes the UI play the scripted walkthrough
+/// (ui/src/devtour.ts) used to record the how-to video.
+#[tauri::command]
+fn dev_tour() -> Option<String> {
+    if cfg!(debug_assertions) {
+        std::env::var("RECURSION_TOUR").ok()
+    } else {
+        None
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -110,12 +121,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             daemon_info,
+            dev_tour,
             browser::browser_show,
             browser::browser_bounds,
             browser::browser_hide,
             browser::browser_close,
             browser::browser_navigate,
-            browser::browser_go
+            browser::browser_go,
+            browser::browser_ensure,
+            browser::browser_agent
         ])
         .run(tauri::generate_context!())
         .expect("error while running Recursion");

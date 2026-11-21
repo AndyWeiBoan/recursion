@@ -158,6 +158,9 @@ pub struct Thread {
     /// The main-chat message it is about, and the part of it that was quoted.
     pub msg: String,
     pub quote: String,
+    /// About the whole message rather than a selected part (`quote` is then the message itself).
+    #[serde(default)]
+    pub whole: bool,
     /// Member who answers (the author of `msg`).
     pub agent: String,
     /// The CLI conversation of the fork (Claude session id / Codex thread id), once it exists.
@@ -202,6 +205,11 @@ impl Workspace {
                 w.members.iter_mut().for_each(|m| m.status = MemberStatus::Idle);
                 // A thread reply in flight died with the daemon.
                 w.threads.iter_mut().filter(|t| t.status == ThreadStatus::Replying).for_each(|t| t.status = ThreadStatus::Waiting);
+                // Threads saved before `whole` existed: a quote equal to its message meant the whole message.
+                for t in w.threads.iter_mut().filter(|t| !t.whole) {
+                    let text = w.messages.iter().find(|m| m.id == t.msg).and_then(|m| if let Body::Text { text } = &m.body { Some(text) } else { None });
+                    t.whole = text.is_some_and(|x| x.chars().take(1200).collect::<String>() == t.quote);
+                }
                 w.messages.iter_mut().for_each(|m| {
                     m.streaming = false;
                     if let Body::Permission { state, .. } = &mut m.body {
@@ -258,6 +266,11 @@ pub fn display_tool_name(name: &str) -> String {
         Some("doc_write") => "寫文件".into(),
         Some("doc_read") => "讀文件".into(),
         Some("doc_list") => "列出文件".into(),
+        Some("browse_open") => "🌐 開網頁".into(),
+        Some("browse_read") => "🌐 讀網頁".into(),
+        Some("browse_click") => "🌐 點擊".into(),
+        Some("browse_fill") => "🌐 填寫".into(),
+        Some("browse_screenshot") => "🌐 截圖".into(),
         _ => name.to_string(),
     }
 }
@@ -280,6 +293,12 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
         _ if recursion_tool(name) == Some("doc_write") => format!("「{}」{}", s("title"), if s("id").is_empty() { "" } else { "（更新）" }),
         _ if recursion_tool(name) == Some("doc_read") => s("id"),
         _ if recursion_tool(name) == Some("doc_list") => String::new(),
+        _ if recursion_tool(name) == Some("browse_open") => s("url"),
+        _ if recursion_tool(name) == Some("browse_click") => format!("#{}", input.get("ref").map(|v| v.to_string()).unwrap_or_default()),
+        _ if recursion_tool(name) == Some("browse_fill") => {
+            format!("#{} ← {}", input.get("ref").map(|v| v.to_string()).unwrap_or_default(), s("value").chars().take(60).collect::<String>())
+        }
+        _ if recursion_tool(name).is_some_and(|t| t.starts_with("browse_")) => String::new(),
         _ => {
             let j = input.to_string();
             j.chars().take(120).collect()

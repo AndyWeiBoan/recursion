@@ -1,5 +1,6 @@
 // Connection to recursiond plus a tiny external store for React.
 import { useEffect, useSyncExternalStore } from "react";
+import { agentBrowse } from "./browsers";
 import { setThreadView } from "./threadsUI";
 import type { AgentKind, Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
 
@@ -62,6 +63,8 @@ export async function connect() {
     sock.onopen = () => {
       retry = 0;
       set({ status: "open", error: null });
+      // The desktop app runs agents' browser steps in its native webviews.
+      if (isTauri) send({ t: "browser_host" });
       reconnectHooks.forEach((f) => f());
     };
     sock.onmessage = (e) => {
@@ -90,6 +93,12 @@ export async function connect() {
             const i = list.findIndex((x) => x.id === m.thread.id);
             return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
           });
+          break;
+        case "browse_req":
+          agentBrowse(m.panel, m.op, m.args).then(
+            (result) => send({ t: "browse_result", id: m.id, ok: true, result }),
+            (e) => send({ t: "browse_result", id: m.id, ok: false, error: String(e) }),
+          );
           break;
         case "thread_opened":
           setThreadView(m.panel, { kind: "thread", id: m.thread });

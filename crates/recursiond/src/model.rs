@@ -36,6 +36,9 @@ pub struct Panel {
     pub kind: PanelKind,
     #[serde(default)]
     pub url: Option<String>,
+    /// The agent (member id) whose browser this is; it opens pages here with the browse_* tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,7 +221,7 @@ impl State {
 
     fn new_panel(&mut self, kind: PanelKind) -> String {
         let id = new_id();
-        self.panels.insert(id.clone(), Panel { id: id.clone(), kind, url: None });
+        self.panels.insert(id.clone(), Panel { id: id.clone(), kind, url: None, agent: None });
         id
     }
 
@@ -436,6 +439,25 @@ impl State {
         Ok(p)
     }
 
+    /// The browser panel an agent of chat `from` drives, opened next to the chat the first time
+    /// (without taking the focus). Returns it and whether it was just created.
+    pub fn agent_browser(&mut self, from: &str, member: &str) -> Res<(String, bool)> {
+        let (si, wi) = self.locate_panel(from)?;
+        let existing = self.sessions[si]
+            .windows
+            .iter()
+            .flat_map(|w| w.panel_ids())
+            .find(|p| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.agent.as_deref() == Some(member)));
+        if let Some(p) = existing {
+            return Ok((p, false));
+        }
+        let prev = self.sessions[si].windows[wi].focus.clone();
+        let p = self.split_panel(from, Dir::Row, PanelKind::Browser)?;
+        self.panels.get_mut(&p).ok_or(ModelError::NotFound("panel"))?.agent = Some(member.to_string());
+        self.sessions[si].windows[wi].focus = prev;
+        Ok((p, true))
+    }
+
     /// cwd of the session that owns a panel.
     pub fn panel_cwd(&self, panel: &str) -> Option<String> {
         self.sessions
@@ -558,6 +580,36 @@ mod tests {
         let s = serde_json::to_string(&st).unwrap();
         let back: State = serde_json::from_str(&s).unwrap();
         assert_eq!(back.sessions[0].windows[0].root, st.sessions[0].windows[0].root);
+    }
+
+    #[test]
+    fn agent_browser_opens_beside_the_chat_once() {
+        let (mut st, _) = one_session();
+        let chat = first_panel(&st);
+        let (b, created) = st.agent_browser(&chat, "m1").unwrap();
+        assert!(created);
+        assert_eq!(st.panels[&b].kind, PanelKind::Browser);
+        assert_eq!(st.sessions[0].windows[0].focus, chat, "the chat keeps the focus");
+        assert_eq!(st.agent_browser(&chat, "m1").unwrap(), (b.clone(), false));
+        let (other, _) = st.agent_browser(&chat, "m2").unwrap();
+        assert_ne!(other, b, "each agent gets its own browser");
+        st.set_panel_kind(&b, PanelKind::Terminal).unwrap();
+        assert!(st.agent_browser(&chat, "m1").unwrap().1, "a panel turned into something else no longer counts");
+    }
+
+    #[test]
+    fn closing_an_agent_browser_keeps_its_neighbours() {
+        let (mut st, _) = one_session();
+        let chat = first_panel(&st);
+        let doc = st.split_panel(&chat, Dir::Row, PanelKind::Browser).unwrap();
+        let term = st.split_panel(&doc, Dir::Column, PanelKind::Terminal).unwrap();
+        let (b, _) = st.agent_browser(&chat, "m1").unwrap();
+        st.close_panel(&b).unwrap();
+        let mut left = st.sessions[0].windows[0].panel_ids();
+        left.sort();
+        let mut want = vec![chat, doc, term];
+        want.sort();
+        assert_eq!(left, want);
     }
 
     #[test]

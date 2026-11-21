@@ -4,6 +4,7 @@
 //! localhost WebSocket (port + token are written to ~/.recursion/daemon.json).
 
 mod agents;
+mod browse;
 mod docs;
 mod model;
 mod pty;
@@ -27,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 14;
+pub const PROTOCOL: u32 = 15;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -59,6 +60,8 @@ struct App {
     hub: Arc<agents::Hub>,
     /// Last time each doc page sent a message (rate limit).
     doc_last: Mutex<HashMap<String, std::time::Instant>>,
+    /// Agents' browse_* calls, carried out by the desktop app.
+    browser: browse::Bridge,
 }
 
 /// Messages from a UI client.
@@ -100,6 +103,9 @@ enum In {
     ThreadBring { panel: String, thread: String },
     DocGet { session: String, doc: String },
     DocAction { session: String, doc: String, action: String, data: String },
+    /// This client is the desktop app and can run agents' browser steps.
+    BrowserHost,
+    BrowseResult { id: u64, ok: bool, result: Option<serde_json::Value>, error: Option<String> },
 }
 
 /// Messages to a UI client.
@@ -240,6 +246,12 @@ impl App {
                 self.doc_action(&session, &doc, &action, &data).await?;
                 changed = false;
             }
+            BrowserHost => changed = false, // handled per connection in `client`
+            BrowseResult { id, ok, result, error } => {
+                let r = if ok { Ok(result.unwrap_or_default()) } else { Err(error.unwrap_or_else(|| "browser error".into())) };
+                self.browser.resolve(id, r);
+                changed = false;
+            }
             DocGet { session, doc } => {
                 reply = Some(serde_json::to_string(&Out::Doc { session: &session, doc: &doc, html: docs::read(&session, &doc) }).unwrap());
                 changed = false;
@@ -311,6 +323,8 @@ async fn ws(ws: WebSocketUpgrade, AxState(app): AxState<Arc<App>>, Query(q): Que
 }
 
 async fn client(socket: WebSocket, app: Arc<App>) {
+    static NEXT_CLIENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let me = NEXT_CLIENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (mut tx, mut rx) = socket.split();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let _ = out_tx.send(app.snapshot());
@@ -359,6 +373,10 @@ async fn client(socket: WebSocket, app: Arc<App>) {
     while let Some(Ok(msg)) = rx.next().await {
         let Message::Text(text) = msg else { continue };
         let reply = match serde_json::from_str::<In>(&text) {
+            Ok(In::BrowserHost) => {
+                app.browser.add_host(me, out_tx.clone());
+                None
+            }
             Ok(cmd) => app.handle(cmd).await.unwrap_or_else(|e| Some(serde_json::to_string(&Out::Error { msg: e }).unwrap())),
             Err(e) => Some(serde_json::to_string(&Out::Error { msg: format!("bad message: {e}") }).unwrap()),
         };
@@ -366,6 +384,7 @@ async fn client(socket: WebSocket, app: Arc<App>) {
             let _ = out_tx.send(r);
         }
     }
+    app.browser.remove_host(me);
     fan.abort();
     writer.abort();
 }
@@ -427,6 +446,7 @@ async fn main() -> anyhow::Result<()> {
         term_infos: Mutex::new(HashMap::new()),
         hub: agents::Hub::new(),
         doc_last: Default::default(),
+        browser: Default::default(),
     });
 
     // Debounced saver.

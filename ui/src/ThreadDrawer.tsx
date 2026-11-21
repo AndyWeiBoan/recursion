@@ -19,7 +19,7 @@ function fuzzy(needle: string, hay: string) {
   return needle.length === 0;
 }
 
-/** `#3` → thread number, `@claude` → agent, anything else → fuzzy over quote, talk and agent. */
+/** `#3` → thread number, `@claude` → agent, anything else → fuzzy over kind (整則/片段), quote, talk and agent. */
 function matches(t: Thread, query: string, alias: string) {
   return query
     .toLowerCase()
@@ -28,7 +28,7 @@ function matches(t: Thread, query: string, alias: string) {
     .every((tok) => {
       if (/^#\d+$/.test(tok)) return t.num === Number(tok.slice(1));
       if (tok.startsWith("@")) return alias.toLowerCase().includes(tok.slice(1));
-      return fuzzy(tok, `${t.quote} ${t.messages.map((m) => m.text).join(" ")} ${alias}`.toLowerCase());
+      return fuzzy(tok, `${t.whole ? "整則" : "片段"} ${t.quote} ${t.messages.map((m) => m.text).join(" ")} ${alias}`.toLowerCase());
     });
 }
 
@@ -113,7 +113,9 @@ function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; thr
               <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
                 <span className="td-num">#{t.num}</span>
                 <span className="td-main">
-                  <span className="td-quote">「{t.quote.replace(/\s+/g, " ")}」</span>
+                  <span className="td-quote">
+                    <Kind whole={!!t.whole} />「{t.quote.replace(/\s+/g, " ")}」
+                  </span>
                   <span className="td-meta">
                     @{who?.alias ?? "已離開"} · {t.messages.filter((m) => m.from !== "system").length} 則 · <i className="td-dot" />
                     {STATUS[t.status]}
@@ -126,7 +128,7 @@ function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; thr
             </div>
           );
         })}
-        {shown.length === 0 && <div className="td-empty">{threads.length ? "沒有符合的討論串" : "還沒有討論串。在 agent 的回覆旁按 💬 開一個。"}</div>}
+        {shown.length === 0 && <div className="td-empty">{threads.length ? "沒有符合的討論串" : "還沒有討論串。雙擊 agent 的回覆討論整則，或反白一段文字討論那段。"}</div>}
       </div>
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>
@@ -137,11 +139,25 @@ function ThreadList({ panel, threads, messages, byId, ui }: { panel: string; thr
   );
 }
 
-function Quote({ text, msg }: { text: string; msg: string }) {
+/** Whether a thread is about the whole reply or a selected part of it. */
+function Kind({ whole }: { whole: boolean }) {
   return (
-    <button className="td-quote-block" onClick={() => showInChat(msg)} title="在主對話中顯示">
-      {text}
-    </button>
+    <span className={`td-kind ${whole ? "whole" : "part"}`} title={whole ? "討論整則回覆（雙擊訊息開的）" : "討論反白的一段"}>
+      {whole ? "整則" : "片段"}
+    </span>
+  );
+}
+
+function Quote({ text, msg, whole }: { text: string; msg: string; whole: boolean }) {
+  return (
+    <>
+      <span className="td-quote-label">
+        <Kind whole={whole} />
+      </span>
+      <button className="td-quote-block" onClick={() => showInChat(msg)} title="在主對話中顯示">
+        {text}
+      </button>
+    </>
   );
 }
 
@@ -186,7 +202,7 @@ function NewThread({ panel, msg, quote, who }: { panel: string; msg: string; quo
       </header>
       <div className="td-body">
         <p className="td-hint">只有你和 @{who?.alias ?? "agent"} 看得到這段討論，它從主對話分岔出來，記得前面所有內容。</p>
-        {quote ? <Quote text={quote} msg={msg} /> : <div className="td-hint">（整則回覆）</div>}
+        {quote ? <Quote text={quote} msg={msg} whole={false} /> : <span className="td-quote-label"><Kind whole /></span>}
       </div>
       <Composer
         placeholder={sent ? "開啟中…" : `問 @${who?.alias ?? "agent"}…（Enter 送出）`}
@@ -222,7 +238,7 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
         </button>
       </header>
       <div className="td-body" ref={box}>
-        <Quote text={t.quote} msg={t.msg} />
+        <Quote text={t.quote} msg={t.msg} whole={!!t.whole} />
         {t.messages.map((m, i) =>
           m.from === "system" ? (
             <div key={i} className="td-sys">
@@ -255,6 +271,13 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
       </div>
     </>
   );
+}
+
+/** Double-click on a reply: its whole-message thread if there is one, else start one. */
+export function openWholeThread(panel: string, msg: string, threads: Thread[]) {
+  const t = threads.filter((x) => x.msg === msg && x.whole).sort((a, b) => b.updated - a.updated)[0];
+  if (t) openThreads(panel, { view: { kind: "thread", id: t.id }, msg: null, query: "" });
+  else openThreads(panel, { view: { kind: "new", msg, quote: "" }, msg });
 }
 
 /** Open the drawer from a message's 💬: its threads if it has some, else a new one. */

@@ -1042,6 +1042,10 @@ fn group_prompt(alias: &str) -> String {
          fill in or answer something, make a document with a form or buttons that calls `recursion.reply(...)` on submit, \
          sending only what the human picked or typed (e.g. `{{\"database\": \"SQLite\"}}`); your advice comes after, in the chat. \
          Never ask them to copy text back into the chat.\n\
+         - You have your own browser panel next to the chat, which the human can watch: `browse_open` a URL (any site, or the \
+         project's dev server such as http://localhost:5173) to get the page as text with numbered links, buttons and fields, then \
+         `browse_click`, `browse_fill`, `browse_read` and `browse_screenshot`. It shares the human's logins, so never buy, post, \
+         send, delete or change settings there without the human's explicit go-ahead.\n\
          - Reply in the human's language."
     )
 }
