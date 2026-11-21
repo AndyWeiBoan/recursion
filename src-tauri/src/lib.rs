@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 23;
+const PROTOCOL: u32 = 24;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {

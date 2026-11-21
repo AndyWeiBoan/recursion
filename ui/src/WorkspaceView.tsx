@@ -11,7 +11,7 @@ import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./Thr
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
-import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
+import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
 // Its own instance: the shared `marked` would stack the extension on every hot reload.
@@ -275,6 +275,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
     if (!touched) setAlias(free(kind));
   }, [takenKey]);
   const [model, setModel] = useState("");
+  const [mode, setMode] = useState<PermMode>("edits");
   const accounts = useAccounts().filter((a) => a.kind === kind);
   const [account, setAccount] = useState("");
   const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.id === `${kind}-default`);
@@ -288,7 +289,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
       onSubmit={(e) => {
         e.preventDefault();
         const acc = pickedAccount && !pickedAccount.id.endsWith("-default") ? pickedAccount.id : null;
-        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: acc });
+        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: acc, mode });
         if (target !== panel) send({ t: "panel_focus", panel: target });
         onDone?.();
       }}
@@ -401,6 +402,19 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         <span className="field-hint">
           {list.loading ? `正在問 ${KIND_NAME[kind]} 有哪些模型…` : list.error ? `讀不到模型清單：${list.error}` : picked?.description}
         </span>
+      </div>
+      <div className="field">
+        <span className="field-label" id={`mode-${id}`}>
+          權限
+        </span>
+        <div className="mode-seg" role="radiogroup" aria-labelledby={`mode-${id}`}>
+          {PERM_MODES.map((p) => (
+            <button key={p.id} type="button" role="radio" aria-checked={mode === p.id} className={`${mode === p.id ? "on" : ""} m-${p.id}`} onClick={() => setMode(p.id)}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <span className={`field-hint${mode === "auto" ? " warn" : ""}`}>{PERM_MODES.find((p) => p.id === mode)?.hint}</span>
       </div>
       <button className="add-submit" type="submit" disabled={!alias.trim()}>
         加入 @{alias.trim() || "…"}

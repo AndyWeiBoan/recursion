@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 23;
+pub const PROTOCOL: u32 = 24;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -97,7 +97,8 @@ enum In {
     TermResize { panel: String, cols: u16, rows: u16 },
     TermRestart { panel: String, cols: u16, rows: u16 },
     WsAttach { panel: String },
-    WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String>, account: Option<String> },
+    WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>, #[serde(default)] mode: workspace::PermMode },
+    WsSetMode { panel: String, member: String, mode: workspace::PermMode },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
     WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String> },
@@ -418,8 +419,12 @@ impl App {
                 self.hub.emit_accounts();
                 changed = false;
             }
-            WsAddAgent { panel, kind, alias, model, account } => {
-                self.hub.add_agent(&panel, kind, alias, model, account).await?;
+            WsAddAgent { panel, kind, alias, model, account, mode } => {
+                self.hub.add_agent(&panel, kind, alias, model, account, mode).await?;
+                changed = false;
+            }
+            WsSetMode { panel, member, mode } => {
+                self.hub.set_mode(&panel, &member, mode).await?;
                 changed = false;
             }
             WsRenameAgent { panel, member, alias } => {

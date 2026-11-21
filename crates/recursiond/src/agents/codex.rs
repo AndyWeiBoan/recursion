@@ -159,10 +159,11 @@ impl Hub {
         rpc.call(self, panel, &m.id, "initialize", json!({ "clientInfo": { "name": "recursion", "title": "Recursion", "version": env!("CARGO_PKG_VERSION") }, "capabilities": null }))
             .await?;
         self.write(panel, &m.id, json!({ "jsonrpc": "2.0", "method": "initialized" })).await?;
+        let (approval, sandbox) = m.mode.codex();
         let mut params = json!({
             "cwd": dir,
-            "approvalPolicy": "on-request",
-            "sandbox": "workspace-write",
+            "approvalPolicy": approval,
+            "sandbox": sandbox,
             "developerInstructions": group_prompt(&m.alias),
             "config": { "mcp_servers": { "recursion": { "url": self.mcp_url(panel, &m.id) } } },
         });

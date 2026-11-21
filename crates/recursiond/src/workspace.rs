@@ -20,6 +20,45 @@ pub enum MemberStatus {
     WaitingPermission,
 }
 
+/// How much an agent may do without asking. Same three levels for both CLIs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PermMode {
+    /// Asks before editing files and before running commands.
+    Ask,
+    /// Edits files on its own, asks before running commands.
+    #[default]
+    Edits,
+    /// Never asks; no sandbox.
+    Auto,
+}
+
+impl PermMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            PermMode::Ask => "每次都問",
+            PermMode::Edits => "自動改檔",
+            PermMode::Auto => "全自動",
+        }
+    }
+    /// Claude's `--permission-mode`.
+    pub fn claude(self) -> &'static str {
+        match self {
+            PermMode::Ask => "default",
+            PermMode::Edits => "acceptEdits",
+            PermMode::Auto => "bypassPermissions",
+        }
+    }
+    /// Codex's (approvalPolicy, sandbox).
+    pub fn codex(self) -> (&'static str, &'static str) {
+        match self {
+            PermMode::Ask => ("untrusted", "workspace-write"),
+            PermMode::Edits => ("on-request", "workspace-write"),
+            PermMode::Auto => ("never", "danger-full-access"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Member {
     pub id: String,
@@ -48,6 +87,8 @@ pub struct Member {
     /// Highest message `seq` this agent has been shown.
     #[serde(default)]
     pub seen: u64,
+    #[serde(default)]
+    pub mode: PermMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -637,7 +678,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() }
     }
 
     #[test]

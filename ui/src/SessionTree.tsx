@@ -2,7 +2,7 @@
 import { useRef, useState } from "react";
 import { accountName, requestAddAgent, send, useAccounts } from "./client";
 import { Avatar, STATUS_LABEL } from "./WorkspaceView";
-import { leaves, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
+import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 
 function k(n: number) {
   if (n >= 1e6) return `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M`;
@@ -56,6 +56,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
               <span className="tree-agent-model" title={acct ? `帳號：${acct}` : undefined}>
                 {m.model ?? m.kind}
                 {acct && ` · ${acct}`}
+                {m.mode && m.mode !== "edits" && <span className={`tree-mode m-${m.mode}`}> · {PERM_MODES.find((p) => p.id === m.mode)?.label}</span>}
               </span>
             ))}
         </span>
@@ -89,6 +90,14 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       {menu && (
         <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(false)}>
           <button onClick={() => (setMenu(false), setEditing(true))}>重新命名</button>
+          <div className="menu-sep" />
+          <span className="menu-label">權限</span>
+          {PERM_MODES.map((p) => (
+            <button key={p.id} className={`menu-check${(m.mode ?? "edits") === p.id ? " on" : ""}`} title={p.hint} onClick={() => (setMenu(false), send({ t: "ws_set_mode", panel, member: m.id, mode: p.id }))}>
+              {p.label}
+            </button>
+          ))}
+          <div className="menu-sep" />
           <button className="danger" onClick={() => (setMenu(false), send({ t: "ws_remove_agent", panel, member: m.id }))}>
             移除 @{m.alias}
           </button>

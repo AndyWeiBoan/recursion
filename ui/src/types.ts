@@ -69,7 +69,8 @@ export type Cmd =
   | { t: "term_resize"; panel: string; cols: number; rows: number }
   | { t: "term_restart"; panel: string; cols: number; rows: number }
   | { t: "ws_attach"; panel: string }
-  | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null }
+  | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
+  | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
   | { t: "accounts_list" }
   | { t: "accounts_refresh" }
   | { t: "daemon_info" }
@@ -105,10 +106,19 @@ export type AgentKind = "claude" | "codex";
 
 export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission";
 
+/** How much an agent may do without asking. */
+export type PermMode = "ask" | "edits" | "auto";
+export const PERM_MODES: { id: PermMode; label: string; hint: string }[] = [
+  { id: "ask", label: "每次都問", hint: "改檔案、跑指令都先問你" },
+  { id: "edits", label: "自動改檔", hint: "改檔案不用問，跑指令先問你" },
+  { id: "auto", label: "全自動", hint: "什麼都不問直接做：能跑任何指令、改專案外的檔案" },
+];
+
 export interface Member {
   id: string;
   kind: AgentKind;
   alias: string;
+  mode?: PermMode;
   model?: string | null;
   /** Account id; absent = the default account of its kind. */
   account?: string | null;

@@ -4,7 +4,7 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
-use crate::workspace::{display_tool_name, mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermState, TurnUsage, Workspace};
+use crate::workspace::{display_tool_name, mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermMode, PermState, TurnUsage, Workspace};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
@@ -424,7 +424,7 @@ impl Hub {
 
     // ---------- commands from clients ----------
 
-    pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>) -> Result<(), String> {
+    pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>, mode: PermMode) -> Result<(), String> {
         let account = self.accounts.resolve(kind, account.as_deref());
         let acc = self.accounts.get(&account).ok_or("找不到這個帳號")?;
         let env = self.env().await;
@@ -449,11 +449,30 @@ impl Hub {
         }
         let alias = self.check_alias(panel, &alias, None)?;
         let account = (account != crate::accounts::default_id(kind)).then_some(account);
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 };
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
-        self.system(panel, &member.id, format!("@{alias} 加入了群聊"), false);
+        let how = if mode == PermMode::default() { String::new() } else { format!("（{}）", mode.label()) };
+        self.system(panel, &member.id, format!("@{alias} 加入了群聊{how}"), false);
+        Ok(())
+    }
+
+    /// Changes what an agent may do without asking. Its process restarts (the conversation is
+    /// resumed) so the next turn runs under the new mode; not while it is answering.
+    pub async fn set_mode(&self, panel: &str, member: &str, mode: PermMode) -> Result<(), String> {
+        let (alias, status, old) = self
+            .with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| (m.alias.clone(), m.status, m.mode)))
+            .ok_or("找不到這個 agent")?;
+        if old == mode {
+            return Ok(());
+        }
+        if status != MemberStatus::Idle {
+            return Err(format!("@{alias} 還在回覆，等它回完再換"));
+        }
+        self.update_member(panel, member, |m| m.mode = mode);
+        self.kill(panel, member).await;
+        self.system(panel, "system", format!("@{alias} 換成「{}」", mode.label()), false);
         Ok(())
     }
 
@@ -892,7 +911,7 @@ impl Hub {
         let prompt = group_prompt(&m.alias);
         let mut cmd = Command::new(bin);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
-            .args(["--permission-prompt-tool", "stdio", "--permission-mode", "acceptEdits"])
+            .args(["--permission-prompt-tool", "stdio", "--permission-mode", m.mode.claude()])
             .args(["--append-system-prompt", &prompt]);
         let mcp = json!({ "mcpServers": { "recursion": { "type": "http", "url": self.mcp_url(panel, &m.id) } } });
         cmd.args(["--mcp-config", &mcp.to_string(), "--allowedTools", "mcp__recursion"]);
