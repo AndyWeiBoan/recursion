@@ -111,6 +111,7 @@ pub struct Hub {
     port: std::sync::atomic::AtomicU16,
     /// MCP key → (panel, member): each agent gets its own URL, so tool calls know who is calling.
     mcp: Mutex<HashMap<String, (String, String)>>,
+    pub accounts: crate::accounts::Accounts,
 }
 
 fn mid() -> String {
@@ -137,7 +138,47 @@ impl Hub {
             generation: Default::default(),
             port: Default::default(),
             mcp: Default::default(),
+            accounts: crate::accounts::Accounts::load(),
         })
+    }
+
+    pub fn emit_accounts(&self) {
+        self.emit(json!({ "t": "accounts", "accounts": self.accounts.list() }));
+    }
+
+    /// Re-ask the CLIs who is logged in on every account (on start, and after a login).
+    pub async fn refresh_accounts(&self, only: Option<&str>) -> bool {
+        let env = self.env().await;
+        let mut changed = false;
+        for a in self.accounts.list().into_iter().filter(|a| only.is_none_or(|o| o == a.id)) {
+            changed |= self.accounts.refresh(&a.id, &env.path, env.claude.as_deref(), env.codex.as_deref()).await;
+        }
+        if changed {
+            self.emit_accounts();
+        }
+        changed
+    }
+
+    /// After a login: the "log in again" cards for this account are done.
+    pub fn resolve_relogin(&self, account: &str) {
+        let panels: Vec<String> = self.workspaces.lock().unwrap().keys().cloned().collect();
+        for p in panels {
+            let ids: Vec<String> = self.with_ws(&p, |ws| {
+                ws.messages.iter().filter(|m| matches!(&m.body, Body::Relogin { account: a, resolved: false, .. } if a == account)).map(|m| m.id.clone()).collect()
+            });
+            for id in ids {
+                self.update_msg(&p, &id, |m| {
+                    if let Body::Relogin { resolved, .. } = &mut m.body {
+                        *resolved = true;
+                    }
+                });
+            }
+        }
+    }
+
+    /// Is any agent (in a chat that has been opened) using this account?
+    pub fn account_in_use(&self, account: &str, chats: &[String]) -> Option<String> {
+        chats.iter().find_map(|p| self.with_ws(p, |ws| ws.members.iter().find(|m| m.account.as_deref() == Some(account)).map(|m| format!("@{}", m.alias))))
     }
 
     pub async fn models(&self, kind: AgentKind) -> Result<Vec<ModelOption>, String> {
@@ -302,13 +343,25 @@ impl Hub {
 
     fn system(&self, panel: &str, from: &str, text: impl Into<String>, error: bool) {
         let text = text.into();
+        // A login problem gets a card with a way out instead of a bare error.
+        if error && crate::accounts::is_auth_error(&text) {
+            let m = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == from).cloned());
+            if let Some(m) = m {
+                let account = self.accounts.resolve(m.kind, m.account.as_deref());
+                let name = self.accounts.get(&account).map(|a| a.name).unwrap_or_default();
+                self.push_msg(panel, msg(from, Body::Relogin { account, name, text, resolved: false }, false));
+                return;
+            }
+        }
         let body = if error { Body::Error { text } } else { Body::System { text } };
         self.push_msg(panel, msg(from, body, false));
     }
 
     // ---------- commands from clients ----------
 
-    pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>) -> Result<(), String> {
+    pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>) -> Result<(), String> {
+        let account = self.accounts.resolve(kind, account.as_deref());
+        let acc = self.accounts.get(&account).ok_or("找不到這個帳號")?;
         let env = self.env().await;
         match kind {
             AgentKind::Claude if env.claude.is_none() => {
@@ -318,16 +371,20 @@ impl Hub {
                 let Some(bin) = env.codex.clone() else {
                     return Err("找不到 codex 指令。請先安裝 Codex CLI（npm i -g @openai/codex）並執行 codex login".into());
                 };
-                let out = Command::new(bin).args(["login", "status"]).env("PATH", &env.path).output().await.map_err(|e| e.to_string())?;
+                let mut cmd = Command::new(bin);
+                cmd.args(["login", "status"]).env("PATH", &env.path);
+                self.accounts.apply(&mut cmd, kind, Some(&account));
+                let out = cmd.output().await.map_err(|e| e.to_string())?;
                 let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
                 if !out.status.success() || text.to_lowercase().contains("not logged in") {
-                    return Err("Codex 還沒登入，請先在終端執行 codex login".into());
+                    return Err(format!("Codex 帳號「{}」還沒登入，請在「帳號」裡登入", acc.name));
                 }
             }
             _ => {}
         }
         let alias = self.check_alias(panel, &alias, None)?;
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 };
+        let account = (account != crate::accounts::default_id(kind)).then_some(account);
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
@@ -742,6 +799,7 @@ impl Hub {
         }
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         cmd.current_dir(&dir).env("PATH", &env.path).env("CLAUDE_CODE_ENTRYPOINT", "recursion");
+        self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
         let mut child = cmd.spawn().map_err(|e| format!("無法啟動 claude：{e}"))?;
@@ -975,6 +1033,12 @@ impl ClaudeReader {
                     hub.update_member(&panel, &member, |m| usage.into_iter().for_each(|(k, u)| {
                         m.usage.insert(k, u);
                     }));
+                    let m = hub.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).cloned());
+                    if let Some(m) = m {
+                        if hub.accounts.record_usage(&hub.accounts.resolve(m.kind, m.account.as_deref()), &m.usage) {
+                            hub.emit_accounts();
+                        }
+                    }
                 }
             }
             "result" => {

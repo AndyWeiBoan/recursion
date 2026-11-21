@@ -2,7 +2,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { agentBrowse } from "./browsers";
 import { setThreadView } from "./threadsUI";
-import type { AgentKind, Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
+import type { Account, AgentKind, Cmd, Member, Msg, State, TermInfo, Workspace } from "./types";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "error";
 
@@ -65,6 +65,7 @@ export async function connect() {
       set({ status: "open", error: null });
       // The desktop app runs agents' browser steps in its native webviews.
       if (isTauri) send({ t: "browser_host" });
+      send({ t: "accounts_list" });
       reconnectHooks.forEach((f) => f());
     };
     sock.onmessage = (e) => {
@@ -93,6 +94,14 @@ export async function connect() {
             const i = list.findIndex((x) => x.id === m.thread.id);
             return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
           });
+          break;
+        case "daemon_info":
+          daemonInfo = m;
+          accountSubs.forEach((f) => f());
+          break;
+        case "accounts":
+          accounts = m.accounts;
+          accountSubs.forEach((f) => f());
           break;
         case "browse_req":
           agentBrowse(m.panel, m.op, m.args).then(
@@ -367,4 +376,39 @@ export function requestAddAgent(panel: string) {
     else if (tries++ < 20) setTimeout(tick, 50);
   };
   tick();
+}
+
+// ---------- accounts ----------
+let accounts: Account[] = [];
+const accountSubs = new Set<() => void>();
+
+export function useAccounts(): Account[] {
+  return useSyncExternalStore(
+    (f) => (accountSubs.add(f), () => accountSubs.delete(f)),
+    () => accounts,
+  );
+}
+
+/** The account name to show next to an agent, or "" for the default account. */
+export function accountName(list: Account[], m: { account?: string | null }) {
+  return m.account ? (list.find((a) => a.id === m.account)?.name ?? "") : "";
+}
+
+export interface DaemonInfo {
+  version: string;
+  protocol: number;
+  pid: number;
+  home: string;
+  exe: string | null;
+  started: number;
+}
+let daemonInfo: DaemonInfo | null = null;
+
+/** The daemon's version and whereabouts (asks for it when first used). */
+export function useDaemonInfo(): DaemonInfo | null {
+  useEffect(() => send({ t: "daemon_info" }), []);
+  return useSyncExternalStore(
+    (f) => (accountSubs.add(f), () => accountSubs.delete(f)),
+    () => daemonInfo,
+  );
 }

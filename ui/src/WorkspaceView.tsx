@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, ThreadDrawer } from "./ThreadDrawer";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { onAddAgentRequest, onReconnect, openExternal, send, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Thread, type TurnUsage } from "./types";
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -155,7 +155,7 @@ export function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
 }
 
 /** Centered dialog over the whole app. Closes on ✕, Esc, or a click outside. */
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   const close = useRef(onClose);
   close.current = onClose;
   useEffect(() => {
@@ -250,6 +250,9 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
     if (!touched) setAlias(free(kind));
   }, [takenKey]);
   const [model, setModel] = useState("");
+  const accounts = useAccounts().filter((a) => a.kind === kind);
+  const [account, setAccount] = useState("");
+  const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.id === `${kind}-default`);
   const list = useModels(kind);
   const options = list.models.length ? list.models : [{ value: "", label: "預設模型", description: "" }];
   const picked = options.find((m) => m.value === model);
@@ -259,7 +262,8 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
       className={`add-card${big ? " big" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
-        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null });
+        const acc = pickedAccount && !pickedAccount.id.endsWith("-default") ? pickedAccount.id : null;
+        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: acc });
         if (target !== panel) send({ t: "panel_focus", panel: target });
         onDone?.();
       }}
@@ -304,6 +308,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
             onClick={() => {
               setKind(k);
               setModel("");
+              setAccount("");
               if (!touched) setAlias(free(k));
             }}
           >
@@ -334,6 +339,26 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
           />
         </div>
       </div>
+      {accounts.length > 1 && (
+        <div className="field">
+          <label htmlFor={`account-${id}`}>帳號</label>
+          <div className="select-wrap">
+            <select id={`account-${id}`} value={pickedAccount?.id ?? ""} onChange={(e) => setAccount(e.target.value)}>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                  {a.email ? ` · ${a.email}` : ""}
+                  {a.logged_in ? "" : "（還沒登入）"}
+                </option>
+              ))}
+            </select>
+            <span className="chev" aria-hidden="true">
+              ⌄
+            </span>
+          </div>
+          {pickedAccount && !pickedAccount.logged_in && <span className="field-hint warn">這個帳號還沒登入，先到側欄「帳號」登入</span>}
+        </div>
+      )}
       <div className="field">
         <label htmlFor={`model-${id}`}>模型</label>
         <div className="select-wrap">
@@ -516,6 +541,7 @@ const MessageView = memo(function MessageView({
   /** Threads opened on this message. */
   threads: number;
 }) {
+  const accounts = useAccounts();
   const [open, setOpen] = useState(false);
 
   if (m.from === "you" && m.kind === "text") {
@@ -532,6 +558,22 @@ const MessageView = memo(function MessageView({
     );
   }
   if (m.kind === "system") return <div className="m-sys">{m.text}</div>;
+  if (m.kind === "relogin") {
+    return (
+      <div className={`m-guard m-relogin${m.resolved ? " done" : ""}`}>
+        <span>
+          🔑 帳號「{m.name}」需要重新登入
+          <span className="dim">{m.resolved ? "　已重新登入，再傳一次訊息就會繼續" : `　${m.text.slice(0, 120)}`}</span>
+        </span>
+        {!m.resolved && (
+          <span className="acts">
+            <button onClick={() => send({ t: "account_login", account: m.account })}>重新登入</button>
+          </span>
+        )}
+      </div>
+    );
+  }
+
   if (m.kind === "guard") {
     return (
       <div className={`m-guard${m.resolved ? " done" : ""}`}>
@@ -654,7 +696,12 @@ const MessageView = memo(function MessageView({
         {first && (
           <div className="name">
             <b style={{ color: who ? colorFor(who.id) : undefined }}>@{who?.alias ?? "agent"}</b>
-            {who && <span>{who.model ?? who.kind}</span>}
+            {who && (
+              <span>
+                {who.model ?? who.kind}
+                {accountName(accounts, who) && ` · ${accountName(accounts, who)}`}
+              </span>
+            )}
             <span>{time(m.ts)}</span>
             {m.usage && <UsageTag u={m.usage} />}
           </div>

@@ -27,6 +27,9 @@ pub struct Member {
     pub alias: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// Account id it runs under (see accounts.rs); None = the default account of its kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// CLI conversation id, used to resume after restarts.
     #[serde(default)]
     pub cli_session_id: Option<String>,
@@ -66,6 +69,8 @@ pub enum Body {
     Error { text: String },
     /// An agent created (`updated: false`) or replaced a session document.
     Doc { doc: String, title: String, #[serde(default)] updated: bool },
+    /// The agent's account needs logging in again; the UI offers a button for it.
+    Relogin { account: String, name: String, text: String, #[serde(default)] resolved: bool },
     /// Loop guard tripped; the UI offers "continue".
     Guard { text: String, #[serde(default)] resolved: bool },
 }
@@ -425,7 +430,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0 }
     }
 
     #[test]

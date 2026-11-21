@@ -69,7 +69,14 @@ export type Cmd =
   | { t: "term_resize"; panel: string; cols: number; rows: number }
   | { t: "term_restart"; panel: string; cols: number; rows: number }
   | { t: "ws_attach"; panel: string }
-  | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null }
+  | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null }
+  | { t: "accounts_list" }
+  | { t: "daemon_info" }
+  | { t: "daemon_restart" }
+  | { t: "account_create"; kind: AgentKind; name: string }
+  | { t: "account_login"; account: string }
+  | { t: "account_rename"; account: string; name: string }
+  | { t: "account_remove"; account: string }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
   | { t: "ws_send"; panel: string; text: string }
@@ -96,12 +103,26 @@ export interface Member {
   kind: AgentKind;
   alias: string;
   model?: string | null;
+  /** Account id; absent = the default account of its kind. */
+  account?: string | null;
   cli_session_id?: string | null;
   cost_usd: number;
   status: MemberStatus;
   usage: Record<string, number>;
   context_used?: number;
   context_window?: number;
+}
+
+/** One login of a CLI (see accounts.rs). The default one of each kind is the CLI's own. */
+export interface Account {
+  id: string;
+  kind: AgentKind;
+  name: string;
+  email?: string | null;
+  plan?: string | null;
+  logged_in: boolean;
+  usage: Record<string, number>;
+  usage_at: number;
 }
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
@@ -128,6 +149,7 @@ export type Msg = { id: string; ts: number; from: string; seq: number; to?: stri
   | { kind: "system"; text: string }
   | { kind: "error"; text: string }
   | { kind: "guard"; text: string; resolved: boolean }
+  | { kind: "relogin"; account: string; name: string; text: string; resolved: boolean }
   | { kind: "doc"; doc: string; title: string; updated: boolean }
 );
 

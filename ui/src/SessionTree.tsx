@@ -1,6 +1,6 @@
 // Sidebar tree under each session: its windows, what each window holds, and the agents of each chat.
 import { useRef, useState } from "react";
-import { requestAddAgent, send } from "./client";
+import { accountName, requestAddAgent, send, useAccounts } from "./client";
 import { Avatar, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 
@@ -26,6 +26,7 @@ function ContextBar({ m }: { m: Member }) {
 }
 
 function AgentRow({ m, panel }: { m: Member; panel: string }) {
+  const acct = accountName(useAccounts(), m);
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState(false);
   return (
@@ -42,7 +43,10 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
           )}
           {!editing && (
             <>
-              <span className="tree-agent-model">{m.model ?? m.kind}</span>
+              <span className="tree-agent-model" title={acct ? `帳號：${acct}` : undefined}>
+                {m.model ?? m.kind}
+                {acct && ` · ${acct}`}
+              </span>
               <i className="st-dot" />
             </>
           )}

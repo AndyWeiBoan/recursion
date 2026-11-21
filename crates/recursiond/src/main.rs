@@ -3,6 +3,7 @@
 //! Owns the workspace model and all terminal processes. UI clients connect over a
 //! localhost WebSocket (port + token are written to ~/.recursion/daemon.json).
 
+mod accounts;
 mod agents;
 mod browse;
 mod docs;
@@ -28,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 15;
+pub const PROTOCOL: u32 = 17;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -62,6 +63,10 @@ struct App {
     doc_last: Mutex<HashMap<String, std::time::Instant>>,
     /// Agents' browse_* calls, carried out by the desktop app.
     browser: browse::Bridge,
+    /// A command to type into a terminal once it starts (account login windows).
+    pending_cmd: Mutex<HashMap<String, String>>,
+    /// When this daemon started (ms since epoch).
+    started: u64,
 }
 
 /// Messages from a UI client.
@@ -88,7 +93,7 @@ enum In {
     TermResize { panel: String, cols: u16, rows: u16 },
     TermRestart { panel: String, cols: u16, rows: u16 },
     WsAttach { panel: String },
-    WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String> },
+    WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String>, account: Option<String> },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
     WsSend { panel: String, text: String },
@@ -103,6 +108,15 @@ enum In {
     ThreadBring { panel: String, thread: String },
     DocGet { session: String, doc: String },
     DocAction { session: String, doc: String, action: String, data: String },
+    AccountsList,
+    /// For the settings' "about" page.
+    DaemonInfo,
+    /// Exit cleanly; the desktop app starts a fresh daemon (the current binary) when it reconnects.
+    DaemonRestart,
+    AccountCreate { kind: AgentKind, name: String },
+    AccountLogin { account: String },
+    AccountRename { account: String, name: String },
+    AccountRemove { account: String },
     /// This client is the desktop app and can run agents' browser steps.
     BrowserHost,
     BrowseResult { id: u64, ok: bool, result: Option<serde_json::Value>, error: Option<String> },
@@ -147,6 +161,41 @@ impl App {
             self.terms.kill(p);
             self.hub.close_panel(p, true).await;
         }
+    }
+
+    /// Open a terminal window in the current session that runs the CLI's own login for this
+    /// account, then watch until the login lands.
+    fn account_login(&self, account: &str) -> Result<(), String> {
+        let a = self.hub.accounts.get(account).ok_or("找不到這個帳號")?;
+        let panel = {
+            let mut st = self.state.lock().unwrap();
+            let session = st.active_session.clone().or_else(|| st.sessions.first().map(|s| s.id.clone())).ok_or("先開一個 session，才能開登入用的終端")?;
+            let wid = st.create_window(&session, model::PanelKind::Terminal).map_err(|e| e.to_string())?;
+            let kind = if a.kind == AgentKind::Claude { "Claude" } else { "Codex" };
+            st.rename_window(&session, &wid, format!("登入 {kind}「{}」", a.name)).map_err(|e| e.to_string())?;
+            let s = st.sessions.iter().find(|s| s.id == session).unwrap();
+            s.windows.iter().find(|w| w.id == wid).unwrap().focus.clone()
+        };
+        self.pending_cmd.lock().unwrap().insert(panel, accounts::login_command(a.kind, &a.id));
+        self.mark_changed();
+        let hub = self.hub.clone();
+        let (id, kind) = (a.id.clone(), a.kind);
+        let before = accounts::credentials_mtime(kind, &id);
+        tokio::spawn(async move {
+            // The human has ten minutes to finish in the browser.
+            for _ in 0..200 {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                if accounts::credentials_mtime(kind, &id) == before {
+                    continue;
+                }
+                hub.refresh_accounts(Some(&id)).await;
+                if hub.accounts.get(&id).is_some_and(|a| a.logged_in) {
+                    hub.resolve_relogin(&id);
+                    return;
+                }
+            }
+        });
+        Ok(())
     }
 
     /// Apply one client command. Returns an optional direct reply for the sender.
@@ -200,6 +249,9 @@ impl App {
             TermAttach { panel, cols, rows } | TermRestart { panel, cols, rows } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
                 let back = self.terms.ensure(&panel, &cwd, cols.max(2), rows.max(2)).map_err(|e| e.to_string())?;
+                if let Some(cmd) = self.pending_cmd.lock().unwrap().remove(&panel) {
+                    self.terms.write(&panel, format!("{cmd}\r").as_bytes());
+                }
                 reply = Some(serde_json::to_string(&Out::Replay { panel: &panel, data: B64.encode(back) }).unwrap());
                 changed = false;
             }
@@ -264,8 +316,57 @@ impl App {
                 reply = Some(serde_json::to_string(&Out::Models { kind, models, error }).unwrap());
                 changed = false;
             }
-            WsAddAgent { panel, kind, alias, model } => {
-                self.hub.add_agent(&panel, kind, alias, model).await?;
+            DaemonInfo => {
+                reply = Some(
+                    serde_json::json!({
+                        "t": "daemon_info",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "protocol": PROTOCOL,
+                        "pid": std::process::id(),
+                        "home": home(),
+                        "exe": std::env::current_exe().ok(),
+                        "started": self.started,
+                    })
+                    .to_string(),
+                );
+                changed = false;
+            }
+            DaemonRestart => {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(std::process::id() as i32, libc::SIGTERM);
+                }
+                changed = false;
+            }
+            AccountsList => {
+                reply = Some(serde_json::json!({ "t": "accounts", "accounts": self.hub.accounts.list() }).to_string());
+                changed = false;
+            }
+            AccountCreate { kind, name } => {
+                let a = self.hub.accounts.create(kind, &name)?;
+                self.hub.emit_accounts();
+                self.account_login(&a.id)?;
+            }
+            AccountLogin { account } => self.account_login(&account)?,
+            AccountRename { account, name } => {
+                self.hub.accounts.rename(&account, &name)?;
+                self.hub.emit_accounts();
+                changed = false;
+            }
+            AccountRemove { account } => {
+                let chats: Vec<String> = {
+                    let st = self.state.lock().unwrap();
+                    st.panels.values().filter(|p| p.kind == model::PanelKind::Workspace).map(|p| p.id.clone()).collect()
+                };
+                if let Some(who) = self.hub.account_in_use(&account, &chats) {
+                    return Err(format!("{who} 還在用這個帳號，先把它移出群聊再刪除"));
+                }
+                self.hub.accounts.remove(&account)?;
+                self.hub.emit_accounts();
+                changed = false;
+            }
+            WsAddAgent { panel, kind, alias, model, account } => {
+                self.hub.add_agent(&panel, kind, alias, model, account).await?;
                 changed = false;
             }
             WsRenameAgent { panel, member, alias } => {
@@ -447,7 +548,16 @@ async fn main() -> anyhow::Result<()> {
         hub: agents::Hub::new(),
         doc_last: Default::default(),
         browser: Default::default(),
+        pending_cmd: Default::default(),
+        started: workspace::now_ms(),
     });
+    // Who is logged in where (emails, plans), without holding up the start.
+    {
+        let hub = app.hub.clone();
+        tokio::spawn(async move {
+            hub.refresh_accounts(None).await;
+        });
+    }
 
     // Debounced saver.
     {

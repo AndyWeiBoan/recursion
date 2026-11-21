@@ -96,6 +96,7 @@ impl Hub {
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         let mut cmd = Command::new(bin);
         cmd.arg("app-server").current_dir(&dir).env("PATH", &env.path);
+        self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
         let mut child = cmd.spawn().map_err(|e| format!("無法啟動 codex：{e}"))?;

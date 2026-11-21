@@ -145,8 +145,8 @@ impl Hub {
                 let dir = if std::path::Path::new(&cwd).is_dir() { cwd.clone() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
                 let run = async {
                     match m.kind {
-                        AgentKind::Claude => claude_turn(&env, &m, t.fork.as_deref(), &dir, &prompt).await,
-                        AgentKind::Codex => codex_turn(&env, &m, t.fork.as_deref(), &dir, &prompt).await,
+                        AgentKind::Claude => claude_turn(&env, &self.accounts, &m, t.fork.as_deref(), &dir, &prompt).await,
+                        AgentKind::Codex => codex_turn(&env, &self.accounts, &m, t.fork.as_deref(), &dir, &prompt).await,
                     }
                 };
                 tokio::time::timeout(TURN_TIMEOUT, run).await.unwrap_or_else(|_| Err("等太久了，沒有回應".into())).map(|r| (r, m))
@@ -188,7 +188,7 @@ fn unanswered(messages: &[ThreadMsg], agent: &str) -> String {
 }
 
 /// One Claude reply in the fork. Returns (text, session id to resume next time).
-async fn claude_turn(env: &AgentEnv, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
+async fn claude_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
     let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
     let mut cmd = Command::new(bin);
     cmd.args(["-p", "--output-format", "json", "--permission-mode", "default", "--disallowedTools", "Bash,Edit,Write,MultiEdit,NotebookEdit"]);
@@ -200,6 +200,7 @@ async fn claude_turn(env: &AgentEnv, m: &Member, fork: Option<&str>, dir: &str, 
         cmd.args(["--model", model]);
     }
     cmd.current_dir(dir).env("PATH", &env.path).env("CLAUDE_CODE_ENTRYPOINT", "recursion");
+    accounts.apply(&mut cmd, m.kind, m.account.as_deref());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("無法啟動 claude：{e}"))?;
     let mut stdin = child.stdin.take().unwrap();
@@ -219,10 +220,11 @@ async fn claude_turn(env: &AgentEnv, m: &Member, fork: Option<&str>, dir: &str, 
 }
 
 /// One Codex reply in the fork, through a short-lived app-server. Returns (text, thread id).
-async fn codex_turn(env: &AgentEnv, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
+async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
     let bin = env.codex.clone().ok_or("找不到 codex 指令")?;
     let mut cmd = Command::new(bin);
     cmd.arg("app-server").current_dir(dir).env("PATH", &env.path);
+    accounts.apply(&mut cmd, m.kind, m.account.as_deref());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("無法啟動 codex：{e}"))?;
     let mut stdin = child.stdin.take().unwrap();

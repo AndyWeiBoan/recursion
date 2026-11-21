@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { getSnapshot, isMac, pickFolder, send, useRoster, useSnapshot, useToast } from "./client";
+import { getSnapshot, isMac, pickFolder, send, useAccounts, useRoster, useSnapshot, useToast } from "./client";
 import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
+import { openSettings, SettingsModal } from "./Settings";
 import { closeThreads, useZoomed } from "./threadsUI";
 import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
 
@@ -70,6 +71,12 @@ function useShortcuts(toggleSidebar: () => void) {
         if (VIM_LIKE.has(fg)) return;
         stop();
         focusNeighbor(k as "h" | "j" | "k" | "l");
+        return;
+      }
+      // ⌘, / Ctrl+,: settings (no Shift on Linux, like most apps).
+      if (e.code === "Comma" && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey) {
+        stop();
+        openSettings();
         return;
       }
       if (!mod) return;
@@ -204,6 +211,8 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
       .join(","),
   );
 
+  const accounts = useAccounts();
+  const loggedOut = accounts.filter((a) => !a.logged_in && !a.id.endsWith("-default")).length;
   return (
     <aside className="sidebar">
       <div className="side-top" data-tauri-drag-region />
@@ -297,6 +306,13 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
           </div>
         ))}
       </nav>
+      <div className="side-foot">
+        <button className="side-accounts" onClick={() => openSettings()} title={`設定（${isMac ? "⌘," : "Ctrl+,"}）`}>
+          <span aria-hidden="true">⚙</span> 設定
+          {loggedOut > 0 && <span className="side-warn" title={`${loggedOut} 個帳號還沒登入`}>●</span>}
+        </button>
+      </div>
+      <SettingsModal />
     </aside>
   );
 }
