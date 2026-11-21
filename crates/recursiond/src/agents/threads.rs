@@ -72,6 +72,7 @@ impl Hub {
                 messages: vec![],
                 status: ThreadStatus::Waiting,
                 updated: now_ms(),
+                removed: false,
             };
             ws.threads.push(t.clone());
             t
@@ -94,6 +95,8 @@ impl Hub {
         self.update_thread(panel, thread, |t| {
             t.messages.push(ThreadMsg { from: "you".into(), text: text.clone(), ts: now_ms() });
             t.status = ThreadStatus::Replying;
+            // Talking in it again puts it back on the list.
+            t.removed = false;
         });
         // Everything the agent has not answered yet: a turn that died (daemon restart, error)
         // must not swallow what the human said before it.

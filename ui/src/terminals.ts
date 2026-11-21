@@ -2,7 +2,8 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { onReconnect, onTerm, send } from "./client";
+import { isMac, onReconnect, onTerm, send } from "./client";
+import { copyText, pasteText } from "./clipboard";
 
 interface Entry {
   term: Terminal;
@@ -56,6 +57,21 @@ export function getTerminal(id: string): Entry {
   term.open(el);
   const entry: Entry = { term, fit, el, attached: false, exited: false };
   e = entry;
+  // Ctrl+Shift+C / Ctrl+Shift+V copy and paste, as in other Linux terminals (Ctrl+C stays ^C).
+  // On macOS ⌘C / ⌘V already work through the Edit menu.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (isMac || !ev.ctrlKey || !ev.shiftKey || ev.altKey || ev.metaKey) return true;
+    const k = ev.key.toLowerCase();
+    if (k !== "c" && k !== "v") return true;
+    ev.preventDefault();
+    if (ev.type !== "keydown") return false;
+    if (k === "c") {
+      if (term.hasSelection()) void copyText(term.getSelection());
+    } else {
+      void pasteText().then((t) => t && term.paste(t));
+    }
+    return false;
+  });
   term.onData((data) => send({ t: "term_input", panel: id, data }));
   term.onResize(({ cols, rows }) => entry.attached && send({ t: "term_resize", panel: id, cols, rows }));
   onTerm(id, {

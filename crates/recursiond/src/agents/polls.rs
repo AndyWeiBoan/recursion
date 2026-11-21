@@ -50,6 +50,7 @@ impl Hub {
                 created: now_ms(),
                 closed: None,
                 msg: String::new(),
+                removed: false,
             }
         });
         if let Some(i) = vote {
@@ -119,6 +120,7 @@ Votes stay hidden until the poll closes. After voting, reply with one short sent
         };
         match name {
             "poll_list" => {
+                let polls: Vec<&Poll> = polls.iter().filter(|p| !p.removed).collect();
                 if polls.is_empty() {
                     return Ok("No polls in this chat yet.".into());
                 }

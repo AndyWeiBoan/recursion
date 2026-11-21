@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 22;
+pub const PROTOCOL: u32 = 23;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -118,6 +118,8 @@ enum In {
     ThreadOpen { panel: String, msg: String, quote: String, text: String },
     ThreadSend { panel: String, thread: String, text: String },
     ThreadBring { panel: String, thread: String },
+    /// Take a thread, document, page or poll off the 產出 list.
+    OutputRemove { panel: String, id: String },
     DocGet { session: String, doc: String },
     DocAction { session: String, doc: String, action: String, data: String },
     AccountsList,
@@ -293,6 +295,10 @@ impl App {
             ThreadSend { panel, thread, text } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
                 self.hub.thread_send(&panel, &thread, &text, cwd).await?;
+                changed = false;
+            }
+            OutputRemove { panel, id } => {
+                self.hub.output_remove(&panel, &id)?;
                 changed = false;
             }
             ThreadBring { panel, thread } => {

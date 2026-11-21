@@ -199,6 +199,19 @@ body.dragging.dragging-col { cursor: row-resize; }
 .md code { font-family: var(--mono); font-size: 12.5px; background: #2a2b31; padding: 1px 5px; border-radius: 4px; }
 .md pre { background: #141519; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 6px 0 10px; }
 .md pre code { background: none; padding: 0; }
+/* Code colours, from the terminal palette. */
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-type, .hljs-doctag { color: #c792ea; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-string, .hljs-symbol { color: #86efac; }
+.hljs-number, .hljs-literal, .hljs-bullet { color: #ffd28a; }
+.hljs-comment, .hljs-quote { color: #6b6d76; font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: #93c0ff; }
+.hljs-title.class_, .hljs-class .hljs-title { color: #f6c177; }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-template-variable, .hljs-params { color: #7fe8da; }
+.hljs-name, .hljs-tag, .hljs-selector-id, .hljs-selector-class { color: #ff8787; }
+.hljs-meta, .hljs-link { color: #6aa6ff; }
+.hljs-deletion { color: #ff6b6b; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
 .md table { border-collapse: collapse; margin: 6px 0 10px; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
 .md th, .md td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; }
 .md th { color: var(--dim); font-weight: 500; }
@@ -447,10 +460,16 @@ body.dragging.dragging-col { cursor: row-resize; }
 .td-goto { flex: none; width: 30px; border-radius: 6px; color: var(--dim); font-size: 13px; opacity: 0; }
 .td-row:hover .td-goto, .td-goto:focus-visible { opacity: 1; }
 .td-goto:hover { background: var(--sel); color: var(--fg); }
+.td-remove { width: 26px; font-size: 11px; }
+.td-remove:hover { color: #ff8787; }
 .td-row.st-brought { opacity: .55; }
 .td-num { font-family: var(--mono); font-size: 11.5px; color: var(--dim); padding-top: 1px; }
 .td-main { display: grid; gap: 3px; min-width: 0; }
 .td-quote { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.td-ask { font-size: 12px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.td-ask b { font-weight: 500; color: var(--or); }
+/* With the question under it, the quote is the context: step it back. */
+.td-main:has(.td-ask) .td-quote { color: var(--dim); }
 .td-meta { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--dim); }
 .td-dot { width: 6px; height: 6px; border-radius: 50%; background: #6b6d76; margin-left: 2px; }
 .td-row.st-waiting .td-dot { background: var(--or); }

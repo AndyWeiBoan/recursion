@@ -209,6 +209,9 @@ pub struct Poll {
     /// The chat message that shows it.
     #[serde(default)]
     pub msg: String,
+    /// Taken off the 產出 list by the human (the chat still shows it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 pub const POLL_OPTIONS_MAX: usize = 8;
@@ -305,6 +308,9 @@ pub struct Artifact {
     pub by: String,
     pub created: u64,
     pub updated: u64,
+    /// Taken off the 產出 list by the human (the chat still shows it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 impl Workspace {
@@ -316,6 +322,8 @@ impl Workspace {
             }
             a.by = by.to_string();
             a.updated = at;
+            // Made again: it's news again.
+            a.removed = false;
             return a.clone();
         }
         let a = Artifact {
@@ -326,6 +334,7 @@ impl Workspace {
             by: by.to_string(),
             created: at,
             updated: at,
+            removed: false,
         };
         self.artifacts.push(a.clone());
         a
@@ -364,6 +373,9 @@ pub struct Thread {
     #[serde(default)]
     pub status: ThreadStatus,
     pub updated: u64,
+    /// Taken off the 產出 list by the human (the chat still shows it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -662,6 +674,7 @@ mod mention_tests {
             created: 0,
             closed: None,
             msg: String::new(),
+            removed: false,
         };
         assert_eq!(p.parse_option("b"), Some(1));
         assert_eq!(p.parse_option("A)"), Some(0));

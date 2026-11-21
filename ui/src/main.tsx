@@ -1,9 +1,11 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { installClipboardKeys } from "./clipboard";
 import { connect } from "./client";
 import "./styles.css";
 
 connect();
+installClipboardKeys();
 createRoot(document.getElementById("root")!).render(<App />);
 
 // Dev only: the scripted walkthrough for the how-to video (`RECURSION_TOUR=1` on a debug app).

@@ -43,6 +43,7 @@ const KEYS: { group: string; rows: [string, string][] }[] = [
       [`${mod}[  ${mod}]`, "上一個／下一個 window"],
       [`${mod}B`, "顯示／隱藏側欄"],
       ["Ctrl+H/J/K/L", "在 panel 之間移動（終端前景是 vim／nvim 時交給它）"],
+      [isMac ? "⌘C  ⌘V" : "Ctrl+Shift+C  Ctrl+Shift+V", "在終端機裡複製、貼上"],
       [isMac ? "⌘," : "Ctrl+,", "設定"],
     ],
   },

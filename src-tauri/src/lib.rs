@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 22;
+const PROTOCOL: u32 = 23;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -133,6 +133,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             daemon_info,
             dev_tour,

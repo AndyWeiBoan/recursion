@@ -283,6 +283,27 @@ impl Hub {
         }
     }
 
+    /// Takes a thread, document, page or poll off the 產出 list. The chat keeps showing it.
+    pub fn output_remove(&self, panel: &str, id: &str) -> Result<(), String> {
+        let ev = self.with_ws(panel, |ws| {
+            if let Some(t) = ws.threads.iter_mut().find(|t| t.id == id) {
+                t.removed = true;
+                return Some(json!({ "t": "ws_thread", "panel": panel, "thread": t }));
+            }
+            if let Some(a) = ws.artifacts.iter_mut().find(|a| a.id == id) {
+                a.removed = true;
+                return Some(json!({ "t": "ws_artifact", "panel": panel, "artifact": a }));
+            }
+            let p = ws.polls.iter_mut().find(|p| p.id == id)?;
+            p.removed = true;
+            Some(json!({ "t": "ws_poll", "panel": panel, "poll": p }))
+        });
+        let ev = ev.ok_or("找不到這個產出")?;
+        self.emit(ev);
+        self.mark_dirty(panel);
+        Ok(())
+    }
+
     pub fn artifact(&self, panel: &str, id: &str) -> Option<crate::workspace::Artifact> {
         self.with_ws(panel, |ws| ws.artifacts.iter().find(|a| a.id == id).cloned())
     }

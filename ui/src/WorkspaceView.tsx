@@ -1,6 +1,9 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
+import { copyText } from "./clipboard";
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import hljs from "highlight.js/lib/common";
+import { Marked } from "marked";
+import { markedHighlight } from "marked-highlight";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
@@ -10,7 +13,21 @@ import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, type AgentKind, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
-marked.setOptions({ gfm: true, breaks: false });
+// Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
+// Its own instance: the shared `marked` would stack the extension on every hot reload.
+const marked = new Marked(
+  markedHighlight({
+    langPrefix: "hljs language-",
+    highlight(code, lang) {
+      const name = lang.split(/[\s{]/)[0];
+      if (name && hljs.getLanguage(name)) return hljs.highlight(code, { language: name, ignoreIllegals: true }).value;
+      // A weak guess colours plain text (diagrams, logs) at random: leave those plain.
+      const guess = hljs.highlightAuto(code);
+      return guess.relevance >= 5 ? guess.value : hljs.highlight(code, { language: "plaintext" }).value;
+    },
+  }),
+  { gfm: true, breaks: false },
+);
 
 const AVATAR_COLORS = ["#e8714a", "#3fb8a8", "#6a8cff", "#c792ea", "#e0a83a", "#4ab36b", "#e05d8c", "#4aa3d9"];
 export function colorFor(id: string) {
@@ -122,7 +139,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   const ui = useThreadsUI(panel);
   const threadCounts = useMemo(() => {
     const c = new Map<string, number>();
-    for (const t of ws?.threads ?? []) c.set(t.msg, (c.get(t.msg) ?? 0) + 1);
+    for (const t of ws?.threads ?? []) if (!t.removed) c.set(t.msg, (c.get(t.msg) ?? 0) + 1);
     return c;
   }, [ws?.threads]);
 
@@ -196,7 +213,7 @@ export function ChatHead({ panel }: { panel: string }) {
   // including when every agent was removed from a chat that has history.
   if (!ws || (members.length === 0 && ws.messages.length === 0)) return <span className="title" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
-  const outputs = (ws.threads?.length ?? 0) + (ws.artifacts?.length ?? 0) + (ws.polls?.length ?? 0);
+  const outputs = [ws.threads, ws.artifacts, ws.polls].reduce((n, l) => n + (l ?? []).filter((x) => !x.removed).length, 0);
   return (
     <span className="title chat-head">
       <span className="chat-faces">
@@ -626,7 +643,7 @@ function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: C
           💬 討論選取的這段
         </button>
       )}
-      <button role="menuitem" onClick={act(() => void navigator.clipboard?.writeText(menu.quote || text))}>
+      <button role="menuitem" onClick={act(() => void copyText(menu.quote || text))}>
         ⧉ {menu.quote ? "複製選取的字" : "複製整則"}
       </button>
     </div>,

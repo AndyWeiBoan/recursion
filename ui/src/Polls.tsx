@@ -2,7 +2,7 @@
 // While a poll is open nobody's pick is shown (only who has voted), so it can't sway the agents.
 import { useState } from "react";
 import { send } from "./client";
-import { showInChat } from "./ThreadDrawer";
+import { RemoveButton, showInChat } from "./ThreadDrawer";
 import { closeThreads, setThreadView } from "./threadsUI";
 import { Avatar } from "./WorkspaceView";
 import type { Member, Poll } from "./types";
@@ -252,6 +252,7 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
       <button className="td-goto" onClick={() => showInChat(p.msg)} title="在主對話中找到這次投票" aria-label={`#${p.num} 的投票卡`}>
         ↖
       </button>
+      <RemoveButton panel={panel} id={p.id} name={`投票 #${p.num}`} />
     </div>
   );
 }

@@ -91,6 +91,7 @@ export type Cmd =
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
   | { t: "artifact_open"; panel: string; artifact: string }
+  | { t: "output_remove"; panel: string; id: string }
   | { t: "ws_roster" }
   | { t: "thread_open"; panel: string; msg: string; quote: string; text: string }
   | { t: "thread_send"; panel: string; thread: string; text: string }
@@ -193,6 +194,8 @@ export interface Poll {
   closed?: number | null;
   /** The chat message showing it. */
   msg: string;
+  /** Taken off the 產出 list (the chat still shows it). */
+  removed?: boolean;
 }
 
 export type ThreadStatus = "replying" | "waiting" | "brought";
@@ -217,6 +220,8 @@ export interface Thread {
   messages: ThreadMsg[];
   status: ThreadStatus;
   updated: number;
+  /** Taken off the 產出 list (the chat still shows it). */
+  removed?: boolean;
 }
 
 export interface Workspace {
@@ -239,6 +244,8 @@ export interface Artifact {
   by: string;
   created: number;
   updated: number;
+  /** Taken off the 產出 list (the chat still shows it). */
+  removed?: boolean;
 }
 
 export function leaves(n: Node): string[] {

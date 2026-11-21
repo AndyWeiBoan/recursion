@@ -125,9 +125,10 @@ function pollMatches(p: Poll, query: string) {
 
 /** The drawer's list: threads, documents and pages of this chat, newest first. */
 function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byId: Map<string, Member>; ui: ThreadsUI }) {
-  const threads = ws.threads ?? [];
-  const artifacts = ws.artifacts ?? [];
-  const polls = ws.polls ?? [];
+  // Things taken off the list stay in the chat, just not here.
+  const threads = useMemo(() => (ws.threads ?? []).filter((t) => !t.removed), [ws.threads]);
+  const artifacts = useMemo(() => (ws.artifacts ?? []).filter((a) => !a.removed), [ws.artifacts]);
+  const polls = useMemo(() => (ws.polls ?? []).filter((p) => !p.removed), [ws.polls]);
   const anchor = ui.msg ? ws.messages.find((m) => m.id === ui.msg) : undefined;
   // A message's 💬 badge asks for its threads only.
   const filter = anchor ? "thread" : ui.filter;
@@ -209,6 +210,8 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
 }
 
 function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }) {
+  // What the human asked about the quote: says what the thread is about better than the quote alone.
+  const ask = t.messages.find((m) => m.from === "you")?.text.replace(/\s+/g, " ").trim();
   return (
     <div className={`td-row st-${t.status}`}>
       <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
@@ -219,6 +222,12 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
           <span className="td-quote">
             <Kind whole={!!t.whole} />「{t.quote.replace(/\s+/g, " ")}」
           </span>
+          {ask && (
+            <span className="td-ask" title={ask}>
+              <b>你：</b>
+              {ask}
+            </span>
+          )}
           <span className="td-meta">
             @{who?.alias ?? "已離開"} · {t.messages.filter((m) => m.from !== "system").length} 則 · <i className="td-dot" />
             {STATUS[t.status]}
@@ -228,7 +237,17 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
       <button className="td-goto" onClick={() => showInChat(t.msg)} title="在主對話中找到原訊息" aria-label={`#${t.num} 的原訊息`}>
         ↖
       </button>
+      <RemoveButton panel={panel} id={t.id} name={`討論串 #${t.num}`} />
     </div>
+  );
+}
+
+/** Takes an item off the 產出 list; the chat keeps showing it. */
+export function RemoveButton({ panel, id, name }: { panel: string; id: string; name: string }) {
+  return (
+    <button className="td-goto td-remove" onClick={() => send({ t: "output_remove", panel, id })} title="從清單移除（對話裡還在）" aria-label={`從清單移除${name}`}>
+      ✕
+    </button>
   );
 }
 
@@ -253,6 +272,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
           </span>
         </span>
       </button>
+      <RemoveButton panel={panel} id={a.id} name={title} />
     </div>
   );
 }
