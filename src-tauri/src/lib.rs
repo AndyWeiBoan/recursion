@@ -128,6 +128,35 @@ fn dev_tour() -> Option<String> {
     }
 }
 
+/// Writes a file a doc page downloaded (an exported diagram, say) to the path the human picked.
+/// The bytes are the raw request body; the path comes percent-encoded in the `path` header.
+#[tauri::command]
+fn save_bytes(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected raw bytes".into());
+    };
+    let path = request.headers().get("path").and_then(|v| v.to_str().ok()).ok_or("missing path")?;
+    std::fs::write(percent_decode(path)?, bytes).map_err(|e| e.to_string())
+}
+
+/// Undoes `encodeURIComponent`.
+fn percent_decode(s: &str) -> Result<String, String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).map_err(|e| e.to_string())?;
+            out.push(u8::from_str_radix(hex, 16).map_err(|e| e.to_string())?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -137,6 +166,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             daemon_info,
             dev_tour,
+            save_bytes,
             browser::browser_show,
             browser::browser_bounds,
             browser::browser_hide,

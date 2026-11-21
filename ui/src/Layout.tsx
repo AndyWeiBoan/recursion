@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { copyText, saveDownload } from "./clipboard";
 import { send } from "./client";
 import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
@@ -210,6 +211,23 @@ const DOC_BRIDGE = `<script>(function () {
     parent.postMessage({ recursion: 1, action: action, data: data }, "*");
   }
   window.recursion = { reply: function (d) { post("reply", d); }, sendPrompt: function (t) { post("prompt", t); } };
+  // The sandbox can't save files or reach the clipboard: hand both to the app.
+  function save(a) {
+    fetch(a.href).then(function (r) { return r.arrayBuffer(); }).then(function (buf) {
+      parent.postMessage({ recursion: 1, action: "download", name: a.download || "download", data: buf }, "*", [buf]);
+    });
+  }
+  var click = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () { if (this.hasAttribute("download")) return save(this); return click.call(this); };
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest && e.target.closest("a[download]");
+    if (a) { e.preventDefault(); save(a); }
+  }, true);
+  var copy = function (t) { parent.postMessage({ recursion: 1, action: "copy", data: String(t) }, "*"); return Promise.resolve(); };
+  try {
+    if (navigator.clipboard) navigator.clipboard.writeText = copy;
+    else Object.defineProperty(navigator, "clipboard", { value: { writeText: copy } });
+  } catch (e) {}
 })();</script>`;
 
 /** Put the bridge first thing in <head>, keeping a leading doctype (standards mode) intact. */
@@ -233,6 +251,8 @@ function DocBody({ session, doc, rev }: { session: string; doc: string; rev: num
       if (e.source !== frame.current?.contentWindow || e.data?.recursion !== 1) return;
       const { action, data } = e.data;
       if ((action === "reply" || action === "prompt") && typeof data === "string") send({ t: "doc_action", session, doc, action, data });
+      else if (action === "copy" && typeof data === "string") void copyText(data);
+      else if (action === "download" && data instanceof ArrayBuffer) void saveDownload(String(e.data.name), data);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

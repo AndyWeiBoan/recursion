@@ -57,15 +57,18 @@ The page can talk back: `recursion.reply(data)` sends `data` (string or JSON) to
 so send only what the human chose or entered (e.g. {\"database\": \"SQLite\"}), not your own text; you answer after it arrives. \
 `recursion.sendPrompt(text)` posts `text` to the whole chat as the human. Call them from a button or form submit, \
 e.g. to collect choices or answers from a form you designed. \
-Keep your chat reply short and point to the document.",
+Keep your chat reply short and point to the document. \
+For architecture, workflow, sequence, data-flow or state diagrams, use the archify skill when you have it: \
+it writes a standalone HTML file; pass that file's path as `file` instead of `html`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": { "type": "string", "description": "Short title shown on the card and panel" },
                     "html": { "type": "string", "description": "A complete HTML document" },
+                    "file": { "type": "string", "description": "Path of an HTML file to show instead of `html` (absolute, or relative to the chat's folder)" },
                     "id": { "type": "string", "description": "Existing document id to replace; omit to create a new one" }
                 },
-                "required": ["title", "html"]
+                "required": ["title"]
             }
         },
         {
@@ -120,9 +123,24 @@ impl App {
             }
             "doc_write" => {
                 let title = args["title"].as_str().unwrap_or("").trim().to_string();
-                let html = args["html"].as_str().unwrap_or("");
+                // A file the agent made (archify and the like), or the HTML itself.
+                let from_file = match args["file"].as_str().map(str::trim).filter(|f| !f.is_empty()) {
+                    Some(f) => {
+                        let cwd = self.state.lock().unwrap().panel_cwd(panel).unwrap_or_default();
+                        let path = std::path::Path::new(&cwd).join(f);
+                        if !matches!(path.extension().and_then(|e| e.to_str()), Some("html" | "htm")) {
+                            return text("`file` must be an .html file.", true);
+                        }
+                        match std::fs::read_to_string(&path) {
+                            Ok(h) => Some(h),
+                            Err(e) => return text(format!("Could not read {}: {e}", path.display()), true),
+                        }
+                    }
+                    None => None,
+                };
+                let html = from_file.as_deref().unwrap_or_else(|| args["html"].as_str().unwrap_or(""));
                 if title.is_empty() || html.trim().is_empty() {
-                    return text("Both `title` and `html` are required.", true);
+                    return text("`title` and either `html` or `file` are required.", true);
                 }
                 if html.len() > MAX_HTML {
                     return text(format!("Document too large ({} bytes, max {MAX_HTML}).", html.len()), true);

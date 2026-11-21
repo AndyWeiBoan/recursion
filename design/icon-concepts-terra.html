@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Recursion — Icon concepts / Terra</title>
+<style>
+  :root { color-scheme: dark; --ink:#f4f1ec; --muted:#9c9aa5; --line:#2a2932; --paper:#111117; --card:#19191f; --lime:#c6ff56; --violet:#a98bff; --coral:#ff8c74; }
+  * { box-sizing:border-box } body { margin:0; background:var(--paper); color:var(--ink); font:15px/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+  main { max-width:1120px; margin:auto; padding:56px 28px 72px; } header { display:flex; justify-content:space-between; gap:20px; align-items:end; border-bottom:1px solid var(--line); padding-bottom:28px; margin-bottom:26px; }
+  h1 { margin:0; font-size:clamp(30px,5vw,56px); letter-spacing:-.06em; } header p { margin:0; color:var(--muted); max-width:420px; } .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:14px; }
+  article { min-height:330px; padding:23px; border:1px solid var(--line); border-radius:18px; background:var(--card); display:flex; flex-direction:column; transition:.2s; } article:hover { border-color:#686572; transform:translateY(-3px); } .mark { height:186px; display:grid; place-items:center; background:#101016; border-radius:12px; margin-bottom:19px; } svg { width:156px; height:156px; overflow:visible } h2 { font-size:19px; letter-spacing:-.03em; margin:0 0 5px; } p { margin:0; color:var(--muted); } .n { color:var(--lime); font:600 12px/1 ui-monospace,monospace; margin-bottom:10px; } .key { color:var(--ink); } footer { margin-top:32px; color:var(--muted); font-size:13px; }
+</style>
+<main>
+  <header><div><div class="n">TERRA / 05 DIRECTIONS</div><h1>Recursion icons</h1></div><p>不是抽象無限符號；每一個方向都把「多個 agent 在可見回合內共同推進」變成可讀的圖形。</p></header>
+  <section class="grid">
+    <article><div class="mark"><svg viewBox="0 0 160 160" aria-label="Relay">
+      <path d="M33 80a47 47 0 0 1 82-31" fill="none" stroke="#c6ff56" stroke-width="13" stroke-linecap="round"/><path d="m119 33 2 22-22-2" fill="none" stroke="#c6ff56" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M127 80a47 47 0 0 1-82 31" fill="none" stroke="#a98bff" stroke-width="13" stroke-linecap="round"/><path d="m41 127-2-22 22 2" fill="none" stroke="#a98bff" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/><circle cx="80" cy="80" r="10" fill="#ff8c74"/>
+    </svg></div><div class="n">01 / RELAY</div><h2>接棒的回合</h2><p>兩個不閉合的循環與箭頭，中心節點是正在被推進的共同任務。適合產品主 icon。</p></article>
+    <article><div class="mark"><svg viewBox="0 0 160 160" aria-label="Nested conversation">
+      <rect x="25" y="25" width="84" height="84" rx="20" fill="none" stroke="#a98bff" stroke-width="13"/><rect x="51" y="51" width="84" height="84" rx="20" fill="none" stroke="#c6ff56" stroke-width="13"/><path d="M77 77h32M77 94h22" stroke="#ff8c74" stroke-width="10" stroke-linecap="round"/>
+    </svg></div><div class="n">02 / NESTED</div><h2>巢狀對話</h2><p>兩個互扣的對話框：一段對話在另一段對話中再產生新脈絡。最直接讀作 recursion。</p></article>
+    <article><div class="mark"><svg viewBox="0 0 160 160" aria-label="Three voices">
+      <path d="M80 21 132 111H28Z" fill="none" stroke="#c6ff56" stroke-width="12" stroke-linejoin="round"/><circle cx="80" cy="21" r="12" fill="#ff8c74"/><circle cx="132" cy="111" r="12" fill="#a98bff"/><circle cx="28" cy="111" r="12" fill="#c6ff56"/><path d="M80 61v35M62 96h36" stroke="#f4f1ec" stroke-width="10" stroke-linecap="round"/>
+    </svg></div><div class="n">03 / TRIAD</div><h2>三個聲音</h2><p>三位 participant 形成穩定迴路；中心的加號表達合成，而不是投票式的平均。</p></article>
+    <article><div class="mark"><svg viewBox="0 0 160 160" aria-label="Branch and return">
+      <path d="M29 39h33c11 0 19 8 19 19v44c0 11 8 19 19 19h31" fill="none" stroke="#c6ff56" stroke-width="13" stroke-linecap="round"/><path d="m119 99 12 22-24 12" fill="none" stroke="#c6ff56" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/><path d="M29 121h28c13 0 23-10 23-23V58c0-13 10-23 23-23h29" fill="none" stroke="#a98bff" stroke-width="13" stroke-linecap="round"/><circle cx="29" cy="80" r="10" fill="#ff8c74"/>
+    </svg></div><div class="n">04 / FORK &amp; RETURN</div><h2>分岔後歸來</h2><p>同一個起點分成兩條可追溯的推理路徑，再帶著結果回到主線。最有工程感。</p></article>
+    <article><div class="mark"><svg viewBox="0 0 160 160" aria-label="Recursive layers">
+      <path d="M80 19 137 52v56l-57 33-57-33V52z" fill="none" stroke="#a98bff" stroke-width="10" stroke-linejoin="round"/><path d="M80 48 112 66v30l-32 18-32-18V66z" fill="none" stroke="#c6ff56" stroke-width="10" stroke-linejoin="round"/><path d="M80 69 94 77v16l-14 8-14-8V77z" fill="#ff8c74"/>
+    </svg></div><div class="n">05 / DEPTH</div><h2>遞迴深度</h2><p>同形狀向內自我呼叫，保有六角輪廓的硬朗與系統感；在 16px 也可縮成中心六角。</p></article>
+  </section>
+  <footer><span class="key">建議：</span>先拿 <b>01 Relay</b> 做 favicon、app tile 與 loading motion；02 Nested 最適合品牌名稱旁的靜態識別。</footer>
+</main>
