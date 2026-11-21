@@ -1,6 +1,6 @@
 // Accounts window: every login of each CLI, who it is, how much of its limits is used, and a way
 // to add one or log in again (the CLI's own login runs in a terminal window).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { send, useAccounts } from "./client";
 import type { Account, AgentKind } from "./types";
 
@@ -107,6 +107,7 @@ export function AccountsPane({ onLeave }: { onLeave: () => void }) {
   const accounts = useAccounts();
   const [adding, setAdding] = useState<AgentKind | null>(null);
   const login = (id: string) => (send({ t: "account_login", account: id }), onLeave());
+  useEffect(() => send({ t: "accounts_refresh" }), []);
   return (
     <div className="acct">
       <p className="acct-hint">每個 agent 用加入時選的帳號。登入會開一個終端視窗，跑 CLI 自己的登入流程，照著指示在瀏覽器登入就好。</p>

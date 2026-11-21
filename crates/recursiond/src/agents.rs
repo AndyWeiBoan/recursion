@@ -159,6 +159,20 @@ impl Hub {
         changed
     }
 
+    /// Ask the providers for every logged-in account's limits (see accounts::fetch_usage).
+    pub async fn poll_usage(&self) {
+        let env = self.env().await;
+        let mut changed = false;
+        for a in self.accounts.list().into_iter().filter(|a| a.logged_in) {
+            if let Some((usage, resets)) = crate::accounts::fetch_usage(a.kind, &a.id, &env.path, env.codex.as_deref()).await {
+                changed |= self.accounts.record_usage(&a.id, &usage, &resets);
+            }
+        }
+        if changed {
+            self.emit_accounts();
+        }
+    }
+
     /// After a login: the "log in again" cards for this account are done.
     pub fn resolve_relogin(&self, account: &str) {
         let panels: Vec<String> = self.workspaces.lock().unwrap().keys().cloned().collect();
@@ -1030,12 +1044,13 @@ impl ClaudeReader {
             "rate_limit_event" => {
                 if let Some(windows) = v["rate_limit_info"]["unifiedWindows"].as_object() {
                     let usage: Vec<(String, f64)> = windows.iter().filter_map(|(k, w)| w["utilization"].as_f64().map(|u| (k.clone(), u))).collect();
+                    let resets: std::collections::BTreeMap<String, u64> = windows.iter().filter_map(|(k, w)| w["resetsAt"].as_u64().map(|t| (k.clone(), t))).collect();
                     hub.update_member(&panel, &member, |m| usage.into_iter().for_each(|(k, u)| {
                         m.usage.insert(k, u);
                     }));
                     let m = hub.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).cloned());
                     if let Some(m) = m {
-                        if hub.accounts.record_usage(&hub.accounts.resolve(m.kind, m.account.as_deref()), &m.usage) {
+                        if hub.accounts.record_usage(&hub.accounts.resolve(m.kind, m.account.as_deref()), &m.usage, &resets) {
                             hub.emit_accounts();
                         }
                     }

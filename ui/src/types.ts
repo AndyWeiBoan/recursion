@@ -71,6 +71,7 @@ export type Cmd =
   | { t: "ws_attach"; panel: string }
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null }
   | { t: "accounts_list" }
+  | { t: "accounts_refresh" }
   | { t: "daemon_info" }
   | { t: "daemon_restart" }
   | { t: "account_create"; kind: AgentKind; name: string }
@@ -123,6 +124,8 @@ export interface Account {
   logged_in: boolean;
   usage: Record<string, number>;
   usage_at: number;
+  /** When each window resets, seconds since epoch. */
+  resets?: Record<string, number>;
 }
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";

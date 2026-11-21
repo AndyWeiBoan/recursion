@@ -28,6 +28,9 @@ pub struct Account {
     pub usage: BTreeMap<String, f64>,
     #[serde(default)]
     pub usage_at: u64,
+    /// When each window resets (seconds since epoch), e.g. {"five_hour": 1795245000}.
+    #[serde(default)]
+    pub resets: BTreeMap<String, u64>,
 }
 
 pub fn default_id(kind: AgentKind) -> &'static str {
@@ -88,7 +91,7 @@ impl Accounts {
         let mut list: Vec<Account> = std::fs::read(file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         for kind in [AgentKind::Claude, AgentKind::Codex] {
             if !list.iter().any(|a| a.id == default_id(kind)) {
-                list.insert(0, Account { id: default_id(kind).into(), kind, name: "預設".into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0 });
+                list.insert(0, Account { id: default_id(kind).into(), kind, name: "預設".into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() });
             }
         }
         Accounts { list: Mutex::new(list) }
@@ -141,7 +144,7 @@ impl Accounts {
                 let _ = std::os::unix::fs::symlink(&from, d.join(item));
             }
         }
-        let a = Account { id, kind, name: name.into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0 };
+        let a = Account { id, kind, name: name.into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() };
         self.list.lock().unwrap().push(a.clone());
         self.save();
         Ok(a)
@@ -168,13 +171,17 @@ impl Accounts {
         Ok(())
     }
 
-    pub fn record_usage(&self, id: &str, usage: &BTreeMap<String, f64>) -> bool {
+    /// Latest limits seen from an agent on this account. Returns whether anything changed.
+    pub fn record_usage(&self, id: &str, usage: &BTreeMap<String, f64>, resets: &BTreeMap<String, u64>) -> bool {
         let mut list = self.list.lock().unwrap();
         let Some(a) = list.iter_mut().find(|a| a.id == id) else { return false };
-        if &a.usage == usage {
+        if &a.usage == usage && (resets.is_empty() || &a.resets == resets) {
             return false;
         }
         a.usage = usage.clone();
+        if !resets.is_empty() {
+            a.resets = resets.clone();
+        }
         a.usage_at = now_ms();
         drop(list);
         self.save();
@@ -233,6 +240,129 @@ pub fn credentials_mtime(kind: AgentKind, id: &str) -> Option<std::time::SystemT
     std::fs::metadata(f).and_then(|m| m.modified()).ok()
 }
 
+/// Ask the provider for this account's limits right now, without waiting for an agent to report
+/// them. Codex: its app-server's `account/rateLimits/read`. Claude: the endpoint behind Claude
+/// Code's `/usage` (not publicly documented), with the login the CLI already has; the token is only
+/// read, never refreshed, so an expired one just means "no data yet".
+pub async fn fetch_usage(kind: AgentKind, id: &str, path: &str, codex: Option<&str>) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+    let r = match kind {
+        AgentKind::Claude => claude_usage(id).await,
+        AgentKind::Codex => codex_usage(id, path, codex?).await,
+    };
+    if r.is_none() {
+        tracing::warn!(account = id, "could not read usage from the provider");
+    }
+    r
+}
+
+async fn claude_usage(id: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+    let base = dir(id).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
+    let raw = std::fs::read(base.join(".credentials.json")).ok()?;
+    let creds: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    let oauth = &creds["claudeAiOauth"];
+    let token = oauth["accessToken"].as_str()?;
+    if oauth["expiresAt"].as_u64().is_some_and(|t| t <= now_ms()) {
+        return None;
+    }
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| tracing::warn!(%e, "http client")).ok()?;
+    let v: serde_json::Value = client
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(%e, "claude usage request"))
+        .ok()?
+        .error_for_status()
+        .map_err(|e| tracing::warn!(%e, "claude usage status"))
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let (mut usage, mut resets) = (BTreeMap::new(), BTreeMap::new());
+    for k in ["five_hour", "seven_day"] {
+        if let Some(u) = v[k]["utilization"].as_f64() {
+            usage.insert(k.to_string(), u / 100.0);
+        }
+        if let Some(t) = v[k]["resets_at"].as_str().and_then(parse_rfc3339) {
+            resets.insert(k.to_string(), t);
+        }
+    }
+    (!usage.is_empty()).then_some((usage, resets))
+}
+
+async fn codex_usage(id: &str, path: &str, bin: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut cmd = Command::new(bin);
+    cmd.arg("app-server").env("PATH", path).current_dir(dirs::home_dir().unwrap_or_default());
+    if let Some(d) = dir(id) {
+        cmd.env(env_var(AgentKind::Codex), d);
+    }
+    cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    let mut child = cmd.spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let mut lines = BufReader::new(child.stdout.take()?).lines();
+    let ask = async {
+        let init = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "recursion", "version": env!("CARGO_PKG_VERSION") } } });
+        stdin.write_all(format!("{init}\n").as_bytes()).await.ok()?;
+        let read = serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {} });
+        stdin.write_all(format!("{read}\n").as_bytes()).await.ok()?;
+        while let Ok(Some(line)) = lines.next_line().await {
+            let m: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+            if m["id"] == 2 {
+                return Some(m["result"]["rateLimits"].clone());
+            }
+        }
+        None
+    };
+    let rl = tokio::time::timeout(std::time::Duration::from_secs(20), ask).await.ok().flatten()?;
+    let _ = child.kill().await;
+    let (mut usage, mut resets) = (BTreeMap::new(), BTreeMap::new());
+    for w in [&rl["primary"], &rl["secondary"]] {
+        let Some(pct) = w["usedPercent"].as_f64() else { continue };
+        let name = match w["windowDurationMins"].as_u64() {
+            Some(300) => "five_hour",
+            Some(10080) => "seven_day",
+            _ => continue,
+        };
+        usage.insert(name.to_string(), pct / 100.0);
+        if let Some(t) = w["resetsAt"].as_u64() {
+            resets.insert(name.to_string(), t);
+        }
+    }
+    (!usage.is_empty()).then_some((usage, resets))
+}
+
+/// "2026-11-21T07:10:00.61+00:00" → seconds since epoch.
+fn parse_rfc3339(s: &str) -> Option<u64> {
+    let (date, rest) = s.split_once('T')?;
+    let mut d = date.split('-').map(|x| x.parse::<i64>());
+    let (y, mo, da) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let (clock, offset) = match rest.find(['+', '-', 'Z']) {
+        Some(i) => rest.split_at(i),
+        None => (rest, ""),
+    };
+    let mut c = clock.split(':');
+    let (h, mi) = (c.next()?.parse::<i64>().ok()?, c.next()?.parse::<i64>().ok()?);
+    let sec = c.next().and_then(|x| x.split('.').next()).and_then(|x| x.parse::<i64>().ok()).unwrap_or(0);
+    let off = match offset.chars().next() {
+        Some(sign @ ('+' | '-')) => {
+            let (oh, om) = offset[1..].split_once(':').unwrap_or((&offset[1..], "0"));
+            let mins = oh.parse::<i64>().ok()? * 60 + om.parse::<i64>().ok()?;
+            if sign == '+' { mins * 60 } else { -mins * 60 }
+        }
+        _ => 0,
+    };
+    // Days from 1970-01-01 to y-mo-da (proleptic Gregorian).
+    let (y2, m2) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * m2 + 2) / 5 + da - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + h * 3600 + mi * 60 + sec - off).ok()
+}
+
 /// Email and plan from the Codex login's ID token (a JWT; only its payload is read, not verified).
 fn codex_identity(id: &str) -> (Option<String>, Option<String>) {
     use base64::Engine;
@@ -267,6 +397,13 @@ mod tests {
         assert!(dir("abc123").is_some());
         assert_eq!(env_prefix(AgentKind::Claude, "claude-default"), "");
         assert!(login_command(AgentKind::Codex, "abc123").starts_with("CODEX_HOME='"));
+    }
+
+    #[test]
+    fn reset_times_parse() {
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339("2026-11-21T07:10:00.613843+00:00"), Some(1795245000));
+        assert_eq!(parse_rfc3339("2026-11-21T15:10:00+08:00"), Some(1795245000));
     }
 
     #[test]

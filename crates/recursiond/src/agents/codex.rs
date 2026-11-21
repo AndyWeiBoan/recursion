@@ -376,16 +376,27 @@ impl Reader {
             "account/rateLimits/updated" => {
                 let rl = &params["rateLimits"];
                 let mut usage = Vec::new();
+                let mut resets = std::collections::BTreeMap::new();
                 for (key, w) in [("primary", &rl["primary"]), ("secondary", &rl["secondary"])] {
                     if let Some(pct) = w["usedPercent"].as_f64() {
                         let mins = w["windowDurationMins"].as_u64().unwrap_or(0);
                         let name = if mins == 300 { "five_hour" } else if mins == 10080 { "seven_day" } else { key };
                         usage.push((name.to_string(), pct / 100.0));
+                        if let Some(t) = w["resetsAt"].as_u64() {
+                            resets.insert(name.to_string(), t);
+                        }
                     }
                 }
                 hub.update_member(&panel, &member, |m| usage.into_iter().for_each(|(k, u)| {
                     m.usage.insert(k, u);
                 }));
+                // The same numbers belong to the account (Claude's path does this too).
+                let m = hub.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).cloned());
+                if let Some(m) = m {
+                    if hub.accounts.record_usage(&hub.accounts.resolve(m.kind, m.account.as_deref()), &m.usage, &resets) {
+                        hub.emit_accounts();
+                    }
+                }
             }
             "error" => {
                 let text = params["error"]["message"].as_str().or(params["message"].as_str()).unwrap_or("Codex 回報錯誤").to_string();

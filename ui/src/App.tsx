@@ -7,6 +7,7 @@ import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
 import { openSettings, SettingsModal } from "./Settings";
+import { UsagePanel } from "./Usage";
 import { closeThreads, useZoomed } from "./threadsUI";
 import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
 
@@ -121,6 +122,51 @@ function useShortcuts(toggleSidebar: () => void) {
   }, [toggleSidebar]);
 }
 
+const SIDE_KEY = "recursion.sidebarWidth";
+const SIDE_DEFAULT = 220;
+const clampSide = (w: number) => Math.round(Math.min(480, Math.max(180, w)));
+
+/** Sidebar width: dragged on its right edge, double-click there to reset, remembered. */
+function useSidebarWidth() {
+  const [width, setWidth] = useState(() => {
+    try {
+      return clampSide(Number(localStorage.getItem(SIDE_KEY)) || SIDE_DEFAULT);
+    } catch {
+      return SIDE_DEFAULT;
+    }
+  });
+  const [dragging, setDragging] = useState(false);
+  const save = (w: number) => {
+    try {
+      localStorage.setItem(SIDE_KEY, String(w));
+    } catch {}
+  };
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const start = e.clientX - width;
+    let last = width;
+    setDragging(true);
+    const move = (ev: PointerEvent) => {
+      last = clampSide(ev.clientX - start);
+      setWidth(last);
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      setDragging(false);
+      save(last);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  };
+  const reset = () => (setWidth(SIDE_DEFAULT), save(SIDE_DEFAULT));
+  return { width, dragging, onPointerDown, reset };
+}
+
 export default function App() {
   const { state, terms, status, error } = useSnapshot();
   const [sidebar, setSidebar] = useState(true);
@@ -128,6 +174,7 @@ export default function App() {
   useEffect(() => registerPicker(setPick), []);
   const toggleSidebar = useMemo(() => () => setSidebar((v) => !v), []);
   useShortcuts(toggleSidebar);
+  const side = useSidebarWidth();
   const { session, window } = activeOf(state);
 
   useEffect(() => {
@@ -144,7 +191,10 @@ export default function App() {
   }, [state, zoomed]);
 
   return (
-    <div className={`app${sidebar ? "" : " no-sidebar"}`}>
+    <div
+      className={`app${sidebar ? "" : " no-sidebar"}${side.dragging ? " side-resizing" : ""}`}
+      style={{ "--side-w": `${side.width}px` } as React.CSSProperties}
+    >
       <div className="corner" data-tauri-drag-region>
         <button className="icon-btn" title={`側欄（${isMac ? "⌘B" : "Ctrl+Shift+B"}）`} onClick={toggleSidebar} aria-label="顯示或隱藏側欄">
           <SidebarIcon />
@@ -156,6 +206,9 @@ export default function App() {
       <div className="side-slot" aria-hidden={!sidebar}>
         <Sidebar state={state} terms={terms} />
       </div>
+      {sidebar && (
+        <div className="side-resize" onPointerDown={side.onPointerDown} onDoubleClick={side.reset} title="拖曳調整側欄寬度（雙擊恢復預設）" role="separator" aria-orientation="vertical" />
+      )}
       <main className="main">
         {session && window ? (
           <>
@@ -307,6 +360,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
         ))}
       </nav>
       <div className="side-foot">
+        <UsagePanel />
         <button className="side-accounts" onClick={() => openSettings()} title={`設定（${isMac ? "⌘," : "Ctrl+,"}）`}>
           <span aria-hidden="true">⚙</span> 設定
           {loggedOut > 0 && <span className="side-warn" title={`${loggedOut} 個帳號還沒登入`}>●</span>}

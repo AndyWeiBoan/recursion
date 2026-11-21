@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 17;
+pub const PROTOCOL: u32 = 18;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -67,6 +67,7 @@ struct App {
     pending_cmd: Mutex<HashMap<String, String>>,
     /// When this daemon started (ms since epoch).
     started: u64,
+    usage_polled: Mutex<Option<std::time::Instant>>,
 }
 
 /// Messages from a UI client.
@@ -109,6 +110,8 @@ enum In {
     DocGet { session: String, doc: String },
     DocAction { session: String, doc: String, action: String, data: String },
     AccountsList,
+    /// Fetch every account's limits now (the usage panel or settings just opened).
+    AccountsRefresh,
     /// For the settings' "about" page.
     DaemonInfo,
     /// Exit cleanly; the desktop app starts a fresh daemon (the current binary) when it reconnects.
@@ -338,6 +341,22 @@ impl App {
                 }
                 changed = false;
             }
+            AccountsRefresh => {
+                // Opening the panel twice in a row must not hammer the providers.
+                let due = {
+                    let mut last = self.usage_polled.lock().unwrap();
+                    let due = last.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30));
+                    if due {
+                        *last = Some(std::time::Instant::now());
+                    }
+                    due
+                };
+                if due {
+                    let hub = self.hub.clone();
+                    tokio::spawn(async move { hub.poll_usage().await });
+                }
+                changed = false;
+            }
             AccountsList => {
                 reply = Some(serde_json::json!({ "t": "accounts", "accounts": self.hub.accounts.list() }).to_string());
                 changed = false;
@@ -550,12 +569,18 @@ async fn main() -> anyhow::Result<()> {
         browser: Default::default(),
         pending_cmd: Default::default(),
         started: workspace::now_ms(),
+        usage_polled: Default::default(),
     });
     // Who is logged in where (emails, plans), without holding up the start.
     {
         let hub = app.hub.clone();
         tokio::spawn(async move {
             hub.refresh_accounts(None).await;
+            // Then the limits, every five minutes.
+            loop {
+                hub.poll_usage().await;
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            }
         });
     }
 
