@@ -1,5 +1,6 @@
 // Polls: the form that starts one, its card in the chat, and its row / full view in the 產出 drawer.
 // While a poll is open nobody's pick is shown (only who has voted), so it can't sway the agents.
+import { t } from "./i18n";
 import { useState } from "react";
 import { send } from "./client";
 import { RemoveButton, showInChat } from "./ThreadDrawer";
@@ -25,16 +26,16 @@ export function winners(p: Poll) {
 /** "A 勝出（2 票）", "A、B 平手", "沒有人投票". */
 export function outcome(p: Poll) {
   const w = winners(p);
-  if (!w.length) return "沒有人投票";
+  if (!w.length) return t("poll.noVotes");
   const votes = p.votes.filter((v) => v.option === w[0]).length;
-  return w.length > 1 ? `${w.map(letter).join("、")} 平手（各 ${votes} 票）` : `${letter(w[0])} ${p.options[w[0]]} 勝出（${votes} 票）`;
+  return w.length > 1 ? t("poll.tie", { options: w.map(letter).join(t("common.listSep")), n: votes }) : t("poll.won", { option: `${letter(w[0])} ${p.options[w[0]]}`, n: votes });
 }
 
 function Voter({ id, byId }: { id: string; byId: Map<string, Member> }) {
-  if (id === "you") return <span className="poll-you">你</span>;
+  if (id === "you") return <span className="poll-you">{t("common.you")}</span>;
   const m = byId.get(id);
   return (
-    <span title={`@${m?.alias ?? "已離開"}`}>
+    <span title={`@${m?.alias ?? t("agent.gone")}`}>
       <Avatar m={m} size={16} />
     </span>
   );
@@ -65,20 +66,20 @@ export function PollForm({ panel, onDone }: { panel: string; onDone: () => void 
         submit();
       }}
     >
-      <h3>發起投票</h3>
-      <p className="dim">每個 agent 都會選一個並附理由。全部投完才公開誰選了什麼。</p>
+      <h3>{t("poll.start")}</h3>
+      <p className="dim">{t("poll.formHint")}</p>
       <label className="field">
-        <span>標題</span>
-        <input autoFocus value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="例如：下一步先做哪個？" />
+        <span>{t("poll.title")}</span>
+        <input autoFocus value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={t("poll.titlePlaceholder")} />
       </label>
       <label className="field">
         <span>
-          描述<span className="dim">（可不填）</span>
+          {t("poll.description")}<span className="dim">{t("common.optional")}</span>
         </span>
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="背景、限制、希望大家考慮什麼…" />
+        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder={t("poll.descriptionPlaceholder")} />
       </label>
       <div className="field">
-        <span>選項</span>
+        <span>{t("poll.options")}</span>
         {options.map((o, i) => (
           <div key={i} className="poll-opt-edit">
             <b>{letter(i)}</b>
@@ -99,17 +100,17 @@ export function PollForm({ panel, onDone }: { panel: string; onDone: () => void 
                   setFocusAt(options.length);
                 }
               }}
-              placeholder={`選項 ${letter(i)}`}
+              placeholder={t("poll.option", { letter: letter(i) })}
             />
             {o.trim() ? (
-              <button type="button" className={`poll-mine${mine === i ? " on" : ""}`} onClick={() => setMine(mine === i ? null : i)} title="你自己也可以投一票（可不選）">
-                {mine === i ? "✓ 我投這個" : "我投這個"}
+              <button type="button" className={`poll-mine${mine === i ? " on" : ""}`} onClick={() => setMine(mine === i ? null : i)} title={t("poll.mineHint")}>
+                {mine === i ? `✓ ${t("poll.mine")}` : t("poll.mine")}
               </button>
             ) : (
               <span />
             )}
             {options.length > 2 ? (
-              <button type="button" className="poll-del" onClick={() => (setOptions(options.filter((_, k) => k !== i)), setMine(mine === i ? null : mine !== null && mine > i ? mine - 1 : mine))} aria-label={`刪除選項 ${letter(i)}`}>
+              <button type="button" className="poll-del" onClick={() => (setOptions(options.filter((_, k) => k !== i)), setMine(mine === i ? null : mine !== null && mine > i ? mine - 1 : mine))} aria-label={t("poll.removeOption", { letter: letter(i) })}>
                 ✕
               </button>
             ) : (
@@ -119,12 +120,12 @@ export function PollForm({ panel, onDone }: { panel: string; onDone: () => void 
         ))}
         {options.length < MAX && (
           <button type="button" className="poll-add" onClick={() => (setOptions([...options, ""]), setFocusAt(options.length))}>
-            ＋ 加選項
+            {t("poll.addOption")}
           </button>
         )}
       </div>
       <button className="add-submit" type="submit" disabled={!ok}>
-        發起投票
+        {t("poll.start")}
       </button>
     </form>
   );
@@ -146,7 +147,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
         <span className="poll-ic">📊</span>
         <b>{p.question}</b>
         <span className="poll-state">
-          #{p.num} · {open ? `${agentsIn}/${p.voters.length} 個 agent 已投` : `已結束 · ${p.votes.length} 票`}
+          #{p.num} · {open ? t("poll.agentsIn", { done: agentsIn, all: p.voters.length }) : `${t("poll.closed")} · ${t("poll.votes", { n: p.votes.length })}`}
         </span>
       </div>
       {p.description && <p className="poll-desc">{p.description}</p>}
@@ -159,12 +160,12 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
               className={`poll-opt${mine === i ? " mine" : ""}${top.has(i) ? " top" : ""}`}
               disabled={!open}
               onClick={() => send({ t: "poll_vote", panel, poll: p.id, option: i })}
-              title={open ? (mine === i ? "你投了這個" : "投這個") : undefined}
+              title={open ? (mine === i ? t("poll.youVotedThis") : t("poll.voteThis")) : undefined}
             >
               <span className="poll-letter">{letter(i)}</span>
               <span className="poll-text">{o}</span>
               {open ? (
-                mine === i && <span className="poll-check">✓ 你</span>
+                mine === i && <span className="poll-check">✓ {t("common.you")}</span>
               ) : (
                 <>
                   <span className="poll-bar">
@@ -186,15 +187,15 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
         {open ? (
           <>
             <span className="poll-in">
-              已投：
+              {t("poll.votedSoFar")}
               {p.voters.filter((v) => voted.has(v)).map((v) => (
                 <Voter key={v} id={v} byId={byId} />
               ))}
-              {!agentsIn && <span className="dim">還沒有</span>}
+              {!agentsIn && <span className="dim">{t("poll.nobodyYet")}</span>}
             </span>
-            <span className="dim">全部投完才公開</span>
+            <span className="dim">{t("poll.hiddenUntilDone")}</span>
             <button className="poll-close" onClick={() => send({ t: "poll_close", panel, poll: p.id })}>
-              結束投票
+              {t("poll.end")}
             </button>
           </>
         ) : (
@@ -202,7 +203,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
             <span className="poll-outcome">{outcome(p)}</span>
             {!full && reasons.length > 0 && (
               <button className="poll-why" onClick={() => setWhy((v) => !v)}>
-                {why ? "▾ 收起理由" : `▸ 看理由（${reasons.length}）`}
+                {why ? `▾ ${t("poll.hideReasons")}` : `▸ ${t("poll.showReasons", { n: reasons.length })}`}
               </button>
             )}
           </>
@@ -213,7 +214,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
           {reasons.map((v) => (
             <li key={v.voter}>
               <Voter id={v.voter} byId={byId} />
-              <b>{v.voter === "you" ? "你" : `@${byId.get(v.voter)?.alias ?? "已離開"}`}</b>
+              <b>{v.voter === "you" ? t("common.you") : `@${byId.get(v.voter)?.alias ?? t("agent.gone")}`}</b>
               <span className="poll-letter sm">{letter(v.option)}</span>
               <span>{v.reason}</span>
             </li>
@@ -239,7 +240,7 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
             {open ? (
               <>
                 <i className="td-dot" />
-                進行中 · {p.voters.filter((v) => p.votes.some((x) => x.voter === v)).length}/{p.voters.length} 已投
+                {t("poll.open")} · {t("poll.votedCount", { done: p.voters.filter((v) => p.votes.some((x) => x.voter === v)).length, all: p.voters.length })}
               </>
             ) : (
               <>
@@ -249,10 +250,10 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
           </span>
         </span>
       </button>
-      <button className="td-goto" onClick={() => showInChat(p.msg)} title="在主對話中找到這次投票" aria-label={`#${p.num} 的投票卡`}>
+      <button className="td-goto" onClick={() => showInChat(p.msg)} title={t("poll.findInChat")} aria-label={t("poll.cardOf", { num: p.num })}>
         ↖
       </button>
-      <RemoveButton panel={panel} id={p.id} name={`投票 #${p.num}`} />
+      <RemoveButton panel={panel} id={p.id} name={t("poll.name", { num: p.num })} />
     </div>
   );
 }
@@ -263,18 +264,18 @@ export function PollView({ panel, p, byId }: { panel: string; p: Poll; byId: Map
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← 返回
+          ← {t("common.back")}
         </button>
-        <b>投票 #{p.num}</b>
-        <span className="dim">{p.status === "open" ? "進行中" : "已結束"}</span>
-        <button className="td-x" onClick={() => closeThreads(panel)} aria-label="關閉" title="關閉（Esc 返回）">
+        <b>{t("poll.name", { num: p.num })}</b>
+        <span className="dim">{p.status === "open" ? t("poll.open") : t("poll.closed")}</span>
+        <button className="td-x" onClick={() => closeThreads(panel)} aria-label={t("common.close")} title={t("drawer.closeHint")}>
           ✕
         </button>
       </header>
       <div className="td-body">
         <PollCard panel={panel} p={p} byId={byId} full />
         <button className="td-find" onClick={() => showInChat(p.msg)}>
-          ↖ 在對話中找到
+          ↖ {t("common.findInChat")}
         </button>
       </div>
     </>

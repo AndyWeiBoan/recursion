@@ -1,4 +1,5 @@
 // Sidebar tree under each session: its windows, what each window holds, and the agents of each chat.
+import { t } from "./i18n";
 import { useRef, useState } from "react";
 import { accountName, requestAddAgent, send, useAccounts } from "./client";
 import { Avatar, STATUS_LABEL } from "./WorkspaceView";
@@ -16,7 +17,7 @@ function ContextBar({ m }: { m: Member }) {
   const pct = max ? Math.min(1, used / max) : 0;
   const level = pct > 0.9 ? "hi" : pct > 0.7 ? "mid" : "lo";
   return (
-    <span className="ctx" title={max ? `context：${used.toLocaleString()} / ${max.toLocaleString()} tokens（${Math.round(pct * 100)}%）` : "還沒有 context 資料（agent 回覆一次後就有）"}>
+    <span className="ctx" title={max ? t("ctx.title", { used: used.toLocaleString(), max: max.toLocaleString(), pct: Math.round(pct * 100) }) : t("ctx.none")}>
       <span className="ctx-bar">
         <i className={`ctx-fill ${level}`} style={{ width: `${pct * 100}%` }} />
       </span>
@@ -38,7 +39,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
           {editing ? (
             <InlineEdit value={m.alias} prefix="@" onSave={(alias) => send({ t: "ws_rename_agent", panel, member: m.id, alias })} onDone={() => setEditing(false)} />
           ) : (
-            <b onDoubleClick={(e) => (e.stopPropagation(), setEditing(true))} title="雙擊重新命名">
+            <b onDoubleClick={(e) => (e.stopPropagation(), setEditing(true))} title={t("common.doubleClickRename")}>
               @{m.alias}
             </b>
           )}
@@ -53,7 +54,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
                 </span>
               </span>
             ) : (
-              <span className="tree-agent-model" title={acct ? `帳號：${acct}` : undefined}>
+              <span className="tree-agent-model" title={acct ? t("agent.account", { acct }) : undefined}>
                 {m.model ?? m.kind}
                 {acct && ` · ${acct}`}
                 {m.mode && m.mode !== "edits" && <span className={`tree-mode m-${m.mode}`}> · {PERM_MODES.find((p) => p.id === m.mode)?.label}</span>}
@@ -65,8 +66,8 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       {!editing && busy && (
         <button
           className="tree-stop"
-          aria-label={`停止 @${m.alias}`}
-          title={`停止 @${m.alias}（其他 agent 繼續）`}
+          aria-label={t("agent.stop", { alias: m.alias })}
+          title={t("agent.stopHint", { alias: m.alias })}
           onClick={(e) => {
             e.stopPropagation();
             send({ t: "ws_stop_agent", panel, member: m.id });
@@ -78,7 +79,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       {!editing && !busy && (
         <button
           className="sess-more"
-          aria-label={`@${m.alias} 的選單`}
+          aria-label={t("agent.menu", { alias: m.alias })}
           onClick={(e) => {
             e.stopPropagation();
             setMenu((v) => !v);
@@ -89,9 +90,12 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       )}
       {menu && (
         <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(false)}>
-          <button onClick={() => (setMenu(false), setEditing(true))}>重新命名</button>
+          <button onClick={() => (setMenu(false), setEditing(true))}>{t("common.rename")}</button>
+          <button disabled={!m.cli_session_id} title={t("agent.compactHint")} onClick={() => (setMenu(false), send({ t: "ws_compact", panel, member: m.id }))}>
+            {t("agent.compact")}
+          </button>
           <div className="menu-sep" />
-          <span className="menu-label">權限</span>
+          <span className="menu-label">{t("perm.title")}</span>
           {PERM_MODES.map((p) => (
             <button key={p.id} className={`menu-check${(m.mode ?? "edits") === p.id ? " on" : ""}`} title={p.hint} onClick={() => (setMenu(false), send({ t: "ws_set_mode", panel, member: m.id, mode: p.id }))}>
               {p.label}
@@ -99,7 +103,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
           ))}
           <div className="menu-sep" />
           <button className="danger" onClick={() => (setMenu(false), send({ t: "ws_remove_agent", panel, member: m.id }))}>
-            移除 @{m.alias}
+            {t("agent.remove", { alias: m.alias })}
           </button>
         </div>
       )}
@@ -157,13 +161,13 @@ function host(url: string) {
 
 /** Icon, label and detail for one panel, as the tree shows it. */
 function describe(p: Panel, docs: Doc[], terms: Record<string, TermInfo>) {
-  if (p.kind === "terminal") return { icon: ICON.terminal, cls: "terminal", label: "終端", detail: terms[p.id]?.fg ?? "shell" };
-  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: "群聊", detail: "" };
+  if (p.kind === "terminal") return { icon: ICON.terminal, cls: "terminal", label: t("kind.terminal"), detail: terms[p.id]?.fg ?? "shell" };
+  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: t("kind.workspace"), detail: "" };
   if (p.url?.startsWith("doc:")) {
     const d = docs.find((x) => x.id === p.url!.slice(4));
-    return { icon: "▤", cls: "browser", label: "文件", detail: d?.title ?? "已刪除" };
+    return { icon: "▤", cls: "browser", label: t("kind.doc"), detail: d?.title ?? t("common.deleted") };
   }
-  return { icon: ICON.browser, cls: "browser", label: "瀏覽器", detail: p.url ? host(p.url) : "新分頁" };
+  return { icon: ICON.browser, cls: "browser", label: t("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
 }
 
 function PanelRow({
@@ -201,13 +205,13 @@ function PanelRow({
         className="tree-row tree-row-menu"
         onClick={onClick}
         onDoubleClick={rename && (() => setEditing(true))}
-        title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}${rename ? "（雙擊重新命名 window）" : ""}`}
+        title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}${rename ? t("window.renameHint") : ""}`}
       >
         {prefix}
         {members.length > 0 ? (
           <button
             className={`sess-fold tree-fold${folded ? " closed" : ""}`}
-            aria-label={folded ? "展開 agent 列表" : "收合 agent 列表"}
+            aria-label={folded ? t("tree.expandAgents") : t("tree.collapseAgents")}
             aria-expanded={!folded}
             onClick={(e) => (e.stopPropagation(), onFold())}
             onDoubleClick={(e) => e.stopPropagation()}
@@ -227,7 +231,7 @@ function PanelRow({
           </span>
         )}
         {p.kind === "workspace" && (
-          <button className="tree-add" title="加入 agent" aria-label="加入 agent 到這個群聊" onClick={(e) => (e.stopPropagation(), requestAddAgent(p.id))}>
+          <button className="tree-add" title={t("agent.add")} aria-label={t("agent.addToChat")} onClick={(e) => (e.stopPropagation(), requestAddAgent(p.id))}>
             ＋
           </button>
         )}
@@ -261,7 +265,7 @@ function SplitRow({
 }) {
   const [editing, setEditing] = useState(false);
   return (
-    <div className="tree-row tree-row-menu" onClick={onClick} onDoubleClick={() => setEditing(true)} title="雙擊重新命名 window">
+    <div className="tree-row tree-row-menu" onClick={onClick} onDoubleClick={() => setEditing(true)} title={t("window.doubleClickRename")}>
       {num}
       <span className="sess-fold-space tree-fold" />
       <span className="tree-ic ic-split">◫</span>
@@ -269,8 +273,8 @@ function SplitRow({
         <InlineEdit value={name} onSave={rename} onDone={() => setEditing(false)} />
       ) : (
         <span className="tree-label">
-          {name || "分割"}
-          <span className="tree-detail"> · {count} 格</span>
+          {name || t("window.split")}
+          <span className="tree-detail"> · {t("window.cells", { n: count })}</span>
         </span>
       )}
       {!editing && <WindowMenu onRename={() => setEditing(true)} onClose={closeWindow} />}
@@ -285,7 +289,7 @@ function WindowMenu({ onRename, onClose }: { onRename: () => void; onClose: () =
     <>
       <button
         className="sess-more tree-more"
-        aria-label="window 選單"
+        aria-label={t("window.menu")}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -296,9 +300,9 @@ function WindowMenu({ onRename, onClose }: { onRename: () => void; onClose: () =
       </button>
       {open && (
         <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setOpen(false)}>
-          <button onClick={() => (setOpen(false), onRename())}>重新命名</button>
+          <button onClick={() => (setOpen(false), onRename())}>{t("common.rename")}</button>
           <button className="danger" onClick={() => (setOpen(false), onClose())}>
-            關閉 window
+            {t("window.close")}
           </button>
         </div>
       )}

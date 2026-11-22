@@ -1,5 +1,7 @@
 // 產出 drawer on the right of a chat panel: one searchable list of its threads, documents and pages
 // → one thread (its quote, talk, reply box), or the document / page opened in its panel.
+import { useDragWidth } from "./Layout";
+import { t as tr } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { send } from "./client";
 import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
@@ -7,7 +9,11 @@ import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
 import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
 
-const STATUS: Record<Thread["status"], string> = { replying: "回覆中…", waiting: "等你回", brought: "已帶回" };
+const STATUS: Record<Thread["status"], string> = {
+  get replying() { return tr("thread.replying"); },
+  get waiting() { return tr("thread.waiting"); },
+  get brought() { return tr("thread.brought"); },
+};
 
 function time(ts: number) {
   const d = new Date(ts);
@@ -30,7 +36,7 @@ function matches(t: Thread, query: string, alias: string) {
     .every((tok) => {
       if (/^#\d+$/.test(tok)) return t.num === Number(tok.slice(1));
       if (tok.startsWith("@")) return alias.toLowerCase().includes(tok.slice(1));
-      return fuzzy(tok, `${t.whole ? "整則" : "片段"} ${t.quote} ${t.messages.map((m) => m.text).join(" ")} ${alias}`.toLowerCase());
+      return fuzzy(tok, `${t.whole ? tr("thread.whole") : tr("thread.part")} ${t.quote} ${t.messages.map((m) => m.text).join(" ")} ${alias}`.toLowerCase());
     });
 }
 
@@ -48,9 +54,11 @@ export function ThreadDrawer({ panel, ws, byId, ui }: { panel: string; ws: Works
   const threads = ws.threads ?? [];
   const root = useRef<HTMLElement>(null);
   const back = () => (ui.view.kind === "list" ? closeThreads(panel) : setThreadView(panel, { kind: "list" }));
+  const size = useDragWidth({ key: "recursion.drawerWidth", initial: 380, min: 280, max: 760, edge: "left" });
   return (
     <aside
-      className="thread-drawer"
+      className={`thread-drawer${size.dragging ? " resizing" : ""}`}
+      style={{ "--td-w": `${size.width}px` } as React.CSSProperties}
       ref={root}
       onKeyDown={(e) => {
         if (e.key === "Escape") {
@@ -59,33 +67,39 @@ export function ThreadDrawer({ panel, ws, byId, ui }: { panel: string; ws: Works
         }
       }}
     >
+      <div className="td-resize" onPointerDown={size.onPointerDown} onDoubleClick={size.reset} title={tr("outputs.resize")} role="separator" aria-orientation="vertical" />
       {ui.view.kind === "list" && <OutputList panel={panel} ws={ws} byId={byId} ui={ui} />}
       {ui.view.kind === "new" && <NewThread panel={panel} msg={ui.view.msg} quote={ui.view.quote} who={byId.get(ws.messages.find((m) => m.id === (ui.view as { msg: string }).msg)?.from ?? "")} />}
       {ui.view.kind === "poll" &&
         (() => {
           const id = ui.view.id;
           const p = (ws.polls ?? []).find((x) => x.id === id);
-          return p ? <PollView panel={panel} p={p} byId={byId} /> : <div className="td-empty">找不到這次投票</div>;
+          return p ? <PollView panel={panel} p={p} byId={byId} /> : <div className="td-empty">{tr("poll.notFound")}</div>;
         })()}
       {ui.view.kind === "thread" &&
         (() => {
           const id = ui.view.id;
           const t = threads.find((x) => x.id === id);
-          return t ? <ThreadView panel={panel} t={t} byId={byId} /> : <div className="td-empty">找不到這個討論串</div>;
+          return t ? <ThreadView panel={panel} t={t} byId={byId} /> : <div className="td-empty">{tr("thread.notFound")}</div>;
         })()}
     </aside>
   );
 }
 
 const KINDS: { id: ArtifactFilter; label: string }[] = [
-  { id: "all", label: "全部" },
-  { id: "thread", label: "討論串" },
-  { id: "doc", label: "文件" },
-  { id: "page", label: "網頁" },
-  { id: "poll", label: "投票" },
+  { id: "all", get label() { return tr("outputs.all"); } },
+  { id: "thread", get label() { return tr("outputs.threads"); } },
+  { id: "doc", get label() { return tr("outputs.docs"); } },
+  { id: "diagram", get label() { return tr("outputs.diagrams"); } },
+  { id: "page", get label() { return tr("outputs.pages"); } },
+  { id: "poll", get label() { return tr("outputs.polls"); } },
 ];
-const ICON = { thread: "💬", doc: "📄", page: "🌐" };
-const KIND_WORD = { doc: "文件", page: "網頁" };
+const ICON = { thread: "💬", doc: "📄", diagram: "📐", page: "🌐" };
+const KIND_WORD = {
+  get doc() { return tr("kind.doc"); },
+  get page() { return tr("kind.page"); },
+  get diagram() { return tr("kind.diagram"); },
+};
 
 /** `@claude` → agent, `#n` → threads only, anything else → fuzzy over the title, address and kind. */
 function artifactMatches(a: Artifact, query: string, alias: string) {
@@ -108,7 +122,7 @@ function host(url: string) {
   }
 }
 
-type Item = { kind: "thread"; at: number; t: Thread } | { kind: "doc" | "page"; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll };
+type Item = { kind: "thread"; at: number; t: Thread } | { kind: Artifact["kind"]; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll };
 
 /** `#n` → poll number, `@x` → nobody (polls have no author), else fuzzy over 投票, question, options. */
 function pollMatches(p: Poll, query: string) {
@@ -119,7 +133,7 @@ function pollMatches(p: Poll, query: string) {
     .every((tok) => {
       if (/^#\d+$/.test(tok)) return p.num === Number(tok.slice(1));
       if (tok.startsWith("@")) return false;
-      return fuzzy(tok, `投票 ${p.question} ${p.options.join(" ")}`.toLowerCase());
+      return fuzzy(tok, `${tr("outputs.polls")} ${p.question} ${p.options.join(" ")}`.toLowerCase());
     });
 }
 
@@ -146,18 +160,19 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
     return items.sort((x, y) => y.at - x.at);
   }, [threads, artifacts, polls, filter, anchor, ui.msg, ui.query, byId]);
   const empty = {
-    all: "還沒有產出。討論串、agent 寫的文件、agent 開過的網頁、投票都會列在這裡。",
-    thread: "還沒有討論串。在 agent 的回覆上按右鍵討論整則，或反白一段文字討論那段。",
-    doc: "還沒有文件。agent 寫的文件會列在這裡。",
-    page: "還沒有網頁。agent 用瀏覽器開過的網頁會列在這裡。",
-    poll: "還沒有投票。按輸入框左邊的 📊 發起一個。",
+    all: tr("outputs.emptyAll"),
+    thread: tr("outputs.emptyThreads"),
+    doc: tr("outputs.emptyDocs"),
+    diagram: tr("outputs.emptyDiagrams"),
+    page: tr("outputs.emptyPages"),
+    poll: tr("outputs.emptyPolls"),
   }[filter];
   return (
     <>
       <header className="td-head">
-        <b>產出</b>
+        <b>{tr("outputs.title")}</b>
         <span className="dim">{count("all")}</span>
-        <button className="td-x" onClick={() => closeThreads(panel)} aria-label="關閉產出" title="關閉（Esc）">
+        <button className="td-x" onClick={() => closeThreads(panel)} aria-label={tr("outputs.close")} title={tr("common.close") + "（Esc）"}>
           ✕
         </button>
       </header>
@@ -173,9 +188,9 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
       )}
       <div className="td-search">
         {anchor && (
-          <span className="td-chip" title="只看這則回覆的討論串">
-            回覆 {time(anchor.ts)} @{byId.get(anchor.from)?.alias ?? "?"}
-            <button onClick={() => setThreadSearch(panel, { msg: null })} aria-label="清除條件">
+          <span className="td-chip" title={tr("outputs.anchorHint")}>
+            {tr("outputs.anchor", { time: time(anchor.ts), alias: byId.get(anchor.from)?.alias ?? "?" })}
+            <button onClick={() => setThreadSearch(panel, { msg: null })} aria-label={tr("outputs.clearFilter")}>
               ✕
             </button>
           </span>
@@ -184,7 +199,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
           autoFocus
           value={ui.query}
           onChange={(e) => setThreadSearch(panel, { query: e.target.value })}
-          placeholder={anchor ? "在這幾個裡面搜尋…" : "搜尋：#3、@claude、或任何字"}
+          placeholder={anchor ? tr("outputs.searchThese") : tr("outputs.search")}
           spellCheck={false}
         />
       </div>
@@ -198,11 +213,11 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
             <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />
           ),
         )}
-        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length + polls.length > 0 && ui.query ? "沒有符合的產出" : empty}</div>}
+        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length + polls.length > 0 && ui.query ? tr("outputs.noMatch") : empty}</div>}
       </div>
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>
-          ＋ 對這則回覆開新的討論串
+          {tr("thread.newForReply")}
         </button>
       )}
     </>
@@ -224,20 +239,20 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
           </span>
           {ask && (
             <span className="td-ask" title={ask}>
-              <b>你：</b>
+              <b>{tr("thread.youAsked")}</b>
               {ask}
             </span>
           )}
           <span className="td-meta">
-            @{who?.alias ?? "已離開"} · {t.messages.filter((m) => m.from !== "system").length} 則 · <i className="td-dot" />
+            @{who?.alias ?? tr("agent.gone")} · {tr("thread.messages", { n: t.messages.filter((m) => m.from !== "system").length })} · <i className="td-dot" />
             {STATUS[t.status]}
           </span>
         </span>
       </button>
-      <button className="td-goto" onClick={() => showInChat(t.msg)} title="在主對話中找到原訊息" aria-label={`#${t.num} 的原訊息`}>
+      <button className="td-goto" onClick={() => showInChat(t.msg)} title={tr("thread.findOriginal")} aria-label={tr("thread.originalOf", { num: t.num })}>
         ↖
       </button>
-      <RemoveButton panel={panel} id={t.id} name={`討論串 #${t.num}`} />
+      <RemoveButton panel={panel} id={t.id} name={tr("thread.name", { num: t.num })} />
     </div>
   );
 }
@@ -245,21 +260,21 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
 /** Takes an item off the 產出 list; the chat keeps showing it. */
 export function RemoveButton({ panel, id, name }: { panel: string; id: string; name: string }) {
   return (
-    <button className="td-goto td-remove" onClick={() => send({ t: "output_remove", panel, id })} title="從清單移除（對話裡還在）" aria-label={`從清單移除${name}`}>
+    <button className="td-goto td-remove" onClick={() => send({ t: "output_remove", panel, id })} title={tr("outputs.remove")} aria-label={tr("outputs.removeNamed", { name })}>
       ✕
     </button>
   );
 }
 
 function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Member }) {
-  const title = a.title || (a.kind === "page" ? host(a.target) : "未命名文件");
+  const title = a.title || (a.kind === "page" ? host(a.target) : tr("doc.untitled"));
   return (
     <div className="td-row">
       <button
         className="td-open"
         // The drawer hides the chat's splits, where it opens: show them again, and keep the list.
         onClick={() => (send({ t: "artifact_open", panel, artifact: a.id }), unzoom())}
-        title={a.kind === "page" ? `在 @${who?.alias ?? "agent"} 的瀏覽器打開 ${a.target}` : "打開文件"}
+        title={a.kind === "page" ? tr("outputs.openPage", { alias: who?.alias ?? "agent", url: a.target }) : tr("outputs.openDoc")}
       >
         <span className="td-num">
           <span className="td-icon">{ICON[a.kind]}</span>
@@ -267,7 +282,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
         <span className="td-main">
           <span className="td-quote">{title}</span>
           <span className="td-meta">
-            @{who?.alias ?? "已離開"} · {a.kind === "page" ? `${host(a.target)} · ` : ""}
+            @{who?.alias ?? tr("agent.gone")} · {a.kind === "page" ? `${host(a.target)} · ` : ""}
             {time(a.updated)}
           </span>
         </span>
@@ -280,8 +295,8 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
 /** Whether a thread is about the whole reply or a selected part of it. */
 function Kind({ whole }: { whole: boolean }) {
   return (
-    <span className={`td-kind ${whole ? "whole" : "part"}`} title={whole ? "討論整則回覆" : "討論反白的一段"}>
-      {whole ? "整則" : "片段"}
+    <span className={`td-kind ${whole ? "whole" : "part"}`} title={whole ? tr("thread.wholeHint") : tr("thread.partHint")}>
+      {whole ? tr("thread.whole") : tr("thread.part")}
     </span>
   );
 }
@@ -292,7 +307,7 @@ function Quote({ text, msg, whole }: { text: string; msg: string; whole: boolean
       <span className="td-quote-label">
         <Kind whole={whole} />
       </span>
-      <button className="td-quote-block" onClick={() => showInChat(msg)} title="在主對話中顯示">
+      <button className="td-quote-block" onClick={() => showInChat(msg)} title={tr("thread.showInChat")}>
         {text}
       </button>
     </>
@@ -321,7 +336,7 @@ function Composer({ placeholder, onSend, disabled }: { placeholder: string; onSe
           }
         }}
       />
-      <button className="td-send" onClick={submit} disabled={disabled || !text.trim()} aria-label="送出">
+      <button className="td-send" onClick={submit} disabled={disabled || !text.trim()} aria-label={tr("keys.send")}>
         ↑
       </button>
     </div>
@@ -334,16 +349,16 @@ function NewThread({ panel, msg, quote, who }: { panel: string; msg: string; quo
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← 返回
+          ← {tr("common.back")}
         </button>
-        <b>新的討論串</b>
+        <b>{tr("thread.new")}</b>
       </header>
       <div className="td-body">
-        <p className="td-hint">只有你和 @{who?.alias ?? "agent"} 看得到這段討論，它從主對話分岔出來，記得前面所有內容。</p>
+        <p className="td-hint">{tr("thread.newHint", { alias: who?.alias ?? "agent" })}</p>
         {quote ? <Quote text={quote} msg={msg} whole={false} /> : <span className="td-quote-label"><Kind whole /></span>}
       </div>
       <Composer
-        placeholder={sent ? "開啟中…" : `問 @${who?.alias ?? "agent"}…（Enter 送出）`}
+        placeholder={sent ? tr("thread.opening") : tr("thread.askPlaceholder", { alias: who?.alias ?? "agent" })}
         disabled={sent}
         onSend={(text) => {
           setSent(true);
@@ -365,13 +380,13 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← 返回
+          ← {tr("common.back")}
         </button>
         <b>#{t.num}</b>
         <span className="dim">
-          @{who?.alias ?? "已離開"} · {STATUS[t.status]}
+          @{who?.alias ?? tr("agent.gone")} · {STATUS[t.status]}
         </span>
-        <button className="td-x" onClick={() => closeThreads(panel)} aria-label="關閉討論串" title="關閉（Esc 返回）">
+        <button className="td-x" onClick={() => closeThreads(panel)} aria-label={tr("thread.close")} title={tr("drawer.closeHint")}>
           ✕
         </button>
       </header>
@@ -397,14 +412,14 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
         )}
         {busy && (
           <div className="td-sys">
-            <span className="spin">✳</span> @{who?.alias ?? "agent"} 回覆中…
+            <span className="spin">✳</span> {tr("thread.agentReplying", { alias: who?.alias ?? "agent" })}
           </div>
         )}
       </div>
-      <Composer placeholder={busy ? "等 agent 回完…" : `回覆 @${who?.alias ?? "agent"}…（Enter 送出）`} disabled={busy} onSend={(text) => send({ t: "thread_send", panel, thread: t.id, text })} />
+      <Composer placeholder={busy ? tr("thread.waitAgent") : tr("thread.replyPlaceholder", { alias: who?.alias ?? "agent" })} disabled={busy} onSend={(text) => send({ t: "thread_send", panel, thread: t.id, text })} />
       <div className="td-foot">
-        <button className="td-bring" disabled={busy || !t.fork} onClick={() => send({ t: "thread_bring", panel, thread: t.id })} title="請 agent 寫一段結論，貼回主對話">
-          ↩ 帶回主對話
+        <button className="td-bring" disabled={busy || !t.fork} onClick={() => send({ t: "thread_bring", panel, thread: t.id })} title={tr("thread.bringHint")}>
+          ↩ {tr("thread.bring")}
         </button>
       </div>
     </>

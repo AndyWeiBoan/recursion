@@ -4,6 +4,7 @@
 //! Approvals arrive as server requests (`item/commandExecution/requestApproval`,
 //! `item/fileChange/requestApproval`) and are answered from the permission cards.
 
+use crate::i18n::tr;
 use super::{group_prompt, msg, Hub, PendingPerm, Proc};
 use crate::workspace::{display_tool_name, summarize_tool, tool_result_text, Body, Member, MemberStatus, PermState, TurnUsage};
 use serde_json::{json, Value};
@@ -32,11 +33,17 @@ impl Rpc {
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
         hub.write(panel, member, json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })).await?;
-        let resp = tokio::time::timeout(std::time::Duration::from_secs(60), rx).await.map_err(|_| format!("Codex 沒有回應 {method}"))?.map_err(|_| "Codex 已結束".to_string())?;
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(60), rx).await.map_err(|_| format!("Codex did not answer {method}"))?.map_err(|_| "Codex exited".to_string())?;
         if let Some(err) = resp.get("error") {
-            return Err(format!("Codex {method} 失敗：{}", err["message"].as_str().unwrap_or(&err.to_string())));
+            return Err(format!("Codex {method} failed: {}", err["message"].as_str().unwrap_or(&err.to_string())));
         }
         Ok(resp["result"].clone())
+    }
+
+    /// Asks Codex to summarise the thread; it runs as a turn and ends with `turn/completed`.
+    pub async fn compact(&self, hub: &Hub, panel: &str, member: &str) -> Result<(), String> {
+        let thread = self.thread_id.lock().unwrap().clone().ok_or("Codex thread not started yet")?;
+        self.call(hub, panel, member, "thread/compact/start", json!({ "threadId": thread })).await.map(|_| ())
     }
 
     fn resolve(&self, id: u64, resp: Value) {
@@ -46,7 +53,7 @@ impl Rpc {
     }
 
     pub async fn start_turn(&self, hub: &Arc<Hub>, panel: &str, member: &str, text: &str) -> Result<(), String> {
-        let thread = self.thread_id.lock().unwrap().clone().ok_or("Codex thread 尚未建立")?;
+        let thread = self.thread_id.lock().unwrap().clone().ok_or("Codex thread not started yet")?;
         let r = self
             .call(hub, panel, member, "turn/start", json!({ "threadId": thread, "input": [{ "type": "text", "text": text, "text_elements": [] }] }))
             .await?;
@@ -92,14 +99,14 @@ fn file_changes(item: &Value, cwd: &str) -> (String, String) {
 impl Hub {
     pub(super) async fn spawn_codex(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
         let env = self.env().await;
-        let bin = env.codex.clone().ok_or("找不到 codex 指令")?;
+        let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         let mut cmd = Command::new(bin);
         cmd.arg("app-server").current_dir(&dir).env("PATH", &env.path);
         self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
-        let mut child = cmd.spawn().map_err(|e| format!("無法啟動 codex：{e}"))?;
+        let mut child = cmd.spawn().map_err(|e| tr!("err.spawn", cli = "codex", error = e))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -147,7 +154,7 @@ impl Hub {
                         let err = err_buf.lock().unwrap().trim().to_string();
                         let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                         let detail = if err.is_empty() { String::new() } else { format!("\n\n```\n{}\n```", err.chars().take(1500).collect::<String>()) };
-                        hub.system(&panel_s, &member_s, format!("Codex 意外結束（exit {code}）。下一則訊息會自動接續對話。{detail}"), true);
+                        hub.system(&panel_s, &member_s, format!("{}{detail}", tr!("agent.crashed", cli = "Codex", code = code)), true);
                         hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
                         super::spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
                     }
@@ -183,7 +190,7 @@ impl Hub {
             }
             None => rpc.call(self, panel, &m.id, "thread/start", params).await?,
         };
-        let tid = result["thread"]["id"].as_str().ok_or("Codex 沒有回傳 thread id")?.to_string();
+        let tid = result["thread"]["id"].as_str().ok_or("Codex returned no thread id")?.to_string();
         *rpc.thread_id.lock().unwrap() = Some(tid.clone());
         self.update_member(panel, &m.id, |m| m.cli_session_id = Some(tid));
         Ok(())
@@ -249,7 +256,7 @@ impl Reader {
                             .and_then(|id| hub.with_ws(&panel, |ws| ws.message_mut(&id).map(|m| m.body.clone())))
                             .and_then(|b| if let Body::Tool { summary, detail, .. } = b { Some((summary, detail)) } else { None })
                             .unwrap_or_default();
-                        ("Edit".to_string(), if sum.is_empty() { "修改檔案".into() } else { sum }, det)
+                        ("Edit".to_string(), if sum.is_empty() { tr!("tool.editFiles") } else { sum }, det)
                     };
                     if let Some(reason) = params["reason"].as_str() {
                         detail = if detail.is_empty() { reason.to_string() } else { format!("{reason}\n\n{detail}") };
@@ -340,7 +347,7 @@ impl Reader {
                         hub.update_msg(&panel, &id, |m| {
                             m.streaming = false;
                             if let Body::Tool { result, is_error, .. } = &mut m.body {
-                                *result = Some(if out.is_empty() && status == "declined" { "已拒絕".into() } else { out.chars().take(4000).collect() });
+                                *result = Some(if out.is_empty() && status == "declined" { tr!("perm.denied") } else { out.chars().take(4000).collect() });
                                 *is_error = code.map(|c| c != 0).unwrap_or(false) || status == "failed" || status == "declined";
                             }
                         });
@@ -355,7 +362,7 @@ impl Reader {
                                     *s = summary;
                                     *d = detail;
                                 }
-                                *result = Some(match status.as_str() { "completed" => "已套用".into(), "declined" => "已拒絕".into(), other => other.to_string() });
+                                *result = Some(match status.as_str() { "completed" => tr!("tool.applied"), "declined" => tr!("perm.denied"), other => other.to_string() });
                                 *is_error = status == "failed" || status == "declined";
                             }
                         });
@@ -400,7 +407,7 @@ impl Reader {
                 }
             }
             "error" => {
-                let text = params["error"]["message"].as_str().or(params["message"].as_str()).unwrap_or("Codex 回報錯誤").to_string();
+                let text = params["error"]["message"].as_str().or(params["message"].as_str()).unwrap_or("Codex reported an error").to_string();
                 hub.system(&panel, &member, text, true);
             }
             "thread/tokenUsage/updated" => {
@@ -419,13 +426,19 @@ impl Reader {
                 self.turn_usage.cached += n("cachedInputTokens");
                 self.turn_usage.output += n("outputTokens");
             }
+            "turn/completed" if hub.is_compacting(&panel, &member) => {
+                *self.rpc.turn_id.lock().unwrap() = None;
+                self.items.clear();
+                let error = (params["turn"]["status"] == "failed").then(|| params["turn"]["error"]["message"].as_str().unwrap_or("Codex turn failed").to_string());
+                super::spawn_compact_done(hub, panel, member, None, error);
+            }
             "turn/completed" => {
                 let turn = &params["turn"];
                 let usage = std::mem::take(&mut self.turn_usage);
                 hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
                 *self.rpc.turn_id.lock().unwrap() = None;
                 if turn["status"] == "failed" {
-                    let text = turn["error"]["message"].as_str().unwrap_or("Codex 這一輪失敗了").to_string();
+                    let text = turn["error"]["message"].as_str().unwrap_or("Codex turn failed").to_string();
                     hub.system(&panel, &member, text, true);
                 }
                 // Anything still marked streaming from this turn is done.

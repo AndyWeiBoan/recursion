@@ -4,7 +4,8 @@
 //! knows which chat and which agent it came from without the agent having to say. The server
 //! speaks MCP's streamable-HTTP transport in its simplest form: one JSON-RPC POST, one JSON reply.
 
-use crate::model::Doc;
+use crate::i18n::tr;
+use crate::model::{Doc, DocKind};
 use crate::workspace::now_ms;
 use crate::App;
 use axum::extract::{Path, State as AxState};
@@ -23,6 +24,11 @@ fn dir(session: &str) -> PathBuf {
 
 fn file(session: &str, doc: &str) -> PathBuf {
     dir(session).join(format!("{doc}.html"))
+}
+
+/// A diagram's JSON, next to the SVG drawn from it.
+fn spec_file(session: &str, doc: &str) -> PathBuf {
+    dir(session).join(format!("{doc}.json"))
 }
 
 pub fn read(session: &str, doc: &str) -> Option<String> {
@@ -58,8 +64,7 @@ so send only what the human chose or entered (e.g. {\"database\": \"SQLite\"}), 
 `recursion.sendPrompt(text)` posts `text` to the whole chat as the human. Call them from a button or form submit, \
 e.g. to collect choices or answers from a form you designed. \
 Keep your chat reply short and point to the document. \
-For architecture, workflow, sequence, data-flow or state diagrams, use the archify skill when you have it: \
-it writes a standalone HTML file; pass that file's path as `file` instead of `html`.",
+For architecture, workflow or sequence diagrams use diagram_write instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -72,8 +77,21 @@ it writes a standalone HTML file; pass that file's path as `file` instead of `ht
             }
         },
         {
+            "name": "diagram_write",
+            "description": crate::diagram::GUIDE,
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Short title shown on the card and panel" },
+                    "diagram": { "type": "object", "description": "The diagram as JSON: `type` plus its boxes and lines (see the description)" },
+                    "id": { "type": "string", "description": "Existing diagram id to replace; omit to create a new one" }
+                },
+                "required": ["title", "diagram"]
+            }
+        },
+        {
             "name": "doc_read",
-            "description": "Read the HTML of a document in this session (yours or another agent's).",
+            "description": "Read a document in this session (yours or another agent's): the HTML of a page, or the JSON of a diagram.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
@@ -112,10 +130,23 @@ impl App {
                 if docs.is_empty() {
                     return text("No documents yet.", false);
                 }
-                text(docs.iter().map(|d| format!("{} — {} (by @{}, rev {})", d.id, d.title, d.author, d.rev)).collect::<Vec<_>>().join("\n"), false)
+                text(
+                    docs.iter()
+                        .map(|d| format!("{} — {}{} (by @{}, rev {})", d.id, d.title, if d.kind == DocKind::Diagram { " [diagram]" } else { "" }, d.author, d.rev))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    false,
+                )
             }
             "doc_read" => {
                 let id = args["id"].as_str().unwrap_or("");
+                // A diagram is read as the JSON it was drawn from: that's what an agent edits.
+                if docs.iter().any(|d| d.id == id && d.kind == DocKind::Diagram) {
+                    return match std::fs::read_to_string(spec_file(&session, id)) {
+                        Ok(spec) => text(format!("Diagram `{id}` (edit this JSON and pass it to diagram_write with id \"{id}\"):\n{spec}"), false),
+                        Err(_) => text(format!("Diagram `{id}` has no saved JSON."), true),
+                    };
+                }
                 match docs.iter().any(|d| d.id == id).then(|| read(&session, id)).flatten() {
                     Some(html) => text(html, false),
                     None => text(format!("No document with id `{id}`. Use doc_list to see what exists."), true),
@@ -146,39 +177,83 @@ impl App {
                     return text(format!("Document too large ({} bytes, max {MAX_HTML}).", html.len()), true);
                 }
                 let id = args["id"].as_str().filter(|s| !s.is_empty());
-                if let Some(id) = id {
-                    if !docs.iter().any(|d| d.id == id) {
-                        return text(format!("No document with id `{id}`. Omit `id` to create a new one."), true);
-                    }
-                }
-                let written = self.state.lock().unwrap().write_doc(&session, id, title, alias.to_string(), panel, member, now_ms());
-                let (doc, created) = match written {
-                    Ok(r) => r,
-                    Err(e) => return text(e.to_string(), true),
-                };
-                let path = file(&session, &doc.id);
-                let saved = std::fs::create_dir_all(dir(&session)).and_then(|_| std::fs::write(&path, html));
-                if let Err(e) = saved {
-                    return text(format!("Could not save: {e}"), true);
-                }
-                if created {
-                    let _ = self.state.lock().unwrap().open_doc(panel, &doc.id, false);
-                }
-                self.mark_changed();
-                self.hub.post_doc(panel, member, &doc, !created);
-                self.hub.record_artifact(panel, crate::workspace::ArtifactKind::Doc, &doc.id, &doc.title, member);
-                let verb = if created { "Created" } else { "Updated" };
-                text(
-                    format!(
-                        "{verb} document `{}` (rev {}). The human sees it as a card in the chat and it is open in a panel next to it. \
+                match self.save_doc(&session, &docs, panel, member, alias, id, DocKind::Html, title, html, None) {
+                    Ok((doc, created)) => text(
+                        format!(
+                            "{} document `{}` (rev {}). The human sees it as a card in the chat and it is open in a panel next to it. \
 To revise it, call doc_write again with id \"{}\".",
-                        doc.id, doc.rev, doc.id
+                            if created { "Created" } else { "Updated" },
+                            doc.id,
+                            doc.rev,
+                            doc.id
+                        ),
+                        false,
                     ),
-                    false,
-                )
+                    Err(e) => text(e, true),
+                }
+            }
+            "diagram_write" => {
+                let title = args["title"].as_str().unwrap_or("").trim().to_string();
+                if title.is_empty() {
+                    return text("`title` is required.", true);
+                }
+                // Some clients send the object as a JSON string.
+                let spec = match &args["diagram"] {
+                    Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
+                    v => v.clone(),
+                };
+                let drawn = match crate::diagram::render(&spec) {
+                    Ok(d) => d,
+                    Err(problems) => return text(format!("Not drawn; fix these and call again:\n- {}", problems.join("\n- ")), true),
+                };
+                let id = args["id"].as_str().filter(|s| !s.is_empty());
+                let pretty = serde_json::to_string_pretty(&spec).unwrap_or_default();
+                match self.save_doc(&session, &docs, panel, member, alias, id, DocKind::Diagram, title, &drawn.svg, Some(&pretty)) {
+                    Ok((doc, created)) => {
+                        let mut t = format!(
+                            "{} diagram `{}` (rev {}); it is open in a panel next to the chat. To change it, call diagram_write again with id \"{}\".",
+                            if created { "Created" } else { "Updated" },
+                            doc.id,
+                            doc.rev,
+                            doc.id
+                        );
+                        if !drawn.warnings.is_empty() {
+                            t += &format!("\nIt was drawn, but has layout problems worth fixing:\n- {}", drawn.warnings.join("\n- "));
+                        }
+                        text(t, false)
+                    }
+                    Err(e) => text(e, true),
+                }
             }
             _ => text(format!("Unknown tool {name}"), true),
         }
+    }
+
+    /// Saves a new or revised document, opens it next to the chat and posts its card.
+    #[allow(clippy::too_many_arguments)]
+    fn save_doc(&self, session: &str, docs: &[Doc], panel: &str, member: &str, alias: &str, id: Option<&str>, kind: DocKind, title: String, content: &str, spec: Option<&str>) -> Result<(Doc, bool), String> {
+        if let Some(id) = id {
+            if !docs.iter().any(|d| d.id == id) {
+                return Err(format!("No document with id `{id}`. Omit `id` to create a new one."));
+            }
+        }
+        let (doc, created) = self.state.lock().unwrap().write_doc(session, id, kind, title, alias.to_string(), panel, member, now_ms()).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir(session)).map_err(|e| format!("Could not save: {e}"))?;
+        std::fs::write(file(session, &doc.id), content).map_err(|e| format!("Could not save: {e}"))?;
+        match spec {
+            Some(s) => std::fs::write(spec_file(session, &doc.id), s).map_err(|e| format!("Could not save: {e}"))?,
+            None => {
+                let _ = std::fs::remove_file(spec_file(session, &doc.id));
+            }
+        }
+        if created {
+            let _ = self.state.lock().unwrap().open_doc(panel, &doc.id, false);
+        }
+        self.mark_changed();
+        self.hub.post_doc(panel, member, &doc, !created);
+        let art = if kind == DocKind::Diagram { crate::workspace::ArtifactKind::Diagram } else { crate::workspace::ArtifactKind::Doc };
+        self.hub.record_artifact(panel, art, &doc.id, &doc.title, member);
+        Ok((doc, created))
     }
 
     async fn rpc(&self, panel: &str, member: &str, alias: &str, req: &Value) -> Option<Value> {
@@ -211,15 +286,15 @@ impl App {
     pub async fn doc_action(&self, session: &str, doc: &str, action: &str, data: &str) -> Result<(), String> {
         let (d, cwd) = {
             let st = self.state.lock().unwrap();
-            let s = st.sessions.iter().find(|s| s.id == session).ok_or("找不到 session")?;
-            (s.docs.iter().find(|d| d.id == doc).cloned().ok_or("找不到文件")?, s.cwd.clone())
+            let s = st.sessions.iter().find(|s| s.id == session).ok_or_else(|| tr!("err.noSession"))?;
+            (s.docs.iter().find(|d| d.id == doc).cloned().ok_or_else(|| tr!("err.noDoc"))?, s.cwd.clone())
         };
         // A page script could loop; one message per doc every couple of seconds is plenty for clicks.
         {
             let mut last = self.doc_last.lock().unwrap();
             let now = std::time::Instant::now();
             if last.get(doc).is_some_and(|t| now.duration_since(*t) < PAGE_MESSAGE_GAP) {
-                return Err(format!("文件「{}」送訊息太快了，已略過", d.title));
+                return Err(tr!("doc.tooFast", title = d.title));
             }
             last.insert(doc.to_string(), now);
         }
@@ -228,21 +303,21 @@ impl App {
             return Ok(());
         }
         if data.chars().count() > MAX_PAGE_MESSAGE {
-            return Err(format!("文件「{}」送出的內容太長（上限 {MAX_PAGE_MESSAGE} 字）", d.title));
+            return Err(tr!("doc.tooLong", title = d.title, max = MAX_PAGE_MESSAGE));
         }
         let chat_alive = self.state.lock().unwrap().panels.get(&d.chat).is_some_and(|p| p.kind == crate::model::PanelKind::Workspace);
         if !chat_alive {
-            return Err(format!("寫這份文件的群聊已經關掉了，「{}」的訊息沒有送出", d.title));
+            return Err(tr!("doc.chatGone", title = d.title));
         }
         let body = if data.contains('\n') || data.starts_with('{') || data.starts_with('[') { format!("```\n{data}\n```") } else { data.to_string() };
         let text = match action {
             "reply" => {
                 // To whoever wrote it, under their current name; everyone if they left.
                 let to = self.hub.alias_of(&d.chat, &d.member).map(|a| format!("@{a} ")).unwrap_or_default();
-                format!("{to}（來自文件「{}」）\n{body}", d.title)
+                format!("{to}{}\n{body}", tr!("doc.fromDoc", title = d.title))
             }
-            "prompt" => format!("（來自文件「{}」）\n{body}", d.title),
-            other => return Err(format!("未知的文件動作：{other}")),
+            "prompt" => format!("{}\n{body}", tr!("doc.fromDoc", title = d.title)),
+            other => return Err(format!("Unknown document action: {other}")),
         };
         let via = crate::workspace::DocVia { doc: d.id.clone(), title: d.title.clone(), data: data.to_string() };
         self.hub.send(&d.chat, text, cwd, Some(via), None).await

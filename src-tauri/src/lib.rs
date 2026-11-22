@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 24;
+const PROTOCOL: u32 = 26;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -106,7 +106,7 @@ fn daemon_info() -> Result<DaemonInfo, String> {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    spawn_daemon().map_err(|e| format!("無法啟動 recursiond：{e}"))?;
+    spawn_daemon().map_err(|e| format!("Couldn't start recursiond: {e}"))?;
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(8) {
         std::thread::sleep(Duration::from_millis(150));
@@ -114,7 +114,7 @@ fn daemon_info() -> Result<DaemonInfo, String> {
             return Ok(info);
         }
     }
-    Err(format!("recursiond 沒有在 8 秒內啟動，請看 {}", home().join("daemon.log").display()))
+    Err(format!("recursiond did not start within 8 seconds; see {}", home().join("daemon.log").display()))
 }
 
 /// Dev builds only: `RECURSION_TOUR=<project folder>` makes the UI play the scripted walkthrough

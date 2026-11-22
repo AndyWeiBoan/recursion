@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export type PanelKind = "workspace" | "terminal" | "browser";
 export type Dir = "row" | "column";
 
@@ -32,6 +34,7 @@ export interface Session {
 export interface Doc {
   id: string;
   title: string;
+  kind?: "html" | "diagram";
   author: string;
   rev: number;
   updated: number;
@@ -41,6 +44,8 @@ export interface State {
   sessions: Session[];
   panels: Record<string, Panel>;
   active_session: string | null;
+  /** The human's language; absent follows the system. */
+  lang?: string | null;
 }
 
 export interface TermInfo {
@@ -71,6 +76,8 @@ export type Cmd =
   | { t: "ws_attach"; panel: string }
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
   | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
+  | { t: "set_lang"; lang: string | null }
+  | { t: "ws_compact"; panel: string; member: string }
   | { t: "accounts_list" }
   | { t: "accounts_refresh" }
   | { t: "daemon_info" }
@@ -104,14 +111,14 @@ export type Cmd =
 
 export type AgentKind = "claude" | "codex";
 
-export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission";
+export type MemberStatus = "idle" | "starting" | "thinking" | "waiting_permission" | "compacting";
 
 /** How much an agent may do without asking. */
 export type PermMode = "ask" | "edits" | "auto";
 export const PERM_MODES: { id: PermMode; label: string; hint: string }[] = [
-  { id: "ask", label: "每次都問", hint: "改檔案、跑指令都先問你" },
-  { id: "edits", label: "自動改檔", hint: "改檔案不用問，跑指令先問你" },
-  { id: "auto", label: "全自動", hint: "什麼都不問直接做：能跑任何指令、改專案外的檔案" },
+  { id: "ask", get label() { return t("perm.ask"); }, get hint() { return t("perm.ask.hint"); } },
+  { id: "edits", get label() { return t("perm.edits"); }, get hint() { return t("perm.edits.hint"); } },
+  { id: "auto", get label() { return t("perm.auto"); }, get hint() { return t("perm.auto.hint"); } },
 ];
 
 export interface Member {
@@ -246,7 +253,7 @@ export interface Workspace {
 
 export interface Artifact {
   id: string;
-  kind: "doc" | "page";
+  kind: "doc" | "page" | "diagram";
   /** Doc id, or the page's url. */
   target: string;
   title: string;
@@ -273,13 +280,13 @@ export function chatsOf(s: Session, state: State): Chat[] {
   const out: Chat[] = [];
   s.windows.forEach((w, wi) => {
     const ids = leaves(w.root).filter((p) => state.panels[p]?.kind === "workspace");
-    ids.forEach((p, i) => out.push({ panel: p, label: `群聊 · window ${wi + 1}${ids.length > 1 ? ` (${i + 1})` : ""}${w.name && w.name !== String(wi + 1) ? ` ${w.name}` : ""}` }));
+    ids.forEach((p, i) => out.push({ panel: p, label: `${t("kind.workspace")} · window ${wi + 1}${ids.length > 1 ? ` (${i + 1})` : ""}${w.name && w.name !== String(wi + 1) ? ` ${w.name}` : ""}` }));
   });
   return out;
 }
 
 export const KIND_LABEL: Record<PanelKind, string> = {
-  workspace: "群聊",
-  terminal: "終端",
-  browser: "瀏覽器",
+  get workspace() { return t("kind.workspace"); },
+  get terminal() { return t("kind.terminal"); },
+  get browser() { return t("kind.browser"); },
 };

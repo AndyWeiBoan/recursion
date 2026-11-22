@@ -4,6 +4,7 @@
 //! with `--permission-prompt-tool stdio`, so permission prompts arrive as `control_request`
 //! messages on stdout and are answered with `control_response` on stdin.
 
+use crate::i18n::tr;
 use crate::workspace::{display_tool_name, mentions, now_ms, summarize_tool, tool_result_text, AgentKind, Body, Member, MemberStatus, Message, PermMode, PermState, TurnUsage, Workspace};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -40,9 +41,30 @@ impl AgentEnv {
             .await;
         let text = out.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-        let path = lines.first().filter(|l| !l.starts_with("claude=") && !l.starts_with("codex=")).map(|s| s.to_string()).unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
+        let mut path = lines.first().filter(|l| !l.starts_with("claude=") && !l.starts_with("codex=")).map(|s| s.to_string()).unwrap_or_else(|| std::env::var("PATH").unwrap_or_default());
         let find = |k: &str| lines.iter().find_map(|l| l.strip_prefix(k)).map(|s| s.trim().to_string()).filter(|s| s.starts_with('/'));
-        AgentEnv { path, claude: find("claude="), codex: find("codex=") }
+        let (mut claude, mut codex) = (find("claude="), find("codex="));
+        // A login shell skips ~/.zshrc, which is where Claude's installer (and nvm and friends) put
+        // their PATH line on macOS: look in the usual install folders too.
+        for (bin, slot) in [("claude", &mut claude), ("codex", &mut codex)] {
+            if slot.is_none() {
+                if let Some(found) = Self::known_dirs().into_iter().map(|d| d.join(bin)).find(|p| p.is_file()) {
+                    let dir = found.parent().unwrap().to_string_lossy().to_string();
+                    if !path.split(':').any(|p| p == dir) {
+                        path = format!("{dir}:{path}");
+                    }
+                    *slot = Some(found.to_string_lossy().to_string());
+                }
+            }
+        }
+        AgentEnv { path, claude, codex }
+    }
+
+    fn known_dirs() -> Vec<std::path::PathBuf> {
+        let home = dirs::home_dir().unwrap_or_default();
+        let mut v: Vec<std::path::PathBuf> = [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", ".cargo/bin"].iter().map(|d| home.join(d)).collect();
+        v.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(std::path::PathBuf::from));
+        v
     }
 }
 
@@ -95,6 +117,10 @@ struct Runtime {
     roster_seen: HashMap<String, u64>,
     /// member → id of the first message of its turn in progress.
     turn_first: HashMap<String, String>,
+    /// Members compacting their conversation → the chat's folder, to deliver what waited meanwhile.
+    compacting: HashMap<String, String>,
+    /// Compacting members a round skipped: they get their own round once the compact is done.
+    missed: HashSet<String>,
 }
 
 pub struct Hub {
@@ -272,7 +298,8 @@ impl Hub {
             let mut n = 0;
             for d in docs {
                 if !ws.artifacts.iter().any(|a| a.kind == crate::workspace::ArtifactKind::Doc && a.target == d.id) {
-                    ws.record_artifact(crate::workspace::ArtifactKind::Doc, &d.id, &d.title, &d.member, d.updated);
+                    let kind = if d.kind == crate::model::DocKind::Diagram { crate::workspace::ArtifactKind::Diagram } else { crate::workspace::ArtifactKind::Doc };
+                    ws.record_artifact(kind, &d.id, &d.title, &d.member, d.updated);
                     n += 1;
                 }
             }
@@ -298,7 +325,7 @@ impl Hub {
             p.removed = true;
             Some(json!({ "t": "ws_poll", "panel": panel, "poll": p }))
         });
-        let ev = ev.ok_or("找不到這個產出")?;
+        let ev = ev.ok_or_else(|| tr!("err.noOutput"))?;
         self.emit(ev);
         self.mark_dirty(panel);
         Ok(())
@@ -426,15 +453,15 @@ impl Hub {
 
     pub async fn add_agent(self: &Arc<Self>, panel: &str, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>, mode: PermMode) -> Result<(), String> {
         let account = self.accounts.resolve(kind, account.as_deref());
-        let acc = self.accounts.get(&account).ok_or("找不到這個帳號")?;
+        let acc = self.accounts.get(&account).ok_or_else(|| tr!("err.noAccount"))?;
         let env = self.env().await;
         match kind {
             AgentKind::Claude if env.claude.is_none() => {
-                return Err("找不到 claude 指令。請先安裝 Claude Code 並執行 claude auth login".into());
+                return Err(tr!("agent.err.noClaude"));
             }
             AgentKind::Codex => {
                 let Some(bin) = env.codex.clone() else {
-                    return Err("找不到 codex 指令。請先安裝 Codex CLI（npm i -g @openai/codex）並執行 codex login".into());
+                    return Err(tr!("agent.err.noCodex"));
                 };
                 let mut cmd = Command::new(bin);
                 cmd.args(["login", "status"]).env("PATH", &env.path);
@@ -442,7 +469,7 @@ impl Hub {
                 let out = cmd.output().await.map_err(|e| e.to_string())?;
                 let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
                 if !out.status.success() || text.to_lowercase().contains("not logged in") {
-                    return Err(format!("Codex 帳號「{}」還沒登入，請在「帳號」裡登入", acc.name));
+                    return Err(tr!("agent.err.codexLoggedOut", name = acc.name));
                 }
             }
             _ => {}
@@ -453,9 +480,66 @@ impl Hub {
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
-        let how = if mode == PermMode::default() { String::new() } else { format!("（{}）", mode.label()) };
-        self.system(panel, &member.id, format!("@{alias} 加入了群聊{how}"), false);
+        let text = if mode == PermMode::default() { tr!("agent.joined", alias = alias) } else { tr!("agent.joinedMode", alias = alias, mode = mode.label()) };
+        self.system(panel, &member.id, text, false);
         Ok(())
+    }
+
+    pub fn is_compacting(&self, panel: &str, member: &str) -> bool {
+        self.rt(panel, |r| r.compacting.contains_key(member))
+    }
+
+    /// Has an idle agent summarise its own conversation (Claude's `/compact`, Codex's
+    /// `thread/compact/start`) to free context. Rounds meanwhile go on without it; what it missed
+    /// reaches it afterwards in a round of its own.
+    pub async fn compact(self: &Arc<Self>, panel: &str, member: &str, cwd: String) -> Result<(), String> {
+        let m = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()).ok_or_else(|| tr!("err.noAgent"))?;
+        if m.status != MemberStatus::Idle {
+            return Err(tr!("agent.err.busyCompact", alias = m.alias));
+        }
+        if m.cli_session_id.is_none() {
+            return Err(tr!("agent.err.nothingToCompact", alias = m.alias));
+        }
+        let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
+        if !running {
+            match m.kind {
+                AgentKind::Claude => self.spawn(panel, &m, &cwd).await?,
+                AgentKind::Codex => self.spawn_codex(panel, &m, &cwd).await?,
+            }
+        }
+        self.rt(panel, |r| r.compacting.insert(m.id.clone(), cwd));
+        self.update_member(panel, &m.id, |x| x.status = MemberStatus::Compacting);
+        let sent = match m.kind {
+            AgentKind::Claude => self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": "/compact" }] } })).await,
+            AgentKind::Codex => {
+                let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).ok_or("Codex is not running")?;
+                rpc.compact(self, panel, &m.id).await
+            }
+        };
+        if let Err(e) = sent {
+            self.rt(panel, |r| r.compacting.remove(&m.id));
+            self.update_member(panel, &m.id, |x| x.status = MemberStatus::Idle);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The compact finished (or failed): say so, then give it what it missed.
+    async fn compact_done(self: &Arc<Self>, panel: &str, member: &str, tokens: Option<(u64, u64)>, error: Option<String>) {
+        let Some(cwd) = self.rt(panel, |r| r.compacting.remove(member)) else { return };
+        // Claude's "after" count leaves out its system prompt and tools, so it reads far lower than
+        // the context really is; the real figure comes with the next reply.
+        self.update_member(panel, member, |m| m.status = MemberStatus::Idle);
+        let alias = self.alias_of(panel, member).unwrap_or_default();
+        match (error, tokens) {
+            (Some(e), _) => self.system(panel, member, tr!("agent.compactFailed", alias = alias, error = e), true),
+            (None, Some((before, _))) => self.system(panel, member, tr!("agent.compacted", alias = alias, before = before), false),
+            (None, None) => self.system(panel, member, tr!("agent.compactedPlain", alias = alias), false),
+        }
+        // What it missed meanwhile comes as a round of its own, so it never held anyone else's up.
+        if self.rt(panel, |r| r.missed.remove(member) | r.pending.remove(member)) {
+            self.queue_round(panel, Some(vec![member.to_string()]), cwd);
+        }
     }
 
     /// Changes what an agent may do without asking. Its process restarts (the conversation is
@@ -463,16 +547,16 @@ impl Hub {
     pub async fn set_mode(&self, panel: &str, member: &str, mode: PermMode) -> Result<(), String> {
         let (alias, status, old) = self
             .with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| (m.alias.clone(), m.status, m.mode)))
-            .ok_or("找不到這個 agent")?;
+            .ok_or_else(|| tr!("err.noAgent"))?;
         if old == mode {
             return Ok(());
         }
         if status != MemberStatus::Idle {
-            return Err(format!("@{alias} 還在回覆，等它回完再換"));
+            return Err(tr!("agent.err.busyMode", alias = alias));
         }
         self.update_member(panel, member, |m| m.mode = mode);
         self.kill(panel, member).await;
-        self.system(panel, "system", format!("@{alias} 換成「{}」", mode.label()), false);
+        self.system(panel, "system", tr!("agent.modeChanged", alias = alias, mode = mode.label()), false);
         Ok(())
     }
 
@@ -480,14 +564,14 @@ impl Hub {
     fn check_alias(&self, panel: &str, alias: &str, except: Option<&str>) -> Result<String, String> {
         let alias = alias.trim().trim_start_matches('@').to_string();
         if alias.is_empty() {
-            return Err("別名不能是空的".into());
+            return Err(tr!("agent.err.emptyAlias"));
         }
         if alias.chars().any(|c| !(c.is_alphanumeric() || c == '_' || c == '-')) {
-            return Err("別名只能用英數字、中文、底線或連字號".into());
+            return Err(tr!("agent.err.badAlias"));
         }
         let dup = self.with_ws(panel, |ws| ws.members.iter().any(|m| Some(m.id.as_str()) != except && m.alias.eq_ignore_ascii_case(&alias)));
         if dup {
-            return Err(format!("這個群聊已經有 @{alias} 了"));
+            return Err(tr!("agent.err.duplicate", alias = alias));
         }
         Ok(alias)
     }
@@ -503,7 +587,7 @@ impl Hub {
                 let old = std::mem::replace(&mut m.alias, alias.clone());
                 Some((old, m.status == MemberStatus::Idle))
             })
-            .ok_or("找不到這個 agent")?;
+            .ok_or_else(|| tr!("err.noAgent"))?;
         if old == alias {
             return Ok(());
         }
@@ -514,7 +598,7 @@ impl Hub {
         if let Some(m) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()) {
             self.emit(json!({ "t": "ws_member", "panel": panel, "member": m }));
         }
-        self.system(panel, "system", format!("@{old} 改名為 @{alias}"), false);
+        self.system(panel, "system", tr!("agent.renamed", old = old, alias = alias), false);
         Ok(())
     }
 
@@ -533,7 +617,7 @@ impl Hub {
         });
         self.emit_round(panel);
         if let Some(a) = alias {
-            self.system(panel, "system", format!("@{a} 離開了群聊"), false);
+            self.system(panel, "system", tr!("agent.left", alias = a), false);
         }
     }
 
@@ -556,7 +640,7 @@ impl Hub {
         }
         let members: Vec<Member> = self.with_ws(panel, |ws| ws.members.clone());
         if members.is_empty() {
-            return Err("這個群聊還沒有 agent".into());
+            return Err(tr!("err.noAgents"));
         }
         let targeted = mentions(&text, &members, None);
         let all = targeted.is_empty() || targeted.len() == members.len();
@@ -626,6 +710,9 @@ impl Hub {
             r.queued_all = false;
             r.queued_targets = None;
             r.queued_count = 0;
+            // A compacting agent doesn't hold the round up; it catches up after.
+            let (busy, t): (Vec<String>, Vec<String>) = t.into_iter().partition(|m| r.compacting.contains_key(m));
+            r.missed.extend(busy);
             r.speaking = t.iter().cloned().collect();
             t
         });
@@ -667,12 +754,15 @@ impl Hub {
     /// Called when an agent's turn ends: hide [PASS], then either re-deliver (it was interrupted
     /// into a new round) or mark it done for the round. @mentions never wake anyone.
     async fn turn_ended(self: &Arc<Self>, panel: String, member: String, text: String, text_ids: Vec<String>, cwd: String) {
+        // The marker only ever opens the turn's first message; the rest of the turn's text stays.
+        let marked = text_ids.first().is_some_and(|first| self.take_reply_marker(&panel, first).is_some());
+        let text = if marked { parse_reply_marker(&text).map(|(_, rest)| rest.to_string()).or_else(|| leading_quote(&text).map(|(_, rest)| rest.to_string())).unwrap_or(text) } else { text };
         let trimmed = text.trim();
         let passed = trimmed == "[PASS]" || (trimmed.starts_with("[PASS]") && trimmed.len() < 40);
         if passed {
             self.remove_msgs(&panel, &text_ids);
             let alias = self.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone())).unwrap_or_default();
-            self.system(&panel, &member, format!("@{alias} 略過（沒有要補充的）"), false);
+            self.system(&panel, &member, tr!("agent.passed", alias = alias), false);
         }
         let again = self.rt(&panel, |r| r.pending.remove(&member));
         if again {
@@ -680,6 +770,35 @@ impl Hub {
         } else {
             self.member_done(&panel, &member, &cwd).await;
         }
+    }
+
+    /// An agent's reply that opens with `↩#12` answers message #12: drop the marker from the text
+    /// and record the reply, so the chat shows the quote. Returns the number it pointed at.
+    fn take_reply_marker(&self, panel: &str, msg_id: &str) -> Option<u64> {
+        let m = self.with_ws(panel, |ws| ws.messages.iter().find(|x| x.id == msg_id).cloned())?;
+        let Body::Text { text } = &m.body else { return None };
+        // `↩#12`, or failing that a leading `>` quote of an earlier message's words.
+        let (target, rest) = match parse_reply_marker(text) {
+            Some((seq, rest)) => (self.with_ws(panel, |ws| ws.messages.iter().find(|x| x.seq == seq && x.id != m.id).cloned()), rest),
+            None => {
+                let (quote, rest) = leading_quote(text)?;
+                let found = self.with_ws(panel, |ws| {
+                    ws.messages.iter().rev().filter(|x| x.id != m.id && x.seq < m.seq).find(|x| matches!(&x.body, Body::Text { text } if squash(text).contains(&quote))).cloned()
+                })?;
+                (Some(found), rest)
+            }
+        };
+        let seq = target.as_ref().map(|x| x.seq).unwrap_or(0);
+        let reply = target.and_then(|x| match &x.body {
+            Body::Text { text } => Some(crate::workspace::ReplyRef { msg: x.id.clone(), from: x.from.clone(), text: text.chars().take(crate::workspace::REPLY_EXCERPT).collect() }),
+            _ => None,
+        });
+        let rest = rest.to_string();
+        self.update_msg(panel, msg_id, |x| {
+            x.body = Body::Text { text: rest };
+            x.reply_to = reply;
+        });
+        Some(seq)
     }
 
     async fn interrupt_all(self: &Arc<Self>, panel: &str) {
@@ -696,7 +815,7 @@ impl Hub {
         };
         self.rt(panel, |r| r.pending.remove(member));
         self.interrupt(panel, member).await;
-        self.system(panel, "system", &format!("已停止 @{alias}"), false);
+        self.system(panel, "system", &tr!("agent.stopped", alias = alias), false);
     }
 
     /// Interrupt one agent's turn, killing it if it doesn't stop within a few seconds.
@@ -728,7 +847,7 @@ impl Hub {
     }
 
     pub async fn decide(&self, request_id: &str, decision: &str) -> Result<(), String> {
-        let p = self.perms.lock().unwrap().remove(request_id).ok_or("這個核准請求已經結束了")?;
+        let p = self.perms.lock().unwrap().remove(request_id).ok_or_else(|| tr!("perm.err.gone"))?;
         if let Some(rpc_id) = p.codex_request.clone() {
             let (state, d) = match decision {
                 "deny" => (PermState::Denied, "decline"),
@@ -745,7 +864,7 @@ impl Hub {
             return Ok(());
         }
         let (state, response) = match decision {
-            "deny" => (PermState::Denied, json!({ "behavior": "deny", "message": "使用者拒絕了這個動作。" })),
+            "deny" => (PermState::Denied, json!({ "behavior": "deny", "message": "The user denied this action." })),
             "always" => {
                 let rules: Vec<Value> = p.suggestions.as_array().map(|a| a.iter().filter(|s| s["type"] == "addRules").cloned().collect()).unwrap_or_default();
                 (PermState::AlwaysAllowed, json!({ "behavior": "allow", "updatedInput": p.input, "updatedPermissions": rules }))
@@ -774,7 +893,7 @@ impl Hub {
             r.send_gen += 1;
         });
         self.emit_round(panel);
-        self.system(panel, "system", "已停止", false);
+        self.system(panel, "system", tr!("chat.stopped"), false);
     }
 
     /// Panel closed or switched to another kind: stop agents, optionally drop the transcript.
@@ -819,7 +938,7 @@ impl Hub {
 
     async fn write(&self, panel: &str, member: &str, v: Value) -> Result<(), String> {
         let stdin = self.procs.lock().unwrap().get(&(panel.to_string(), member.to_string())).map(|p| p.stdin.clone());
-        let stdin = stdin.ok_or("agent 沒有在執行")?;
+        let stdin = stdin.ok_or("agent is not running")?;
         let mut line = v.to_string();
         line.push('\n');
         let mut w = stdin.lock().await;
@@ -833,24 +952,29 @@ impl Hub {
             let names: HashMap<String, String> = ws.members.iter().map(|x| (x.id.clone(), x.alias.clone())).collect();
             let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && (x.from != m.id || x.from_thread.is_some())).collect();
             let upto = ws.next_seq;
+            // What a message answers, for its header: `, replying to @x's message: "…"`.
+            let re = |x: &Message| {
+                x.reply_to.as_ref().map(|r| {
+                    let who = if r.from == "you" { "the human's message".to_string() } else if r.from == x.from { "their own earlier message".to_string() } else { format!("@{}'s message", names.get(&r.from).cloned().unwrap_or_else(|| "agent".into())) };
+                    format!(", replying to {who}: \"{}{}\"", r.text.replace('\n', " "), if r.text.chars().count() >= crate::workspace::REPLY_EXCERPT { "…" } else { "" })
+                }).unwrap_or_default()
+            };
+            // Every line carries the message's number, so a reply can point at it (`↩#12`).
             let lines: Vec<String> = unseen
                 .iter()
                 .filter_map(|x| match &x.body {
                     Body::Text { text } if x.from == "you" => {
                         let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
-                        let re = x.reply_to.as_ref().map(|r| {
-                            let who = if r.from == "you" { "their own earlier message".to_string() } else { format!("@{}'s message", names.get(&r.from).cloned().unwrap_or_else(|| "agent".into())) };
-                            format!(", replying to {who}: \"{}{}\"", r.text.replace('\n', " "), if r.text.chars().count() >= crate::workspace::REPLY_EXCERPT { "…" } else { "" })
-                        });
-                        Some(format!("[human → {to}{}]: {text}", re.unwrap_or_default()))
+                        Some(format!("[#{} human → {to}{}]: {text}", x.seq, re(x)))
                     }
                     Body::Text { text } if x.from_thread.is_some() => Some(format!(
-                        "[@{} — conclusion of thread #{}, brought back to the chat]: {}",
+                        "[#{} @{} — conclusion of thread #{}, brought back to the chat]: {}",
+                        x.seq,
                         names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()),
                         x.from_thread.as_ref().map(|t| t.num).unwrap_or(0),
                         text
                     )),
-                    Body::Text { text } => Some(format!("[@{}]: {}", names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), text)),
+                    Body::Text { text } => Some(format!("[#{} @{}{}]: {}", x.seq, names.get(&x.from).cloned().unwrap_or_else(|| "agent".into()), re(x), text)),
                     b @ (Body::Poll { .. } | Body::PollClosed { .. }) => Self::poll_line(b, &ws.polls, &names),
                     Body::Doc { doc, title, updated } => Some(format!(
                         "[@{} {} document `{doc}` \"{title}\" — read it with doc_read]",
@@ -899,7 +1023,7 @@ impl Hub {
             x.seen = upto;
         });
         if m.kind == AgentKind::Codex {
-            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).ok_or("Codex 沒有在執行")?;
+            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).ok_or("Codex is not running")?;
             return rpc.start_turn(self, panel, &m.id, &text).await;
         }
         self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
@@ -907,7 +1031,7 @@ impl Hub {
 
     async fn spawn(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
         let env = self.env().await;
-        let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
+        let bin = env.claude.clone().ok_or_else(|| tr!("err.noCli", cli = "claude"))?;
         let prompt = group_prompt(&m.alias);
         let mut cmd = Command::new(bin);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
@@ -926,7 +1050,7 @@ impl Hub {
         self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
-        let mut child = cmd.spawn().map_err(|e| format!("無法啟動 claude：{e}"))?;
+        let mut child = cmd.spawn().map_err(|e| tr!("err.spawn", cli = "claude", error = e))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -968,7 +1092,7 @@ impl Hub {
                     let err = err_buf.lock().unwrap().trim().to_string();
                     let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                     let detail = if err.is_empty() { String::new() } else { format!("\n\n```\n{}\n```", err.chars().take(1500).collect::<String>()) };
-                    hub.system(&panel_s, &member_s, format!("Claude 意外結束（exit {code}）。下一則訊息會自動接續對話。{detail}"), true);
+                    hub.system(&panel_s, &member_s, format!("{}{detail}", tr!("agent.crashed", cli = "Claude", code = code)), true);
                     hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
                     spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
                 }
@@ -993,11 +1117,13 @@ struct ClaudeReader {
     streamed_api_ids: HashSet<String>,
     turn_text: String,
     turn_text_ids: Vec<String>,
+    /// Tokens before and after the last `/compact`, from its `compact_boundary`.
+    compacted: Option<(u64, u64)>,
 }
 
 impl ClaudeReader {
     fn new(hub: Arc<Hub>, panel: String, member: String, cwd: String, base_cost: f64) -> Self {
-        Self { hub, panel, member, cwd, base_cost, last_cost: 0.0, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new() }
+        Self { hub, panel, member, cwd, base_cost, last_cost: 0.0, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new(), compacted: None }
     }
 
     fn new_msg(&mut self, body: Body, streaming: bool) -> String {
@@ -1019,6 +1145,12 @@ impl ClaudeReader {
         let hub = self.hub.clone();
         let (panel, member) = (self.panel.clone(), self.member.clone());
         match v["type"].as_str().unwrap_or("") {
+            "system" if v["subtype"] == "compact_boundary" => {
+                let meta = &v["compact_metadata"];
+                if let (Some(before), Some(after)) = (meta["pre_tokens"].as_u64(), meta["post_tokens"].as_u64()) {
+                    self.compacted = Some((before, after));
+                }
+            }
             "system" if v["subtype"] == "init" => {
                 if let Some(sid) = v["session_id"].as_str() {
                     let sid = sid.to_string();
@@ -1195,9 +1327,17 @@ impl ClaudeReader {
                 if let Some(c) = cost {
                     self.last_cost = c;
                 }
+                if hub.is_compacting(&panel, &member) {
+                    self.blocks.clear();
+                    self.turn_text.clear();
+                    self.turn_text_ids.clear();
+                    let error = v["is_error"].as_bool().unwrap_or(false).then(|| v["result"].as_str().unwrap_or("").to_string());
+                    spawn_compact_done(hub, panel, member, self.compacted.take(), error);
+                    return;
+                }
                 hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
                 if v["is_error"].as_bool().unwrap_or(false) && v["subtype"] != "error_during_execution" {
-                    let text = v["result"].as_str().unwrap_or("Claude 回報錯誤").to_string();
+                    let text = v["result"].as_str().unwrap_or("Claude reported an error").to_string();
                     hub.system(&panel, &member, text, true);
                 }
                 self.blocks.clear();
@@ -1211,6 +1351,33 @@ impl ClaudeReader {
     }
 }
 
+/// `↩#12` (or `↩ #12`) opening a reply, then the rest of the text.
+fn parse_reply_marker(text: &str) -> Option<(u64, &str)> {
+    let t = text.trim_start();
+    let t = t.strip_prefix('↩')?.trim_start().strip_prefix('#')?;
+    let end = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(t.len());
+    let seq = t[..end].parse().ok()?;
+    Some((seq, t[end..].trim_start()))
+}
+
+/// A reply that opens with a `>` blockquote: the quoted words (squashed) and what follows.
+/// Short quotes are ignored; they are too likely to match by chance.
+fn leading_quote(text: &str) -> Option<(String, &str)> {
+    let t = text.trim_start();
+    if !t.starts_with('>') {
+        return None;
+    }
+    let end = t.split_inclusive('\n').take_while(|l| l.trim_start().starts_with('>')).map(str::len).sum::<usize>();
+    let quote: String = t[..end].lines().map(|l| l.trim_start().trim_start_matches('>').trim()).collect::<Vec<_>>().join(" ");
+    let quote = squash(&quote);
+    (quote.chars().count() >= 6).then(|| (quote, t[end..].trim_start()))
+}
+
+/// Text with Markdown marks and runs of whitespace taken out, for comparing quotes.
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| !matches!(c, '*' | '_' | '`' | '#')).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Instructions shared by every agent kind.
 fn group_prompt(alias: &str) -> String {
     format!(
@@ -1220,12 +1387,18 @@ fn group_prompt(alias: &str) -> String {
          - New messages arrive prefixed with their speaker, e.g. `[human → everyone]: ...` or `[@other]: ...`. You only receive \
          messages you have not seen yet; your own earlier replies are already in your context.\n\
          - You may address another agent as @alias, but that does not make them reply now; they will read it next round.\n\
+         - Each message starts with its number, e.g. `[#12 @other]`. To quote or answer one particular message, open your \
+         reply with `↩#12` (that number) followed by your text: the chat then shows that message quoted in your bubble, \
+         linked to the original. Don't copy its words into a `>` blockquote for this. Skip it when you simply answer the \
+         latest message.\n\
          - If the human @mentioned you by name, you must respond. Only when a message was sent to everyone and you truly have \
          nothing useful to add may you reply with exactly [PASS] and nothing else.\n\
          - Your replies are rendered as Markdown, so use tables, lists and code blocks where they help.\n\
          - For anything long or visual (reports, big tables, diagrams, dashboards), call the `doc_write` tool (Recursion MCP server) \
          to save an HTML document: the human gets a card that opens it in its own panel, and every agent in the chat can read it \
          with `doc_read`. Then keep your chat reply short. Revise a document by passing its id instead of making a new one.\n\
+         - For architecture, workflow or sequence diagrams, call `diagram_write` with the boxes and lines as JSON; the app lays \
+         them out and draws them. Fix the layout problems it reports by moving boxes to other cells.\n\
          - Documents can talk back. Inside the page, `recursion.reply(data)` delivers `data` (string or JSON) to you as the \
          human's next message, and `recursion.sendPrompt(text)` posts to the whole chat. So when you want the human to choose, \
          fill in or answer something, make a document with a form or buttons that calls `recursion.reply(...)` on submit, \
@@ -1241,6 +1414,11 @@ fn group_prompt(alias: &str) -> String {
     )
 }
 
+/// Plain fn so the readers' future types don't recurse into the round machinery.
+fn spawn_compact_done(hub: Arc<Hub>, panel: String, member: String, tokens: Option<(u64, u64)>, error: Option<String>) {
+    tokio::spawn(async move { hub.compact_done(&panel, &member, tokens, error).await });
+}
+
 /// Plain fn so callers' future types don't recurse into the round machinery.
 fn spawn_member_done(hub: Arc<Hub>, panel: String, member: String, cwd: String) {
     tokio::spawn(async move { hub.member_done(&panel, &member, &cwd).await });
@@ -1248,4 +1426,27 @@ fn spawn_member_done(hub: Arc<Hub>, panel: String, member: String, cwd: String) 
 
 fn spawn_trigger(hub: Arc<Hub>, panel: String, member: String, cwd: String) {
     tokio::spawn(async move { hub.trigger(&panel, &member, &cwd).await });
+}
+
+#[cfg(test)]
+mod reply_marker_tests {
+    use super::parse_reply_marker;
+
+    #[test]
+    fn reads_the_reply_marker() {
+        assert_eq!(parse_reply_marker("↩#12 對，這樣比較好"), Some((12, "對，這樣比較好")));
+        assert_eq!(parse_reply_marker("  ↩ #3\n\nyes"), Some((3, "yes")));
+        assert_eq!(parse_reply_marker("#12 no arrow"), None);
+        assert_eq!(parse_reply_marker("↩ nothing"), None);
+    }
+
+    #[test]
+    fn reads_a_leading_quote() {
+        use super::leading_quote;
+        let (q, rest) = leading_quote("> 問題一：台灣最高的山是哪座？\n\n台灣最高的山是**玉山**").unwrap();
+        assert_eq!(q, "問題一：台灣最高的山是哪座？");
+        assert_eq!(rest, "台灣最高的山是**玉山**");
+        assert!(leading_quote("> ok\n\nyes").is_none(), "too short to trust");
+        assert!(leading_quote("no quote").is_none());
+    }
 }

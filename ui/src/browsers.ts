@@ -1,6 +1,7 @@
 // Native browser webviews (one per browser panel), positioned by the panel that owns them.
 // They are OS views stacked above our HTML, so anything that pops over a panel (menus, the
 // kind picker) must hide them while it is open: see `overlay()`.
+import { t } from "./i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -80,7 +81,7 @@ export function browserGo(panel: string, action: "back" | "forward" | "reload" |
 /** One step of an agent driving its browser panel (see `browser_agent` in the app). The webview
  *  is created hidden if the panel has never been on screen; `args.url` is the panel's page. */
 export async function agentBrowse(panel: string, op: string, args: { url?: string } & Record<string, unknown>): Promise<unknown> {
-  if (!nativeBrowser) throw new Error("這個視窗沒有內建瀏覽器");
+  if (!nativeBrowser) throw new Error(t("browser.noNative"));
   const url = String(args.url ?? "");
   const en = entries.get(panel);
   // Whoever shows the panel next must not navigate it again: the agent's step already did.

@@ -5,6 +5,7 @@
 //! agents never see the side talk. Thread turns are read-only (no edits, no shell): they are for
 //! discussing, and nobody is watching the main chat's approval cards for them.
 
+use crate::i18n::tr;
 use super::{msg, AgentEnv, Hub};
 use crate::workspace::{now_ms, AgentKind, Body, Member, Thread, ThreadMsg, ThreadRef, ThreadStatus};
 use serde_json::{json, Value};
@@ -43,7 +44,7 @@ impl Hub {
     pub async fn thread_open(self: &Arc<Self>, panel: &str, msg_id: &str, quote: &str, text: &str, cwd: String) -> Result<String, String> {
         let text = text.trim();
         if text.is_empty() {
-            return Err("訊息是空的".into());
+            return Err(tr!("err.emptyMessage"));
         }
         let (author, whole) = self
             .with_ws(panel, |ws| {
@@ -51,10 +52,10 @@ impl Hub {
                 let whole = if let Body::Text { text } = &m.body { text.clone() } else { String::new() };
                 Some((m.from.clone(), whole))
             })
-            .ok_or("找不到那則訊息")?;
-        let member = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == author).cloned()).ok_or("寫那則訊息的 agent 已經不在群聊裡了")?;
+            .ok_or_else(|| tr!("err.noMessage"))?;
+        let member = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == author).cloned()).ok_or_else(|| tr!("thread.err.authorGone"))?;
         if member.cli_session_id.is_none() {
-            return Err(format!("@{} 還沒有對話可以分岔", member.alias));
+            return Err(tr!("thread.err.noConversation", alias = member.alias));
         }
         let is_whole = quote.trim().is_empty();
         let quote = if is_whole { whole } else { quote.trim().to_string() };
@@ -88,9 +89,9 @@ impl Hub {
         if text.is_empty() {
             return Ok(());
         }
-        let t = self.with_ws(panel, |ws| ws.threads.iter().find(|t| t.id == thread).cloned()).ok_or("找不到這個討論串")?;
+        let t = self.with_ws(panel, |ws| ws.threads.iter().find(|t| t.id == thread).cloned()).ok_or_else(|| tr!("thread.notFound"))?;
         if t.status == ThreadStatus::Replying {
-            return Err("agent 還在回覆這個討論串".into());
+            return Err(tr!("thread.err.busy"));
         }
         self.update_thread(panel, thread, |t| {
             t.messages.push(ThreadMsg { from: "you".into(), text: text.clone(), ts: now_ms() });
@@ -123,12 +124,12 @@ impl Hub {
 
     /// Ask the thread's agent for a conclusion and post it to the main chat.
     pub async fn thread_bring(self: &Arc<Self>, panel: &str, thread: &str, cwd: String) -> Result<(), String> {
-        let t = self.with_ws(panel, |ws| ws.threads.iter().find(|t| t.id == thread).cloned()).ok_or("找不到這個討論串")?;
+        let t = self.with_ws(panel, |ws| ws.threads.iter().find(|t| t.id == thread).cloned()).ok_or_else(|| tr!("thread.notFound"))?;
         if t.status == ThreadStatus::Replying {
-            return Err("agent 還在回覆這個討論串".into());
+            return Err(tr!("thread.err.busy"));
         }
         if t.fork.is_none() {
-            return Err("這個討論串還沒有內容可以帶回".into());
+            return Err(tr!("thread.err.nothingToBring"));
         }
         self.update_thread(panel, thread, |t| t.status = ThreadStatus::Replying);
         let hub = self.clone();
@@ -142,7 +143,7 @@ impl Hub {
         let Some(t) = t else { return };
         let member = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == t.agent).cloned());
         let result = match member {
-            None => Err("這個 agent 已經離開群聊了".to_string()),
+            None => Err(tr!("thread.err.agentLeft")),
             Some(m) => {
                 let env = self.env().await;
                 let dir = if std::path::Path::new(&cwd).is_dir() { cwd.clone() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
@@ -152,7 +153,7 @@ impl Hub {
                         AgentKind::Codex => codex_turn(&env, &self.accounts, &m, t.fork.as_deref(), &dir, &prompt).await,
                     }
                 };
-                tokio::time::timeout(TURN_TIMEOUT, run).await.unwrap_or_else(|_| Err("等太久了，沒有回應".into())).map(|r| (r, m))
+                tokio::time::timeout(TURN_TIMEOUT, run).await.unwrap_or_else(|_| Err(tr!("err.timeout"))).map(|r| (r, m))
             }
         };
         match result {
@@ -166,7 +167,7 @@ impl Hub {
                 self.update_thread(panel, thread, |t| {
                     t.fork = Some(fork);
                     if bring {
-                        t.messages.push(ThreadMsg { from: "system".into(), text: "↩ 已帶回主對話".into(), ts: now_ms() });
+                        t.messages.push(ThreadMsg { from: "system".into(), text: format!("↩ {}", tr!("thread.broughtBack")), ts: now_ms() });
                         t.status = ThreadStatus::Brought;
                     } else {
                         t.messages.push(ThreadMsg { from: m.id.clone(), text, ts: now_ms() });
@@ -176,7 +177,7 @@ impl Hub {
             }
             Err(e) => {
                 self.update_thread(panel, thread, |t| {
-                    t.messages.push(ThreadMsg { from: "system".into(), text: format!("出錯了：{e}"), ts: now_ms() });
+                    t.messages.push(ThreadMsg { from: "system".into(), text: tr!("err.failed", error = e), ts: now_ms() });
                     t.status = ThreadStatus::Waiting;
                 });
             }
@@ -192,12 +193,12 @@ fn unanswered(messages: &[ThreadMsg], agent: &str) -> String {
 
 /// One Claude reply in the fork. Returns (text, session id to resume next time).
 async fn claude_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
-    let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
+    let bin = env.claude.clone().ok_or_else(|| tr!("err.noCli", cli = "claude"))?;
     let mut cmd = Command::new(bin);
     cmd.args(["-p", "--output-format", "json", "--permission-mode", "default", "--disallowedTools", "Bash,Edit,Write,MultiEdit,NotebookEdit"]);
     match fork {
         Some(sid) => cmd.args(["--resume", sid]),
-        None => cmd.args(["--resume", m.cli_session_id.as_deref().ok_or("沒有可分岔的對話")?, "--fork-session"]),
+        None => cmd.args(["--resume", m.cli_session_id.as_deref().ok_or("no conversation to fork")?, "--fork-session"]),
     };
     if let Some(model) = &m.model {
         cmd.args(["--model", model]);
@@ -205,31 +206,31 @@ async fn claude_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &M
     cmd.current_dir(dir).env("PATH", &env.path).env("CLAUDE_CODE_ENTRYPOINT", "recursion");
     accounts.apply(&mut cmd, m.kind, m.account.as_deref());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("無法啟動 claude：{e}"))?;
+    let mut child = cmd.spawn().map_err(|e| tr!("err.spawn", cli = "claude", error = e))?;
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(prompt.as_bytes()).await.map_err(|e| e.to_string())?;
     drop(stdin);
     let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
     let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| {
         let err = String::from_utf8_lossy(&out.stderr);
-        format!("claude 沒有回傳結果{}", if err.trim().is_empty() { String::new() } else { format!("：{}", err.trim().chars().take(400).collect::<String>()) })
+        format!("claude returned no result{}", if err.trim().is_empty() { String::new() } else { format!(": {}", err.trim().chars().take(400).collect::<String>()) })
     })?;
     let text = v["result"].as_str().unwrap_or("").to_string();
     if v["is_error"].as_bool().unwrap_or(false) {
-        return Err(if text.is_empty() { "claude 回報錯誤".into() } else { text });
+        return Err(if text.is_empty() { "claude reported an error".into() } else { text });
     }
-    let sid = v["session_id"].as_str().ok_or("claude 沒有回傳 session id")?.to_string();
+    let sid = v["session_id"].as_str().ok_or("claude returned no session id")?.to_string();
     Ok((text, sid))
 }
 
 /// One Codex reply in the fork, through a short-lived app-server. Returns (text, thread id).
 async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
-    let bin = env.codex.clone().ok_or("找不到 codex 指令")?;
+    let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
     let mut cmd = Command::new(bin);
     cmd.arg("app-server").current_dir(dir).env("PATH", &env.path);
     accounts.apply(&mut cmd, m.kind, m.account.as_deref());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("無法啟動 codex：{e}"))?;
+    let mut child = cmd.spawn().map_err(|e| tr!("err.spawn", cli = "codex", error = e))?;
     let mut stdin = child.stdin.take().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let mut next_id = 0u64;
@@ -244,11 +245,11 @@ async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Me
             let (id, line) = send($method, $params);
             stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
             loop {
-                let l = lines.next_line().await.map_err(|e| e.to_string())?.ok_or("codex 提前結束了")?;
+                let l = lines.next_line().await.map_err(|e| e.to_string())?.ok_or("codex exited early")?;
                 let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
                 if v["id"] == id && v.get("method").is_none() {
                     if let Some(err) = v.get("error") {
-                        break Err(format!("codex {} 失敗：{}", $method, err["message"].as_str().unwrap_or("")));
+                        break Err(format!("codex {} failed: {}", $method, err["message"].as_str().unwrap_or("")));
                     }
                     break Ok(v["result"].clone());
                 }
@@ -269,17 +270,17 @@ async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Me
             call!("thread/resume", params)?
         }
         None => {
-            params["threadId"] = json!(m.cli_session_id.as_deref().ok_or("沒有可分岔的對話")?);
+            params["threadId"] = json!(m.cli_session_id.as_deref().ok_or("no conversation to fork")?);
             params["excludeTurns"] = json!(true);
             call!("thread/fork", params)?
         }
     };
-    let tid = started["thread"]["id"].as_str().ok_or("codex 沒有回傳 thread id")?.to_string();
+    let tid = started["thread"]["id"].as_str().ok_or("codex returned no thread id")?.to_string();
     call!("turn/start", json!({ "threadId": tid, "input": [{ "type": "text", "text": prompt, "text_elements": [] }] }))?;
 
     let mut text = String::new();
     loop {
-        let l = lines.next_line().await.map_err(|e| e.to_string())?.ok_or("codex 提前結束了")?;
+        let l = lines.next_line().await.map_err(|e| e.to_string())?.ok_or("codex exited early")?;
         let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
         let method = v["method"].as_str().unwrap_or("");
         if !v["id"].is_null() && !method.is_empty() {
@@ -301,13 +302,13 @@ async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Me
             "turn/completed" => {
                 let turn = &v["params"]["turn"];
                 if turn["status"] == "failed" {
-                    return Err(turn["error"]["message"].as_str().unwrap_or("codex 這一輪失敗了").to_string());
+                    return Err(turn["error"]["message"].as_str().unwrap_or("codex turn failed").to_string());
                 }
                 break;
             }
             "error" => {
                 if v["params"]["willRetry"] != true {
-                    return Err(v["params"]["error"]["message"].as_str().unwrap_or("codex 回報錯誤").to_string());
+                    return Err(v["params"]["error"]["message"].as_str().unwrap_or("codex reported an error").to_string());
                 }
             }
             _ => {}

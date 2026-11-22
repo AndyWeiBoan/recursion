@@ -1,5 +1,6 @@
 //! Group-chat workspaces: members, transcript, persistence.
 
+use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -18,6 +19,8 @@ pub enum MemberStatus {
     Starting,
     Thinking,
     WaitingPermission,
+    /// Summarising its own conversation to free context (compact).
+    Compacting,
 }
 
 /// How much an agent may do without asking. Same three levels for both CLIs.
@@ -34,11 +37,11 @@ pub enum PermMode {
 }
 
 impl PermMode {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            PermMode::Ask => "每次都問",
-            PermMode::Edits => "自動改檔",
-            PermMode::Auto => "全自動",
+            PermMode::Ask => tr!("perm.ask"),
+            PermMode::Edits => tr!("perm.edits"),
+            PermMode::Auto => tr!("perm.auto"),
         }
     }
     /// Claude's `--permission-mode`.
@@ -336,6 +339,8 @@ pub enum ArtifactKind {
     Doc,
     /// A web page the agent opened in its browser; `target` is the url.
     Page,
+    /// A diagram (a document drawn from JSON); `target` is its doc id.
+    Diagram,
 }
 
 /// One entry in a chat's 產出 list. Same kind and target = the same artifact, updated in place.
@@ -510,17 +515,18 @@ fn recursion_tool(name: &str) -> Option<&str> {
 /// The tool name as shown in the chat.
 pub fn display_tool_name(name: &str) -> String {
     match recursion_tool(name) {
-        Some("doc_write") => "寫文件".into(),
-        Some("doc_read") => "讀文件".into(),
-        Some("doc_list") => "列出文件".into(),
-        Some("browse_open") => "🌐 開網頁".into(),
-        Some("browse_read") => "🌐 讀網頁".into(),
-        Some("browse_click") => "🌐 點擊".into(),
-        Some("browse_fill") => "🌐 填寫".into(),
-        Some("browse_screenshot") => "🌐 截圖".into(),
-        Some("poll_vote") => "📊 投票".into(),
-        Some("poll_list") => "📊 列出投票".into(),
-        Some("poll_read") => "📊 看投票".into(),
+        Some("doc_write") => tr!("tool.docWrite"),
+        Some("diagram_write") => format!("📐 {}", tr!("tool.diagramWrite")),
+        Some("doc_read") => tr!("tool.docRead"),
+        Some("doc_list") => tr!("tool.docList"),
+        Some("browse_open") => format!("🌐 {}", tr!("tool.browseOpen")),
+        Some("browse_read") => format!("🌐 {}", tr!("tool.browseRead")),
+        Some("browse_click") => format!("🌐 {}", tr!("tool.browseClick")),
+        Some("browse_fill") => format!("🌐 {}", tr!("tool.browseFill")),
+        Some("browse_screenshot") => format!("🌐 {}", tr!("tool.browseScreenshot")),
+        Some("poll_vote") => format!("📊 {}", tr!("tool.pollVote")),
+        Some("poll_list") => format!("📊 {}", tr!("tool.pollList")),
+        Some("poll_read") => format!("📊 {}", tr!("tool.pollRead")),
         _ => name.to_string(),
     }
 }
@@ -539,8 +545,9 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
         "WebFetch" => s("url"),
         "WebSearch" => s("query"),
         "Task" | "Agent" => s("description"),
-        "TodoWrite" => "更新待辦清單".into(),
-        _ if recursion_tool(name) == Some("doc_write") => format!("「{}」{}", s("title"), if s("id").is_empty() { "" } else { "（更新）" }),
+        "TodoWrite" => tr!("tool.todo"),
+        _ if recursion_tool(name) == Some("diagram_write") => format!("「{}」{}", s("title"), if s("id").is_empty() { String::new() } else { tr!("tool.updatedSuffix") }),
+        _ if recursion_tool(name) == Some("doc_write") => format!("「{}」{}", s("title"), if s("id").is_empty() { String::new() } else { tr!("tool.updatedSuffix") }),
         _ if recursion_tool(name) == Some("doc_read") => s("id"),
         _ if recursion_tool(name) == Some("doc_list") => String::new(),
         _ if recursion_tool(name) == Some("browse_open") => s("url"),

@@ -21,6 +21,8 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **agent 的瀏覽器**：每個 agent 在群聊旁有自己的瀏覽器 panel，用 `browse_open`／`browse_read`／`browse_click`／`browse_fill`／`browse_screenshot` 開網頁、填表單、截圖，你看得到它在做什麼（目前 Linux；macOS 還沒做）。
 - **多帳號**：側欄「帳號」管理 Claude／Codex 的多個登入（每個帳號一個設定資料夾，設定、skills 等連回原本的 `~/.claude`／`~/.codex`），顯示 email、方案、5 小時／7 天用量；加 agent 時選帳號；登入過期時聊天裡出現「重新登入」卡片。
 - **模型選單**直接問 CLI（Claude 的 initialize、Codex 的 `model/list`），跟它們自己的 `/model` 一致。
+- **畫圖**：agent 用 `diagram_write` 交出 JSON（架構圖、流程圖、時序圖），daemon 自己排版、拉線、畫成 SVG，有排不好的地方會告訴 agent 讓它改；圖在旁邊的 panel 打開，可以縮放、切深淺色、匯出 PNG／SVG，點方塊會標出跟它有關的線，也列在「📎 產出 → 圖」。想法和輸入格式參考 [Archify](https://github.com/tt-a1i/archify)（MIT），程式是我們自己的。
+- **多語系**：設定 →「一般」→「語言」切換（繁體中文、English，或跟隨系統），馬上生效。要加一種語言：複製 `locales/en.json` 成 `locales/<代碼>.json`（例如 `ja.json`），改 `_name` 和裡面的字，重新編譯就會出現在選單裡；少翻的句子會顯示英文。`cargo test` 會檢查內建語言的 key 和 `{參數}` 都對得上。
 
 ## 開發
 需要 Rust（`brew install rustup && rustup default stable`）、Node、pnpm。
@@ -45,6 +47,7 @@ pnpm test:browse # agent 操作瀏覽器（會開一個真的 app 視窗；需�
 | `crates/recursiond` | 背景服務：版面模型、存檔、PTY、WebSocket（`~/.recursion/daemon.json` 記錄 port 與 token） |
 | `src-tauri` | 桌面客戶端：確保 daemon 在跑，把位址交給前端 |
 | `ui` | 前端（React + xterm.js），直接用 WebSocket 連 daemon |
+| `locales` | 介面文字，一個語言一個 JSON 檔，前端和 daemon 共用 |
 | `scripts/smoke.mjs` | daemon 端到端測試 |
 
 ## 快捷鍵（M0）

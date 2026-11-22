@@ -1,5 +1,6 @@
 // Accounts window: every login of each CLI, who it is, how much of its limits is used, and a way
 // to add one or log in again (the CLI's own login runs in a terminal window).
+import { t } from "./i18n";
 import { useEffect, useState } from "react";
 import { send, useAccounts } from "./client";
 import type { Account, AgentKind } from "./types";
@@ -10,8 +11,8 @@ const KINDS: { kind: AgentKind; name: string }[] = [
 ];
 
 const WINDOWS: [string, string][] = [
-  ["five_hour", "5 小時"],
-  ["seven_day", "7 天"],
+  ["five_hour", "usage.5h.long"],
+  ["seven_day", "usage.7d.long"],
 ];
 
 function Usage({ a }: { a: Account }) {
@@ -19,10 +20,11 @@ function Usage({ a }: { a: Account }) {
   if (!shown.length) return null;
   return (
     <span className="acct-usage">
-      {shown.map(([k, label]) => {
+      {shown.map(([k, key]) => {
+        const label = t(key);
         const v = Math.min(1, a.usage[k]);
         return (
-          <span key={k} className="acct-meter" title={`${label}用量 ${Math.round(v * 100)}%`}>
+          <span key={k} className="acct-meter" title={t("usage.meter", { label, pct: Math.round(v * 100) })}>
             <span className="dim">{label}</span>
             <span className="ctx-bar">
               <i className={`ctx-fill ${v > 0.9 ? "hi" : v > 0.7 ? "mid" : "lo"}`} style={{ width: `${v * 100}%` }} />
@@ -41,7 +43,7 @@ function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
   const [confirm, setConfirm] = useState(false);
   return (
     <div className="acct-row">
-      <span className={`acct-dot${a.logged_in ? " on" : ""}`} title={a.logged_in ? "已登入" : "還沒登入"} />
+      <span className={`acct-dot${a.logged_in ? " on" : ""}`} title={a.logged_in ? t("acct.loggedIn") : t("acct.notLoggedIn")} />
       <div className="acct-main">
         <div className="acct-name">
           {editing ? (
@@ -56,25 +58,25 @@ function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
               }}
             />
           ) : (
-            <b onDoubleClick={() => setEditing(true)} title="雙擊重新命名">
+            <b onDoubleClick={() => setEditing(true)} title={t("common.doubleClickRename")}>
               {a.name}
             </b>
           )}
-          {isDefault && <span className="acct-tag">CLI 原本的登入</span>}
+          {isDefault && <span className="acct-tag">{t("acct.cliDefault")}</span>}
         </div>
-        <span className="acct-who">{a.logged_in ? [a.email, a.plan].filter(Boolean).join(" · ") || "已登入" : "還沒登入"}</span>
+        <span className="acct-who">{a.logged_in ? [a.email, a.plan].filter(Boolean).join(" · ") || t("acct.loggedIn") : t("acct.notLoggedIn")}</span>
         <Usage a={a} />
       </div>
       <div className="acct-acts">
-        <button onClick={onLogin}>{a.logged_in ? "重新登入" : "登入"}</button>
+        <button onClick={onLogin}>{a.logged_in ? t("acct.relogin") : t("acct.login")}</button>
         {!isDefault &&
           (confirm ? (
             <button className="danger" onClick={() => send({ t: "account_remove", account: a.id })} onMouseLeave={() => setConfirm(false)}>
-              確定刪除？
+              {t("common.confirmDelete")}
             </button>
           ) : (
             <button className="danger" onClick={() => setConfirm(true)}>
-              刪除
+              {t("common.delete")}
             </button>
           ))}
       </div>
@@ -94,9 +96,9 @@ function AddAccount({ kind, onDone }: { kind: AgentKind; onDone: () => void }) {
         onDone();
       }}
     >
-      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="帳號名稱，例如「公司」" />
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={t("acct.namePlaceholder")} />
       <button type="submit" disabled={!name.trim()}>
-        建立並登入
+        {t("acct.createAndLogin")}
       </button>
     </form>
   );
@@ -110,7 +112,7 @@ export function AccountsPane({ onLeave }: { onLeave: () => void }) {
   useEffect(() => send({ t: "accounts_refresh" }), []);
   return (
     <div className="acct">
-      <p className="acct-hint">每個 agent 用加入時選的帳號。登入會開一個終端視窗，跑 CLI 自己的登入流程，照著指示在瀏覽器登入就好。</p>
+      <p className="acct-hint">{t("acct.hint")}</p>
       {KINDS.map(({ kind, name }) => (
         <section key={kind} className="acct-group">
           <h3>{name}</h3>
@@ -123,7 +125,7 @@ export function AccountsPane({ onLeave }: { onLeave: () => void }) {
             <AddAccount kind={kind} onDone={onLeave} />
           ) : (
             <button className="acct-new" onClick={() => setAdding(kind)}>
-              ＋ 新增 {name} 帳號
+              {t("acct.add", { name })}
             </button>
           )}
         </section>

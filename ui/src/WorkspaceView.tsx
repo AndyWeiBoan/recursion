@@ -1,4 +1,7 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
+import { Icon } from "./icons";
+import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
+import { t as tr } from "./i18n";
 import { copyText } from "./clipboard";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
@@ -10,7 +13,7 @@ import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { accountName, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, isMac, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -61,10 +64,11 @@ export function renderMarkdown(text: string, aliases: string[]): string {
 const KIND_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
 
 export const STATUS_LABEL: Record<Member["status"], string> = {
-  idle: "閒置",
-  starting: "啟動中",
-  thinking: "思考中",
-  waiting_permission: "等你核准",
+  get idle() { return tr("status.idle"); },
+  get starting() { return tr("status.starting"); },
+  get thinking() { return tr("status.thinking"); },
+  get waiting_permission() { return tr("status.waitingPermission"); },
+  get compacting() { return tr("status.compacting"); },
 };
 
 function time(ts: number) {
@@ -78,9 +82,9 @@ function tokens(n: number) {
 
 function UsageTag({ u }: { u: TurnUsage }) {
   const cost = u.cost_usd === undefined ? "" : u.cost_usd < 0.01 ? " · <$0.01" : ` · $${u.cost_usd.toFixed(2)}`;
-  const detail = `這一輪：輸入 ${u.input.toLocaleString()} tokens（其中快取 ${u.cached.toLocaleString()}）、輸出 ${u.output.toLocaleString()} tokens${
-    u.cost_usd === undefined ? "" : `、約 $${u.cost_usd.toFixed(4)}`
-  }`;
+  const detail =
+    tr("usage.turn", { input: u.input.toLocaleString(), cached: u.cached.toLocaleString(), output: u.output.toLocaleString() }) +
+    (u.cost_usd === undefined ? "" : tr("usage.turnCost", { cost: u.cost_usd.toFixed(4) }));
   return (
     <span className="usage" title={detail}>
       {tokens(u.input + u.output)} tokens
@@ -99,12 +103,12 @@ function DocSubmission({ via, panel }: { via: DocVia; panel: string }) {
   } catch {}
   return (
     <div className="doc-sub">
-      <button className="doc-sub-head" onClick={() => send({ t: "doc_open", panel, doc: via.doc })} title="打開這份文件">
+      <button className="doc-sub-head" onClick={() => send({ t: "doc_open", panel, doc: via.doc })} title={tr("doc.openThis")}>
         <span className="m-doc-ic" aria-hidden="true">
           ▤
         </span>
         <span>
-          你在<b>「{via.title}」</b>送出
+          {tr("doc.sentFromBefore")}<b>「{via.title}」</b>{tr("doc.sentFromAfter")}
         </span>
       </button>
       {fields ? (
@@ -192,7 +196,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   return createPortal(
     <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
-        <button className="modal-x" onClick={onClose} aria-label="關閉" title="關閉（Esc）">
+        <button className="modal-x" onClick={onClose} aria-label={tr("common.close")} title={tr("common.close") + "（Esc）"}>
           ✕
         </button>
         {children}
@@ -222,24 +226,24 @@ export function ChatHead({ panel }: { panel: string }) {
             <Avatar m={m} size={18} />
           </span>
         ))}
-        <button className="chat-add" onClick={() => setAdding((v) => !v)} title="新增 agent" aria-label="新增 agent">
+        <button className="chat-add" onClick={() => setAdding((v) => !v)} title={tr("agent.new")} aria-label={tr("agent.new")}>
           ＋
         </button>
       </span>
       {adding && (
-        <Modal title="新增 agent" onClose={() => setAdding(false)}>
+        <Modal title={tr("agent.new")} onClose={() => setAdding(false)}>
           <AddAgent panel={panel} onDone={() => setAdding(false)} />
         </Modal>
       )}
       <button
         className={`chat-outputs${ui.open ? " on" : ""}`}
         onClick={() => (ui.open ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
-        title="產出：討論串、文件、網頁、投票（打開時會暫時收起旁邊的 split）"
+        title={tr("outputs.buttonHint")}
       >
-        📎 產出{outputs > 0 ? ` ${outputs}` : ""}
+        📎 {tr("outputs.title")}{outputs > 0 ? ` ${outputs}` : ""}
       </button>
       {cost > 0 && (
-        <span className="chat-cost" title="這個群聊到目前花的錢（帳號用量在側欄下面）">
+        <span className="chat-cost" title={tr("chat.costHint")}>
           ${cost.toFixed(2)}
         </span>
       )}
@@ -248,8 +252,8 @@ export function ChatHead({ panel }: { panel: string }) {
 }
 
 const KIND_INFO: Record<AgentKind, { vendor: string; glyph: string; color: string; hint: string }> = {
-  claude: { vendor: "Anthropic", glyph: "✳", color: "#e8714a", hint: "用你登入的 claude 帳號" },
-  codex: { vendor: "OpenAI", glyph: "◎", color: "#3fb8a8", hint: "用你登入的 codex 帳號" },
+  claude: { vendor: "Anthropic", glyph: "✳", color: "#e8714a", get hint() { return tr("agent.kindHint", { cli: "claude" }); } },
+  codex: { vendor: "OpenAI", glyph: "◎", color: "#3fb8a8", get hint() { return tr("agent.kindHint", { cli: "codex" }); } },
 };
 
 function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone?: () => void }) {
@@ -280,7 +284,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   const [account, setAccount] = useState("");
   const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.id === `${kind}-default`);
   const list = useModels(kind);
-  const options = list.models.length ? list.models : [{ value: "", label: "預設模型", description: "" }];
+  const options = list.models.length ? list.models : [{ value: "", label: tr("agent.defaultModel"), description: "" }];
   const picked = options.find((m) => m.value === model);
   const id = `${panel}${big ? "-big" : "-pop"}`;
   return (
@@ -295,12 +299,12 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
       }}
     >
       <div className="add-head">
-        <h3>{big ? "這個群聊還沒有成員" : "新增 agent"}</h3>
-        {big && <p>加入一個 agent 開始對話，之後隨時可以再加人。</p>}
+        <h3>{big ? tr("chat.noMembers") : tr("agent.new")}</h3>
+        {big && <p>{tr("chat.noMembersHint")}</p>}
       </div>
       {chats.length > 1 && (
         <div className="field">
-          <label htmlFor={`chat-${id}`}>加到哪個群聊</label>
+          <label htmlFor={`chat-${id}`}>{tr("agent.whichChat")}</label>
           <div className="select-wrap">
             <select
               id={`chat-${id}`}
@@ -313,7 +317,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
               {chats.map((c) => (
                 <option key={c.panel} value={c.panel}>
                   {c.label}
-                  {(roster[c.panel] ?? []).length ? `：${roster[c.panel].map((m) => `@${m.alias}`).join(" ")}` : "（還沒有人）"}
+                  {(roster[c.panel] ?? []).length ? `：${roster[c.panel].map((m) => `@${m.alias}`).join(" ")}` : tr("chat.nobodyYet")}
                 </option>
               ))}
             </select>
@@ -323,7 +327,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
           </div>
         </div>
       )}
-      <div className="kind-cards" role="radiogroup" aria-label="agent 種類">
+      <div className="kind-cards" role="radiogroup" aria-label={tr("agent.kind")}>
         {(["claude", "codex"] as AgentKind[]).map((k) => (
           <button
             key={k}
@@ -352,7 +356,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         ))}
       </div>
       <div className="field">
-        <label htmlFor={`alias-${id}`}>別名</label>
+        <label htmlFor={`alias-${id}`}>{tr("agent.alias")}</label>
         <div className="input-wrap">
           <span className="at">@</span>
           <input
@@ -367,14 +371,14 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
       </div>
       {accounts.length > 1 && (
         <div className="field">
-          <label htmlFor={`account-${id}`}>帳號</label>
+          <label htmlFor={`account-${id}`}>{tr("settings.accounts")}</label>
           <div className="select-wrap">
             <select id={`account-${id}`} value={pickedAccount?.id ?? ""} onChange={(e) => setAccount(e.target.value)}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
                   {a.email ? ` · ${a.email}` : ""}
-                  {a.logged_in ? "" : "（還沒登入）"}
+                  {a.logged_in ? "" : tr("acct.notLoggedInParen")}
                 </option>
               ))}
             </select>
@@ -382,11 +386,11 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
               ⌄
             </span>
           </div>
-          {pickedAccount && !pickedAccount.logged_in && <span className="field-hint warn">這個帳號還沒登入，先到側欄「帳號」登入</span>}
+          {pickedAccount && !pickedAccount.logged_in && <span className="field-hint warn">{tr("acct.loginFirst")}</span>}
         </div>
       )}
       <div className="field">
-        <label htmlFor={`model-${id}`}>模型</label>
+        <label htmlFor={`model-${id}`}>{tr("agent.model")}</label>
         <div className="select-wrap">
           <select id={`model-${id}`} value={model} onChange={(e) => setModel(e.target.value)}>
             {options.map((m) => (
@@ -400,12 +404,12 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
           </span>
         </div>
         <span className="field-hint">
-          {list.loading ? `正在問 ${KIND_NAME[kind]} 有哪些模型…` : list.error ? `讀不到模型清單：${list.error}` : picked?.description}
+          {list.loading ? tr("agent.modelsLoading", { kind: KIND_NAME[kind] }) : list.error ? tr("agent.modelsError", { error: list.error }) : picked?.description}
         </span>
       </div>
       <div className="field">
         <span className="field-label" id={`mode-${id}`}>
-          權限
+          {tr("perm.title")}
         </span>
         <div className="mode-seg" role="radiogroup" aria-labelledby={`mode-${id}`}>
           {PERM_MODES.map((p) => (
@@ -417,11 +421,27 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         <span className={`field-hint${mode === "auto" ? " warn" : ""}`}>{PERM_MODES.find((p) => p.id === mode)?.hint}</span>
       </div>
       <button className="add-submit" type="submit" disabled={!alias.trim()}>
-        加入 @{alias.trim() || "…"}
+        {tr("agent.join", { alias: alias.trim() || "…" })}
       </button>
       <p className="add-hint">{KIND_INFO[kind].hint}</p>
     </form>
   );
+}
+
+/** The message a reply answers, quoted at the top of the reply's bubble; click to go to it. */
+function ReplyQuote({ r, byId }: { r: NonNullable<Msg["reply_to"]>; byId: Map<string, Member> }) {
+  return (
+    <button className="reply-quote" onClick={() => showInChat(r.msg)} title={tr("reply.jumpToOriginal")}>
+      <span className="reply-who">{authorName(r.from, byId)}</span>
+      <span className="reply-text">{excerpt(r.text)}</span>
+    </button>
+  );
+}
+
+/** Whether a document is a diagram (the chat card says so). */
+function useIsDiagram(doc: string | null) {
+  const { state } = useSnapshot();
+  return !!doc && !!state?.sessions.some((s) => s.docs?.some((d) => d.id === doc && d.kind === "diagram"));
 }
 
 // The message each chat's composer is replying to. Outside React: the menu sets it, the composer shows it.
@@ -439,7 +459,7 @@ function useReplying(panel: string) {
 }
 
 /** Who wrote a message, as shown above a reply. */
-const authorName = (from: string, byId: Map<string, Member>) => (from === "you" ? "你" : "@" + (byId.get(from)?.alias ?? "已離開"));
+const authorName = (from: string, byId: Map<string, Member>) => (from === "you" ? tr("common.you") : "@" + (byId.get(from)?.alias ?? tr("agent.gone")));
 /** One line of a message's text for a reply preview. */
 const excerpt = (text: string) => text.replace(/[#>*_`|\-]+/g, " ").replace(/\s+/g, " ").trim();
 
@@ -571,7 +591,7 @@ function Transcript({
         <div key={b.id} className="row agent">
           <Avatar m={b} />
           <div className="ws-busy">
-            <span className="spin">✳</span> @{b.alias} {STATUS_LABEL[b.status]}… <span className="dim">esc 全部停止</span>
+            <span className="spin">✳</span> @{b.alias} {STATUS_LABEL[b.status]}… <span className="dim">{tr("chat.escStops")}</span>
           </div>
         </div>
       ))}
@@ -594,7 +614,7 @@ function Transcript({
               setPick(null);
             }}
           >
-            💬 討論這段
+            💬 {tr("menu.discussThis")}
           </button>,
           document.body,
         )}
@@ -645,20 +665,20 @@ function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: C
       onContextMenu={(e) => e.preventDefault()}
     >
       <button role="menuitem" onClick={act(() => setReplying(panel, m.id))}>
-        ↩ 回覆
+        ↩ {tr("menu.reply")}
       </button>
       {menu.threadable && (
         <button role="menuitem" onClick={act(() => openWholeThread(panel, m.id, threads))}>
-          💬 {hasWhole ? "打開整則的討論串" : "討論整則"}
+          💬 {hasWhole ? tr("menu.openWholeThread") : tr("menu.discussWhole")}
         </button>
       )}
       {menu.threadable && menu.quote && (
         <button role="menuitem" onClick={act(() => (openThreadsFor(panel, m.id, 0, menu.quote), window.getSelection()?.removeAllRanges()))}>
-          💬 討論選取的這段
+          💬 {tr("menu.discussSelection")}
         </button>
       )}
       <button role="menuitem" onClick={act(() => void copyText(menu.quote || text))}>
-        ⧉ {menu.quote ? "複製選取的字" : "複製整則"}
+        ⧉ {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
       </button>
     </div>,
     document.body,
@@ -694,26 +714,23 @@ const MessageView = memo(function MessageView({
   if (m.kind === "poll") return poll ? <div className="row poll-row" data-msg={m.id}><PollCard panel={panel} p={poll} byId={byId} /></div> : null;
   if (m.kind === "poll_closed")
     return poll ? (
-      <button className="m-sys m-poll-closed" onClick={() => showInChat(poll.msg)} title="跳到投票卡">
-        📊 投票 #{poll.num} 結束：{outcome(poll)}
+      <button className="m-sys m-poll-closed" onClick={() => showInChat(poll.msg)} title={tr("poll.jumpToCard")}>
+        📊 {tr("poll.endedLine", { num: poll.num, outcome: outcome(poll) })}
       </button>
     ) : null;
 
   if (m.from === "you" && m.kind === "text") {
-    const to = m.to?.length ? m.to.map((id) => "@" + (byId.get(id)?.alias ?? "?")).join(" ") : "全部";
+    const to = m.to?.length ? m.to.map((id) => "@" + (byId.get(id)?.alias ?? "?")).join(" ") : tr("outputs.all");
     return (
       <div className="row you">
         <div className="bubble-col">
-          {m.reply_to && (
-            <button className="reply-ref" onClick={() => showInChat(m.reply_to!.msg)} title="跳到被回覆的訊息">
-              <span className="reply-who">↩ {authorName(m.reply_to.from, byId)}</span>
-              <span className="reply-text">{excerpt(m.reply_to.text)}</span>
-            </button>
-          )}
           {m.via ? (
             <DocSubmission via={m.via} panel={panel} />
           ) : (
-            <div className="bubble you" data-msg={m.id} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />
+            <div className="bubble you" data-msg={m.id}>
+              {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
+              <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />
+            </div>
           )}
           <div className="meta">
             → {to} · {time(m.ts)}
@@ -727,12 +744,12 @@ const MessageView = memo(function MessageView({
     return (
       <div className={`m-guard m-relogin${m.resolved ? " done" : ""}`}>
         <span>
-          🔑 帳號「{m.name}」需要重新登入
-          <span className="dim">{m.resolved ? "　已重新登入，再傳一次訊息就會繼續" : `　${m.text.slice(0, 120)}`}</span>
+          🔑 {tr("acct.needsRelogin", { name: m.name })}
+          <span className="dim">{m.resolved ? "　" + tr("acct.reloggedIn") : `　${m.text.slice(0, 120)}`}</span>
         </span>
         {!m.resolved && (
           <span className="acts">
-            <button onClick={() => send({ t: "account_login", account: m.account })}>重新登入</button>
+            <button onClick={() => send({ t: "account_login", account: m.account })}>{tr("acct.relogin")}</button>
           </span>
         )}
       </div>
@@ -745,13 +762,14 @@ const MessageView = memo(function MessageView({
         <span>⚠ {m.text}</span>
         {!m.resolved && (
           <span className="acts">
-            <button onClick={() => send({ t: "ws_stop", panel })}>停止</button>
+            <button onClick={() => send({ t: "ws_stop", panel })}>{tr("common.stop")}</button>
           </span>
         )}
       </div>
     );
   }
 
+  const diagram = useIsDiagram(m.kind === "doc" ? m.doc : null);
   let body: React.ReactNode;
   switch (m.kind) {
     case "text":
@@ -759,14 +777,16 @@ const MessageView = memo(function MessageView({
         <div className="bubble agent" data-msg={m.id} data-threadable={!m.streaming && who ? "" : undefined}>
           {m.from_thread && (
             <button className="from-thread" onClick={() => openThreads(panel, { view: { kind: "thread", id: m.from_thread!.thread }, msg: null })}>
-              ↩ 討論串 #{m.from_thread.num} 的結論
+              ↩ {tr("thread.conclusionOf", { num: m.from_thread.num })}
             </button>
           )}
-          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
+          {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
+          {/* While it streams, a reply's opening `↩#12` isn't turned into the quote yet: hide it. */}
+          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.streaming ? m.text.replace(/^\s*↩\s*#\d+\s*/, "") : m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
           {!m.streaming && who && threads > 0 && (
             <button
               className="thread-btn has"
-              title={`${threads} 個討論串（在訊息上按右鍵可以開新的）`}
+              title={tr("thread.countHint", { n: threads })}
               // Keep the text selection: it becomes the quote.
               onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => {
@@ -789,28 +809,28 @@ const MessageView = memo(function MessageView({
       body = (
         <div className={`m-perm st-${m.state}`}>
           <div className="m-perm-head">
-            想要使用 <b>{m.tool}</b>
+            {tr("perm.wantsBefore")}<b>{m.tool}</b>{tr("perm.wantsAfter")}
           </div>
           <code className="m-perm-sum">{m.summary || m.tool}</code>
           {m.detail && m.detail !== m.summary && (
             <details>
-              <summary>詳細內容</summary>
+              <summary>{tr("perm.details")}</summary>
               <pre>{m.detail}</pre>
             </details>
           )}
           {m.state === "pending" ? (
             <div className="m-perm-acts">
               <button className="yes" onClick={() => send({ t: "ws_perm", request_id: m.request_id, decision: "allow" })}>
-                允許
+                {tr("perm.allow")}
               </button>
-              <button onClick={() => send({ t: "ws_perm", request_id: m.request_id, decision: "always" })}>以後都允許</button>
+              <button onClick={() => send({ t: "ws_perm", request_id: m.request_id, decision: "always" })}>{tr("perm.always")}</button>
               <button className="no" onClick={() => send({ t: "ws_perm", request_id: m.request_id, decision: "deny" })}>
-                拒絕
+                {tr("perm.deny")}
               </button>
             </div>
           ) : (
             <div className="m-perm-state">
-              {m.state === "allowed" ? "✓ 已允許" : m.state === "always_allowed" ? "✓ 已允許（以後不再詢問）" : "✕ 已拒絕"}
+              {m.state === "allowed" ? `✓ ${tr("perm.allowed")}` : m.state === "always_allowed" ? `✓ ${tr("perm.alwaysAllowed")}` : `✕ ${tr("perm.denied")}`}
             </div>
           )}
         </div>
@@ -818,13 +838,15 @@ const MessageView = memo(function MessageView({
       break;
     case "doc":
       body = (
-        <button className="m-doc" onClick={() => send({ t: "doc_open", panel, doc: m.doc })} title="在旁邊的 panel 打開">
+        <button className="m-doc" onClick={() => send({ t: "doc_open", panel, doc: m.doc })} title={tr("doc.openBeside")}>
           <span className="m-doc-ic" aria-hidden="true">
-            ▤
+            {diagram ? "📐" : "▤"}
           </span>
           <span className="m-doc-text">
             <b>{m.title}</b>
-            <span>{m.updated ? "更新了文件" : "文件"} · 點一下打開</span>
+            <span>
+              {m.updated ? tr(diagram ? "doc.updatedDiagram" : "doc.updated") : tr(diagram ? "kind.diagram" : "kind.doc")} · {tr("doc.clickToOpen")}
+            </span>
           </span>
         </button>
       );
@@ -868,12 +890,12 @@ function ToolView({ m }: { m: Msg }) {
   const firstLine = (m.result ?? "").split("\n").find((l) => l.trim()) ?? "";
   return (
     <div className={`m-tool${m.is_error ? " err" : ""}`}>
-      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} title="點擊展開">
+      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} title={tr("tool.clickToExpand")}>
         <span className="tool-ic">{open ? "▾" : "▸"}</span>
         <b>{m.name}</b>
         {m.summary && <span className="m-tool-sum">{m.summary}</span>}
       </button>
-      <div className="m-tool-res">⎿ {m.result == null ? "執行中…" : firstLine || "（沒有輸出）"}</div>
+      <div className="m-tool-res">⎿ {m.result == null ? tr("tool.running") : firstLine || tr("tool.noOutput")}</div>
       {open && (
         <div className="m-tool-detail">
           {m.detail && <pre>{m.detail}</pre>}
@@ -895,19 +917,19 @@ function ToolGroup({ tools }: { tools: Msg[] }) {
   const names = [...counts].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join("、");
   return (
     <div className={`m-tools${failed ? " err" : ""}${running ? " live" : ""}`}>
-      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} title={open ? "收起" : "展開每一個工具"}>
+      <button className="m-tool-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} title={open ? tr("common.collapse") : tr("tool.expandEach")}>
         <span className="tool-ic">{open ? "▾" : "▸"}</span>
         {running && !open ? (
           <>
             <span className="spin" aria-hidden="true">⟳</span>
             <b>{running.name}</b>
             {running.summary && <span className="m-tool-sum">{running.summary}</span>}
-            <span className="m-tools-n">第 {ts.indexOf(running) + 1} 個</span>
+            <span className="m-tools-n">{tr("tool.nth", { n: ts.indexOf(running) + 1 })}</span>
           </>
         ) : (
           <span className="m-tools-sum">
-            用了 {ts.length} 個工具：{names}
-            {failed > 0 && <span className="m-tools-fail">　{failed} 個失敗</span>}
+            {tr("tool.used", { n: ts.length, names })}
+            {failed > 0 && <span className="m-tools-fail">　{tr("tool.failed", { n: failed })}</span>}
           </span>
         )}
       </button>
@@ -961,7 +983,7 @@ function Composer({
   // @mention autocomplete for the word under the caret.
   const token = /(^|\s)@([\w\-一-鿿]*)$/.exec(text.slice(0, caret));
   const options = token
-    ? [...members.map((m) => ({ alias: m.alias, label: m.model ?? m.kind, m })), { alias: "all", label: "所有 agent", m: undefined }].filter((o) =>
+    ? [...members.map((m) => ({ alias: m.alias, label: m.model ?? m.kind, m })), { alias: "all", label: tr("mention.all"), m: undefined }].filter((o) =>
         o.alias.toLowerCase().startsWith(token[2].toLowerCase()),
       )
     : [];
@@ -979,6 +1001,22 @@ function Composer({
     });
     setSel(0);
   };
+  // Formatting: the toolbar and Ctrl/⌘ shortcuts write Markdown around the selection.
+  const fmt = (make: (t: string, a: number, b: number) => Edit) => {
+    const el = ref.current;
+    if (!el || disabled) return;
+    apply(el, make(el.value, el.selectionStart, el.selectionEnd));
+  };
+  const TOOLS: { key: string; make: (t: string, a: number, b: number) => Edit; kbd?: string }[] = [
+    { key: "fmt.bold", make: (t, a, b) => wrap(t, a, b, "**"), kbd: "B" },
+    { key: "fmt.italic", make: (t, a, b) => wrap(t, a, b, "*"), kbd: "I" },
+    { key: "fmt.strike", make: (t, a, b) => wrap(t, a, b, "~~") },
+    { key: "fmt.code", make: (t, a, b) => wrap(t, a, b, "`"), kbd: "E" },
+    { key: "fmt.codeBlock", make: codeBlock },
+    { key: "fmt.bullets", make: (t, a, b) => prefix(t, a, b, "bullet") },
+    { key: "fmt.numbers", make: (t, a, b) => prefix(t, a, b, "number") },
+    { key: "fmt.quote", make: (t, a, b) => prefix(t, a, b, "quote") },
+  ];
   const submit = () => {
     if (!text.trim() || disabled) return;
     send({ t: "ws_send", panel, text, reply_to: reply?.id });
@@ -991,17 +1029,17 @@ function Composer({
     <div className="ws-input">
       {queued > 0 && (
         <div className="queue-bar">
-          <span>已排隊 {queued} 則，本回合結束後送出</span>
-          <button onClick={() => send({ t: "ws_send_now", panel })}>中斷本回合，立即送出</button>
+          <span>{tr("queue.waiting", { n: queued })}</span>
+          <button onClick={() => send({ t: "ws_send_now", panel })}>{tr("queue.sendNow")}</button>
         </div>
       )}
       {reply && reply.kind === "text" && (
         <div className="reply-bar">
-          <button className="reply-ref" onClick={() => showInChat(reply.id)} title="跳到這則訊息">
-            <span className="reply-who">↩ 回覆 {authorName(reply.from, new Map(members.map((x) => [x.id, x])))}</span>
+          <button className="reply-ref" onClick={() => showInChat(reply.id)} title={tr("reply.jump")}>
+            <span className="reply-who">↩ {tr("reply.to")} {authorName(reply.from, new Map(members.map((x) => [x.id, x])))}</span>
             <span className="reply-text">{excerpt(reply.text)}</span>
           </button>
-          <button className="reply-x" onClick={() => setReplying(panel, null)} aria-label="取消回覆" title="取消回覆（Esc）">
+          <button className="reply-x" onClick={() => setReplying(panel, null)} aria-label={tr("reply.cancel")} title={tr("reply.cancel") + "（Esc）"}>
             ✕
           </button>
         </div>
@@ -1016,20 +1054,38 @@ function Composer({
           ))}
         </div>
       )}
-      <button className="poll-btn" onClick={() => setPolling(true)} disabled={disabled} title="發起投票：每個 agent 選一個並附理由" aria-label="發起投票">
-        📊
-      </button>
       {polling && (
-        <Modal title="發起投票" onClose={() => setPolling(false)}>
+        <Modal title={tr("poll.start")} onClose={() => setPolling(false)}>
           <PollForm panel={panel} onDone={() => setPolling(false)} />
         </Modal>
       )}
+      <div className={`cmp-box${disabled ? " off" : ""}`}>
+      <div className="cmp-bar" role="toolbar" aria-label={tr("fmt.toolbar")}>
+        {TOOLS.map((tool) => (
+          <button
+            key={tool.key}
+            className="cmp-tool"
+            disabled={disabled}
+            // Keep the text selected: the click must not take the focus.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => fmt(tool.make)}
+            title={tr(tool.key) + (tool.kbd ? `（${isMac ? "⌘" : "Ctrl+"}${tool.kbd}）` : "")}
+            aria-label={tr(tool.key)}
+          >
+            <Icon name={tool.key.slice(4)} />
+          </button>
+        ))}
+        <span className="cmp-sep" />
+        <button className="cmp-tool" onClick={() => setPolling(true)} disabled={disabled} title={tr("poll.buttonHint")} aria-label={tr("poll.start")}>
+          <Icon name="poll" />
+        </button>
+      </div>
       <textarea
         ref={ref}
         rows={1}
         value={text}
         disabled={disabled}
-        placeholder={disabled ? "先加入一個 agent" : "傳訊息（沒有 @ 就問全部 agent；Enter 送出，Shift+Enter 換行）"}
+        placeholder={disabled ? tr("composer.addAgentFirst") : tr("composer.placeholder")}
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);
@@ -1045,9 +1101,24 @@ function Composer({
             if (e.key === "Tab" || e.key === "Enter") return e.preventDefault(), pick(options[Math.min(sel, options.length - 1)].alias);
             if (e.key === "Escape") return e.preventDefault(), setMenuOff(true);
           }
+          const el = e.currentTarget;
+          const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+          if (mod && !e.shiftKey && !e.altKey) {
+            const tool = TOOLS.find((x) => x.kbd && x.kbd.toLowerCase() === e.key.toLowerCase());
+            if (tool) return e.preventDefault(), fmt(tool.make);
+          }
+          const collapsed = el.selectionStart === el.selectionEnd;
+          // Inside a ``` block, Enter and Tab write code instead of sending / leaving the box.
+          if (collapsed && inCodeBlock(el.value, el.selectionStart)) {
+            if (e.key === "Tab" && !e.shiftKey) return e.preventDefault(), fmt((_, a, b) => ({ from: a, to: b, insert: "  ", selStart: a + 2, selEnd: a + 2 }));
+            if (e.key === "Enter") return;
+          }
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
-            submit();
+            // On a list line Enter starts the next item (or ends the list on an empty one).
+            const next = collapsed ? continueList(el.value, el.selectionStart) : null;
+            if (next) apply(el, next);
+            else submit();
           } else if (e.key === "Escape" && reply) {
             e.preventDefault();
             setReplying(panel, null);
@@ -1057,8 +1128,9 @@ function Composer({
           }
         }}
       />
+      </div>
       {/* Stopping lives on each agent in the sidebar (and Esc stops all); sending while they work queues. */}
-      <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()} title={busy ? "送出（Enter）：這一輪結束後送給 agent" : "送出（Enter）"}>
+      <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
         ↑
       </button>
     </div>

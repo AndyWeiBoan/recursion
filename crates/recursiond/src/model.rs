@@ -67,6 +67,8 @@ pub struct Session {
 pub struct Doc {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub kind: DocKind,
     /// Alias of the agent that last wrote it.
     pub author: String,
     pub rev: u64,
@@ -76,6 +78,15 @@ pub struct Doc {
     pub chat: String,
     #[serde(default)]
     pub member: String,
+}
+
+/// A page of HTML, or a diagram we drew from the agent's JSON (its file holds the SVG).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocKind {
+    #[default]
+    Html,
+    Diagram,
 }
 
 /// Browser panels show a doc when their url is `doc:<id>`.
@@ -88,6 +99,9 @@ pub struct State {
     pub sessions: Vec<Session>,
     pub panels: HashMap<String, Panel>,
     pub active_session: Option<String>,
+    /// The human's language (a `locales/` code); `None` follows the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
 }
 
 #[derive(Debug)]
@@ -395,9 +409,11 @@ impl State {
 
     /// Create or replace a doc's metadata. `id: None` (or an unknown id) creates a new doc.
     /// Returns the doc and whether it is new.
-    pub fn write_doc(&mut self, session: &str, id: Option<&str>, title: String, author: String, chat: &str, member: &str, now: u64) -> Res<(Doc, bool)> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_doc(&mut self, session: &str, id: Option<&str>, kind: DocKind, title: String, author: String, chat: &str, member: &str, now: u64) -> Res<(Doc, bool)> {
         let s = self.session_mut(session)?;
         if let Some(d) = id.and_then(|id| s.docs.iter_mut().find(|d| d.id == id)) {
+            d.kind = kind;
             d.title = title;
             d.author = author;
             d.rev += 1;
@@ -406,7 +422,7 @@ impl State {
             d.member = member.into();
             return Ok((d.clone(), false));
         }
-        let d = Doc { id: new_id(), title, author, rev: 1, updated: now, chat: chat.into(), member: member.into() };
+        let d = Doc { id: new_id(), title, kind, author, rev: 1, updated: now, chat: chat.into(), member: member.into() };
         s.docs.push(d.clone());
         Ok((d, true))
     }
@@ -627,17 +643,17 @@ mod tests {
         let mut st = State::default();
         let sid = st.create_session("s".into(), "/tmp".into(), PanelKind::Workspace);
         let chat = st.sessions[0].windows[0].focus.clone();
-        let (d, created) = st.write_doc(&sid, None, "T".into(), "claude".into(), &chat, "m1", 1).unwrap();
+        let (d, created) = st.write_doc(&sid, None, DocKind::Html, "T".into(), "claude".into(), &chat, "m1", 1).unwrap();
         assert!(created);
         let p = st.open_doc(&chat, &d.id, false).unwrap();
         assert_eq!(st.panels[&p].url.as_deref(), Some(doc_url(&d.id).as_str()));
         assert_eq!(st.sessions[0].windows[0].focus, chat, "focus stays on the chat");
         assert_eq!(st.open_doc(&chat, &d.id, true).unwrap(), p, "reuses the open panel");
         assert_eq!(st.sessions[0].windows[0].focus, p);
-        let (d2, created) = st.write_doc(&sid, Some(&d.id), "T2".into(), "codex".into(), &chat, "m2", 2).unwrap();
+        let (d2, created) = st.write_doc(&sid, Some(&d.id), DocKind::Html, "T2".into(), "codex".into(), &chat, "m2", 2).unwrap();
         assert!(!created);
         assert_eq!((d2.rev, d2.author.as_str(), st.sessions[0].docs.len()), (2, "codex", 1));
-        let (other, _) = st.write_doc(&sid, None, "Other".into(), "claude".into(), &chat, "m1", 3).unwrap();
+        let (other, _) = st.write_doc(&sid, None, DocKind::Html, "Other".into(), "claude".into(), &chat, "m1", 3).unwrap();
         assert_eq!(st.open_doc(&chat, &other.id, false).unwrap(), p, "another document switches the same panel");
         assert_eq!(st.panels[&p].url.as_deref(), Some(doc_url(&other.id).as_str()));
         assert_eq!(st.sessions[0].windows[0].panel_ids().len(), 2, "no new split");

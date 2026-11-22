@@ -1,6 +1,7 @@
 //! Model lists, asked from the CLIs themselves so the picker matches their own `/model` menu
 //! and never needs updating here: Claude's `initialize` control request and Codex's `model/list`.
 
+use crate::i18n::tr;
 use super::AgentEnv;
 use crate::workspace::AgentKind;
 use serde::Serialize;
@@ -38,14 +39,14 @@ async fn ask(mut cmd: Command, input: &[Value], pick: impl Fn(&Value) -> Option<
     .await;
     drop(stdin);
     let _ = child.kill().await;
-    found.map_err(|_| "等太久沒有回應".to_string())?.ok_or_else(|| "CLI 沒有回傳模型清單".to_string())
+    found.map_err(|_| tr!("err.timeout"))?.ok_or_else(|| tr!("models.err.none"))
 }
 
 pub async fn list(env: &AgentEnv, kind: AgentKind) -> Result<Vec<ModelOption>, String> {
     let home = dirs::home_dir().unwrap_or_default();
     match kind {
         AgentKind::Claude => {
-            let bin = env.claude.clone().ok_or("找不到 claude 指令")?;
+            let bin = env.claude.clone().ok_or_else(|| tr!("err.noCli", cli = "claude"))?;
             let mut cmd = Command::new(bin);
             cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
                 .current_dir(&home)
@@ -70,7 +71,7 @@ pub async fn list(env: &AgentEnv, kind: AgentKind) -> Result<Vec<ModelOption>, S
                 .collect())
         }
         AgentKind::Codex => {
-            let bin = env.codex.clone().ok_or("找不到 codex 指令")?;
+            let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
             let mut cmd = Command::new(bin);
             cmd.arg("app-server").current_dir(&home).env("PATH", &env.path);
             let input = [
@@ -80,11 +81,11 @@ pub async fn list(env: &AgentEnv, kind: AgentKind) -> Result<Vec<ModelOption>, S
             ];
             let r = ask(cmd, &input, |v| (v["id"] == 2).then(|| v.clone())).await?;
             if let Some(err) = r.get("error") {
-                return Err(err["message"].as_str().unwrap_or("model/list 失敗").to_string());
+                return Err(err["message"].as_str().unwrap_or("model/list failed").to_string());
             }
             let all: Vec<&Value> = r["result"]["data"].as_array().into_iter().flatten().filter(|m| m["hidden"] != true).collect();
             // Codex has no "default" alias: no model = whatever ~/.codex/config.toml says.
-            let mut out = vec![ModelOption { value: String::new(), label: "預設模型".into(), description: "跟著 ~/.codex/config.toml".into() }];
+            let mut out = vec![ModelOption { value: String::new(), label: tr!("agent.defaultModel"), description: tr!("models.codexDefault") }];
             out.extend(all.iter().filter_map(|m| {
                 let value = m["model"].as_str().or(m["id"].as_str())?;
                 Some(ModelOption {

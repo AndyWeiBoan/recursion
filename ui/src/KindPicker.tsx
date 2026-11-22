@@ -1,4 +1,5 @@
 // "What do you want to open?" menu shown before creating any panel (new window or split).
+import { t } from "./i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PanelKind } from "./types";
 
@@ -10,9 +11,9 @@ export interface PickRequest {
 }
 
 const ITEMS: { kind: PanelKind; label: string; hint: string; key: string; icon: string }[] = [
-  { kind: "terminal", label: "終端", hint: "shell，在專案資料夾", key: "t", icon: "›_" },
-  { kind: "workspace", label: "群聊", hint: "跟 agent 對話", key: "g", icon: "✳" },
-  { kind: "browser", label: "瀏覽器", hint: "網站或本機 HTML", key: "b", icon: "◎" },
+  { kind: "terminal", get label() { return t("kind.terminal"); }, get hint() { return t("kind.terminal.hint"); }, key: "t", icon: "›_" },
+  { kind: "workspace", get label() { return t("kind.workspace"); }, get hint() { return t("kind.workspace.hint"); }, key: "g", icon: "✳" },
+  { kind: "browser", get label() { return t("kind.browser"); }, get hint() { return t("kind.browser.hint"); }, key: "b", icon: "◎" },
 ];
 
 const LAST_KEY = "recursion.lastKind";
@@ -104,7 +105,7 @@ export function KindPicker({ req, close }: { req: PickRequest; close: () => void
             <kbd>{it.key.toUpperCase()}</kbd>
           </button>
         ))}
-        <div className="picker-foot">↵ 選取　↑↓ 移動　esc 取消</div>
+        <div className="picker-foot">{t("picker.foot")}</div>
       </div>
     </div>
   );

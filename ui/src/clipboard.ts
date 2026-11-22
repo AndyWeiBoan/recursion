@@ -1,5 +1,6 @@
 // The system clipboard. In the app it goes through Tauri: WebKitGTK's own clipboard reads
 // are unreliable. In a plain browser (tests) it falls back to navigator.clipboard.
+import { t } from "./i18n";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -86,7 +87,7 @@ export async function saveDownload(name: string, data: ArrayBuffer) {
     return;
   }
   const [{ save }, { invoke }] = await Promise.all([import("@tauri-apps/plugin-dialog"), import("@tauri-apps/api/core")]);
-  const path = await save({ defaultPath: name, title: "另存新檔" });
+  const path = await save({ defaultPath: name, title: t("common.saveAs") });
   if (!path) return;
   try {
     await invoke("save_bytes", new Uint8Array(data), { headers: { path: encodeURIComponent(path) } });

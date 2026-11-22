@@ -1,4 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DiagramView } from "./Diagram";
+import { t } from "./i18n";
 import { copyText, saveDownload } from "./clipboard";
 import { send } from "./client";
 import { requestKind } from "./picker";
@@ -43,6 +45,59 @@ export function shield(cursor: string) {
   d.style.cursor = cursor;
   document.body.appendChild(d);
   return () => d.remove();
+}
+
+/**
+ * A width the user drags by one edge of the element (`edge: "right"` grows to the right, as
+ * the sidebar; `"left"` grows to the left, as a drawer). Double-click the handle to reset;
+ * remembered across launches.
+ */
+export function useDragWidth({ key, initial, min, max, edge }: { key: string; initial: number; min: number; max: number; edge: "left" | "right" }) {
+  const clamp = (w: number) => Math.round(Math.min(max, Math.max(min, w)));
+  const [width, setWidth] = useState(() => {
+    try {
+      return clamp(Number(localStorage.getItem(key)) || initial);
+    } catch {
+      return initial;
+    }
+  });
+  const [dragging, setDragging] = useState(false);
+  const save = (w: number) => {
+    try {
+      localStorage.setItem(key, String(w));
+    } catch {}
+  };
+  const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const sign = edge === "right" ? 1 : -1;
+    const start = e.clientX;
+    const base = width;
+    let last = width;
+    setDragging(true);
+    const unshield = shield("col-resize");
+    const move = (ev: PointerEvent) => {
+      last = clamp(base + sign * (ev.clientX - start));
+      setWidth(last);
+    };
+    let done = false;
+    const up = () => {
+      if (done) return;
+      done = true;
+      el.removeEventListener("pointermove", move);
+      for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.removeEventListener(t, up);
+      window.removeEventListener("blur", up);
+      setDragging(false);
+      unshield();
+      save(last);
+    };
+    el.addEventListener("pointermove", move);
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.addEventListener(t, up);
+    window.addEventListener("blur", up);
+  };
+  const reset = () => (setWidth(initial), save(initial));
+  return { width, dragging, onPointerDown, reset };
 }
 
 function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx: Ctx }) {
@@ -120,32 +175,32 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
       : docId
         ? doc
           ? `${doc.title} · @${doc.author}`
-          : "文件已不存在"
+          : t("doc.gone")
         : panel.kind === "browser"
-          ? panel.url || "新分頁"
+          ? panel.url || t("browser.newTab")
           : "";
 
   return (
     <section className={`panel${focused ? " focused" : ""}`} data-panel={panel.id} onMouseDown={focus}>
       <header className="panel-head">
-        <button className="kind" onClick={() => setMenu((v) => !v)} title="切換 panel 種類">
+        <button className="kind" onClick={() => setMenu((v) => !v)} title={t("panel.switchKind")}>
           {KIND_LABEL[panel.kind]} ▾
         </button>
         {panel.kind === "workspace" ? <ChatHead panel={panel.id} /> : <span className="title">{title}</span>}
         <span className="tools">
           <button
-            title="左右分割（⌘D）"
-            onClick={(e) => requestKind("左右分割", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "row", kind }))}
+            title={t("panel.splitRight") + "（⌘D）"}
+            onClick={(e) => requestKind(t("panel.splitRight"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "row", kind }))}
           >
             ◫
           </button>
           <button
-            title="上下分割（⌘⇧D）"
-            onClick={(e) => requestKind("上下分割", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "column", kind }))}
+            title={t("panel.splitDown") + "（⌘⇧D）"}
+            onClick={(e) => requestKind(t("panel.splitDown"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "column", kind }))}
           >
             ⊟
           </button>
-          <button title="關閉（⌘W）" onClick={() => send({ t: "panel_close", panel: panel.id })}>✕</button>
+          <button title={t("common.close") + "（⌘W）"} onClick={() => send({ t: "panel_close", panel: panel.id })}>✕</button>
         </span>
         {menu && (
           <div className="menu" onMouseLeave={() => setMenu(false)}>
@@ -167,7 +222,11 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
       <div className="panel-body">
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
         {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
-        {docId ? <DocBody session={ctx.session} doc={docId} rev={doc?.rev ?? 0} /> : panel.kind === "browser" && <BrowserBody panel={panel} />}
+        {docId ? (
+          <DocBody session={ctx.session} doc={docId} rev={doc?.rev ?? 0} diagram={doc?.kind === "diagram"} title={doc?.title ?? ""} />
+        ) : (
+          panel.kind === "browser" && <BrowserBody panel={panel} />
+        )}
       </div>
     </section>
   );
@@ -196,8 +255,8 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
       <div ref={host} className="term" />
       {exited && (
         <div className="term-exited">
-          <span>程序已結束</span>
-          <button onClick={() => restartTerminal(id)}>重新啟動</button>
+          <span>{t("term.exited")}</span>
+          <button onClick={() => restartTerminal(id)}>{t("term.restart")}</button>
         </div>
       )}
     </div>
@@ -242,7 +301,7 @@ function withBridge(html: string) {
 /** A session doc: agent-written HTML in a sandboxed iframe. No `allow-same-origin`, so its scripts
  *  run in an opaque origin and can't reach this page, the daemon token or Tauri; all they can do
  *  is post a message, which goes to the chat in the human's name, labelled with the doc. */
-function DocBody({ session, doc, rev }: { session: string; doc: string; rev: number }) {
+function DocBody({ session, doc, rev, diagram, title }: { session: string; doc: string; rev: number; diagram: boolean; title: string }) {
   const html = useDocHtml(session, doc, rev);
   const frame = useRef<HTMLIFrameElement>(null);
   const src = useMemo(() => (html ? withBridge(html) : html), [html]);
@@ -257,8 +316,10 @@ function DocBody({ session, doc, rev }: { session: string; doc: string; rev: num
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [session, doc]);
-  if (src === null) return <div className="br-empty"><p>這份文件已經不存在。</p></div>;
-  if (src === undefined) return <div className="br-empty"><p className="dim">載入中…</p></div>;
+  if (src === null) return <div className="br-empty"><p>{t("doc.goneLong")}</p></div>;
+  if (src === undefined) return <div className="br-empty"><p className="dim">{t("common.loading")}</p></div>;
+  // A diagram's file is our own SVG: shown directly, not in a sandboxed page.
+  if (diagram && html) return <DiagramView svg={html} title={title} />;
   return <iframe ref={frame} className="doc-frame" title={doc} srcDoc={src} sandbox="allow-scripts allow-forms allow-modals" />;
 }
 
@@ -339,20 +400,20 @@ function BrowserBody({ panel }: { panel: Panel }) {
   return (
     <div className="br">
       <form className="br-bar" onSubmit={go}>
-        <button type="button" title="上一頁" disabled={!url} onClick={() => browserGo(panel.id, "back")}>
+        <button type="button" title={t("browser.back")} disabled={!url} onClick={() => browserGo(panel.id, "back")}>
           ←
         </button>
-        <button type="button" title="下一頁" disabled={!url} onClick={() => browserGo(panel.id, "forward")}>
+        <button type="button" title={t("browser.forward")} disabled={!url} onClick={() => browserGo(panel.id, "forward")}>
           →
         </button>
-        <button type="button" title="重新載入" disabled={!url} onClick={() => browserGo(panel.id, "reload")}>
+        <button type="button" title={t("browser.reload")} disabled={!url} onClick={() => browserGo(panel.id, "reload")}>
           {loading ? "✕" : "↻"}
         </button>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
-          placeholder="輸入網址或搜尋，例如 localhost:5173"
+          placeholder={t("browser.addressPlaceholder")}
           spellCheck={false}
           title={title}
         />
@@ -360,12 +421,12 @@ function BrowserBody({ panel }: { panel: Panel }) {
       <div ref={host} className="br-view">
         {!url ? (
           <div className="br-empty">
-            <p>輸入網址開始瀏覽。</p>
+            <p>{t("browser.empty")}</p>
           </div>
         ) : (
           !nativeBrowser && (
             <div className="br-empty">
-              <p>瀏覽器 panel 只在桌面 app 裡能用。</p>
+              <p>{t("browser.desktopOnly")}</p>
               <p className="dim">{url}</p>
             </div>
           )

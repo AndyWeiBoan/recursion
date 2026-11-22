@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { t } from "./i18n";
 import { getSnapshot, isMac, pickFolder, send, useAccounts, useRoster, useSnapshot, useToast } from "./client";
 import { KindPicker, type PickRequest } from "./KindPicker";
-import { LayoutView, shield } from "./Layout";
+import { LayoutView, useDragWidth } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
@@ -23,7 +24,7 @@ async function newSession() {
   const cwd = await pickFolder();
   if (!cwd) return;
   const name = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
-  requestKind(`在「${name}」開啟`, null, (kind) => send({ t: "session_create", name, cwd, kind }));
+  requestKind(t("session.openIn", { name }), null, (kind) => send({ t: "session_create", name, cwd, kind }));
 }
 
 /** Move focus to the nearest panel in a direction, by on-screen geometry. */
@@ -94,12 +95,12 @@ function useShortcuts(toggleSidebar: () => void) {
       if (!session) return;
       if (k === "t") {
         stop();
-        requestKind("新 window", null, (kind) => send({ t: "window_create", session: session.id, kind }));
+        requestKind(t("window.new"), null, (kind) => send({ t: "window_create", session: session.id, kind }));
       } else if (k === "d" && window) {
         stop();
         const down = isMac ? e.shiftKey : e.altKey;
         const panel = window.focus;
-        requestKind(down ? "上下分割" : "左右分割", null, (kind) => send({ t: "panel_split", panel, dir: down ? "column" : "row", kind }));
+        requestKind(down ? t("panel.splitDown") : t("panel.splitRight"), null, (kind) => send({ t: "panel_split", panel, dir: down ? "column" : "row", kind }));
       } else if (k === "w" && window) {
         stop();
         send({ t: "panel_close", panel: window.focus });
@@ -122,55 +123,8 @@ function useShortcuts(toggleSidebar: () => void) {
   }, [toggleSidebar]);
 }
 
-const SIDE_KEY = "recursion.sidebarWidth";
-const SIDE_DEFAULT = 220;
-const clampSide = (w: number) => Math.round(Math.min(480, Math.max(180, w)));
-
 /** Sidebar width: dragged on its right edge, double-click there to reset, remembered. */
-function useSidebarWidth() {
-  const [width, setWidth] = useState(() => {
-    try {
-      return clampSide(Number(localStorage.getItem(SIDE_KEY)) || SIDE_DEFAULT);
-    } catch {
-      return SIDE_DEFAULT;
-    }
-  });
-  const [dragging, setDragging] = useState(false);
-  const save = (w: number) => {
-    try {
-      localStorage.setItem(SIDE_KEY, String(w));
-    } catch {}
-  };
-  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
-    const start = e.clientX - width;
-    let last = width;
-    setDragging(true);
-    const unshield = shield("col-resize");
-    const move = (ev: PointerEvent) => {
-      last = clampSide(ev.clientX - start);
-      setWidth(last);
-    };
-    let done = false;
-    const up = () => {
-      if (done) return;
-      done = true;
-      el.removeEventListener("pointermove", move);
-      for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.removeEventListener(t, up);
-      window.removeEventListener("blur", up);
-      setDragging(false);
-      unshield();
-      save(last);
-    };
-    el.addEventListener("pointermove", move);
-    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) el.addEventListener(t, up);
-    window.addEventListener("blur", up);
-  };
-  const reset = () => (setWidth(SIDE_DEFAULT), save(SIDE_DEFAULT));
-  return { width, dragging, onPointerDown, reset };
-}
+const useSidebarWidth = () => useDragWidth({ key: "recursion.sidebarWidth", initial: 220, min: 180, max: 480, edge: "right" });
 
 export default function App() {
   const { state, terms, status, error } = useSnapshot();
@@ -201,10 +155,10 @@ export default function App() {
       style={{ "--side-w": `${side.width}px` } as React.CSSProperties}
     >
       <div className="corner" data-tauri-drag-region>
-        <button className="icon-btn" title={`側欄（${isMac ? "⌘B" : "Ctrl+Shift+B"}）`} onClick={toggleSidebar} aria-label="顯示或隱藏側欄">
+        <button className="icon-btn" title={`${t("side.title")}（${isMac ? "⌘B" : "Ctrl+Shift+B"}）`} onClick={toggleSidebar} aria-label={t("side.toggle")}>
           <SidebarIcon />
         </button>
-        <button className="icon-btn" title={`新 session（${isMac ? "⌘⇧N" : "Ctrl+Shift+N"}）`} onClick={newSession} aria-label="新 session">
+        <button className="icon-btn" title={`${t("session.new")}（${isMac ? "⌘⇧N" : "Ctrl+Shift+N"}）`} onClick={newSession} aria-label={t("session.new")}>
           ＋
         </button>
       </div>
@@ -212,7 +166,7 @@ export default function App() {
         <Sidebar state={state} terms={terms} />
       </div>
       {sidebar && (
-        <div className="side-resize" onPointerDown={side.onPointerDown} onDoubleClick={side.reset} title="拖曳調整側欄寬度（雙擊恢復預設）" role="separator" aria-orientation="vertical" />
+        <div className="side-resize" onPointerDown={side.onPointerDown} onDoubleClick={side.reset} title={t("side.resize")} role="separator" aria-orientation="vertical" />
       )}
       <main className="main">
         {session && window ? (
@@ -287,7 +241,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                     {s.windows.length > 0 ? (
                       <button
                         className={`sess-fold${collapsed.has(s.id) ? " closed" : ""}`}
-                        aria-label={collapsed.has(s.id) ? "展開" : "收合"}
+                        aria-label={collapsed.has(s.id) ? t("common.expand") : t("common.collapse")}
                         aria-expanded={!collapsed.has(s.id)}
                         onClick={(e) => (e.stopPropagation(), toggle(s.id))}
                       >
@@ -325,7 +279,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         setConfirmDelete(null);
                           setMenu(menu === s.id ? null : s.id);
                       }}
-                      aria-label="更多"
+                      aria-label={t("common.more")}
                     >
                       ⋯
                     </button>
@@ -335,23 +289,23 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                           onClick={(e) => {
                             const anchor = e.currentTarget.getBoundingClientRect();
                             setMenu(null);
-                            requestKind("新 window", anchor, (kind) => {
+                            requestKind(t("window.new"), anchor, (kind) => {
                               send({ t: "session_select", session: s.id });
                               send({ t: "window_create", session: s.id, kind });
                             });
                           }}
                         >
-                          新 window…
+                          {t("window.new")}…
                         </button>
-                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>重新命名</button>
-                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>移到其他分組</button>
+                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>{t("common.rename")}</button>
+                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>{t("session.moveGroup")}</button>
                         {confirmDelete === s.id ? (
                           <button className="danger" onClick={() => (setMenu(null), send({ t: "session_delete", session: s.id }))}>
-                            確定刪除？終端會被關閉
+                            {t("session.confirmDelete")}
                           </button>
                         ) : (
                           <button className="danger" onClick={() => setConfirmDelete(s.id)}>
-                            刪除
+                            {t("common.delete")}
                           </button>
                         )}
                       </div>
@@ -366,9 +320,9 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
       </nav>
       <div className="side-foot">
         <UsagePanel />
-        <button className="side-accounts" onClick={() => openSettings()} title={`設定（${isMac ? "⌘," : "Ctrl+,"}）`}>
-          <span aria-hidden="true">⚙</span> 設定
-          {loggedOut > 0 && <span className="side-warn" title={`${loggedOut} 個帳號還沒登入`}>●</span>}
+        <button className="side-accounts" onClick={() => openSettings()} title={`${t("settings.title")}（${isMac ? "⌘," : "Ctrl+,"}）`}>
+          <span aria-hidden="true">⚙</span> {t("settings.title")}
+          {loggedOut > 0 && <span className="side-warn" title={t("acct.loggedOutCount", { n: loggedOut })}>●</span>}
         </button>
       </div>
       <SettingsModal />
@@ -386,7 +340,7 @@ function Tabs({ session }: { session: Session }) {
           className={`tab${w.id === session.active_window ? " on" : ""}`}
           onClick={() => send({ t: "window_select", session: session.id, window: w.id })}
           onDoubleClick={() => setEditing(w.id)}
-          title="雙擊重新命名"
+          title={t("common.doubleClickRename")}
         >
           <span className="tab-n">{i + 1}</span>
           {editing === w.id ? (
@@ -409,7 +363,7 @@ function Tabs({ session }: { session: Session }) {
           )}
           <button
             className="tab-x"
-            title="關閉 window"
+            title={t("window.close")}
             onClick={(e) => {
               e.stopPropagation();
               send({ t: "window_close", session: session.id, window: w.id });
@@ -421,8 +375,8 @@ function Tabs({ session }: { session: Session }) {
       ))}
       <button
         className="icon-btn"
-        title={`新 window（${isMac ? "⌘T" : "Ctrl+Shift+T"}）`}
-        onClick={(e) => requestKind("新 window", e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "window_create", session: session.id, kind }))}
+        title={`${t("window.new")}（${isMac ? "⌘T" : "Ctrl+Shift+T"}）`}
+        onClick={(e) => requestKind(t("window.new"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "window_create", session: session.id, kind }))}
       >
         ＋
       </button>
@@ -444,9 +398,9 @@ function StatusBar({ session, status }: { session: Session; status: string }) {
         window {wi + 1}/{session.windows.length} · panel {pi + 1}/{ids.length}
       </span>
       <span className="hint">
-        {m}D 分割 · {m}T 新 window · {m}W 關閉 · Ctrl+HJKL 移動
+        {t("footer.keys", { m })}
       </span>
-      {status !== "open" && <span className="warn">與 recursiond 的連線中斷，重新連線中…</span>}
+      {status !== "open" && <span className="warn">{t("conn.lost")}</span>}
     </footer>
   );
 }
@@ -461,15 +415,15 @@ function Empty({ status, error, hasState }: { status: string; error: string | nu
         {!hasState ? (
           <>
             <div className="ws-glyph">❯_</div>
-            <p>{status === "error" ? error : "正在連線到 recursiond…"}</p>
+            <p>{status === "error" ? error : t("conn.connecting")}</p>
           </>
         ) : (
           <>
             <div className="ws-glyph">❯_</div>
-            <h1>選一個專案資料夾開始</h1>
-            <p className="dim">每個 session 對應一個專案；關掉視窗後，終端會在背景繼續跑。</p>
+            <h1>{t("empty.title")}</h1>
+            <p className="dim">{t("empty.hint")}</p>
             <button className="primary" onClick={newSession}>
-              開啟專案資料夾
+              {t("empty.open")}
             </button>
           </>
         )}

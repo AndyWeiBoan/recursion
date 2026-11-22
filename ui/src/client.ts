@@ -1,4 +1,5 @@
 // Connection to recursiond plus a tiny external store for React.
+import { syncLang, t } from "./i18n";
 import { useEffect, useSyncExternalStore } from "react";
 import { agentBrowse } from "./browsers";
 import { setThreadView } from "./threadsUI";
@@ -49,7 +50,7 @@ async function daemonAddress(): Promise<{ port: number; token: string }> {
   const q = new URLSearchParams(location.search);
   const port = Number(q.get("port"));
   const token = q.get("token") ?? "";
-  if (!port || !token) throw new Error("瀏覽器模式需要在網址加上 ?port=…&token=…（見 ~/.recursion/daemon.json）");
+  if (!port || !token) throw new Error(t("conn.browserNeedsToken"));
   return { port, token };
 }
 
@@ -73,6 +74,7 @@ export async function connect() {
       switch (m.t) {
         case "state":
           set({ state: m.state, terms: m.terms ?? {} });
+          syncLang(m.state.lang);
           break;
         case "replay":
           termListeners.get(m.panel)?.onReplay(b64(m.data));
@@ -227,10 +229,10 @@ export function lastDaemonError() {
 export async function pickFolder(): Promise<string | null> {
   if (isTauri) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ directory: true, multiple: false, title: "選擇專案資料夾" });
+    const r = await open({ directory: true, multiple: false, title: t("folder.pick") });
     return typeof r === "string" ? r : null;
   }
-  return window.prompt("專案資料夾的完整路徑", "") || null;
+  return window.prompt(t("folder.prompt"), "") || null;
 }
 
 // ---------- workspaces (group chats) ----------

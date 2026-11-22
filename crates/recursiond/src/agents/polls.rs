@@ -2,6 +2,7 @@
 //! through the `poll_vote` tool. Votes stay hidden from the agents until the poll closes (when
 //! every agent has voted, or the human ends it), so nobody just follows whoever voted first.
 
+use crate::i18n::tr;
 use super::{msg, Hub};
 use crate::workspace::{now_ms, option_letter, Body, Poll, PollStatus, POLL_OPTIONS_MAX};
 use serde_json::{json, Value};
@@ -27,14 +28,14 @@ impl Hub {
         let question = question.trim().to_string();
         let options: Vec<String> = options.into_iter().map(|o| o.trim().to_string()).filter(|o| !o.is_empty()).collect();
         if question.is_empty() {
-            return Err("投票要有問題".into());
+            return Err(tr!("poll.err.noQuestion"));
         }
         if options.len() < 2 || options.len() > POLL_OPTIONS_MAX {
-            return Err(format!("選項要 2 到 {POLL_OPTIONS_MAX} 個"));
+            return Err(tr!("poll.err.options", max = POLL_OPTIONS_MAX));
         }
         let voters: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect());
         if voters.is_empty() {
-            return Err("這個群聊還沒有 agent".into());
+            return Err(tr!("err.noAgents"));
         }
         let mut p = self.with_ws(panel, |ws| {
             ws.next_poll += 1;

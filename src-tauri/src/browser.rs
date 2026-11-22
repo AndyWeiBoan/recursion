@@ -43,10 +43,10 @@ fn get<R: Runtime>(app: &AppHandle<R>, panel: &str) -> Option<Webview<R>> {
 }
 
 fn parse(url: &str) -> Result<Url, String> {
-    let u = Url::parse(url).map_err(|e| format!("網址無效：{e}"))?;
+    let u = Url::parse(url).map_err(|e| format!("Invalid address: {e}"))?;
     match u.scheme() {
         "http" | "https" | "file" | "about" => Ok(u),
-        s => Err(format!("不支援的網址類型：{s}")),
+        s => Err(format!("Unsupported address type: {s}")),
     }
 }
 
@@ -94,7 +94,7 @@ pub async fn browser_ensure<R: Runtime>(app: AppHandle<R>, panel: String, url: S
 fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds) -> Result<Webview<R>, String> {
     let panel = panel.to_string();
     let target = parse(url)?;
-    let window = app.get_window("main").ok_or("找不到主視窗")?;
+    let window = app.get_window("main").ok_or("main window not found")?;
     let (a, b, c) = (app.clone(), app.clone(), panel.clone());
     let p1 = panel.clone();
     let builder = WebviewBuilder::new(label(&panel), WebviewUrl::External(target))
@@ -117,7 +117,7 @@ fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds
     let wv = window.add_child(builder, r.position, r.size).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
     {
-        let main = app.get_webview("main").ok_or("找不到主畫面")?;
+        let main = app.get_webview("main").ok_or("main webview not found")?;
         main.with_webview(|p| gtk_layer::remember_main(p.inner())).map_err(|e| e.to_string())?;
         wv.with_webview(move |p| gtk_layer::adopt(&p.inner(), bounds)).map_err(|e| e.to_string())?;
     }
@@ -150,20 +150,20 @@ pub fn browser_close<R: Runtime>(app: AppHandle<R>, panel: String) -> Result<(),
 
 #[tauri::command]
 pub fn browser_navigate<R: Runtime>(app: AppHandle<R>, panel: String, url: String) -> Result<(), String> {
-    let wv = get(&app, &panel).ok_or("瀏覽器還沒開")?;
+    let wv = get(&app, &panel).ok_or("The browser is not open yet")?;
     wv.navigate(parse(&url)?).map_err(|e| e.to_string())
 }
 
 /// back / forward / reload / focus.
 #[tauri::command]
 pub fn browser_go<R: Runtime>(app: AppHandle<R>, panel: String, action: String) -> Result<(), String> {
-    let wv = get(&app, &panel).ok_or("瀏覽器還沒開")?;
+    let wv = get(&app, &panel).ok_or("The browser is not open yet")?;
     let r = match action.as_str() {
         "back" => wv.eval("history.back()"),
         "forward" => wv.eval("history.forward()"),
         "reload" => wv.reload(),
         "focus" => wv.set_focus(),
-        _ => return Err(format!("未知動作：{action}")),
+        _ => return Err(format!("Unknown action: {action}")),
     };
     r.map_err(|e| e.to_string())
 }
@@ -173,7 +173,7 @@ pub fn browser_go<R: Runtime>(app: AppHandle<R>, panel: String, action: String) 
 /// and these pages must never get Tauri IPC.
 #[tauri::command]
 pub async fn browser_agent<R: Runtime>(app: AppHandle<R>, panel: String, op: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
-    let wv = get(&app, &panel).ok_or("瀏覽器還沒開")?;
+    let wv = get(&app, &panel).ok_or("The browser is not open yet")?;
     #[cfg(target_os = "linux")]
     {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -186,14 +186,14 @@ pub async fn browser_agent<R: Runtime>(app: AppHandle<R>, panel: String, op: Str
         .map_err(|e| e.to_string())?;
         match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
             Ok(Ok(r)) => r,
-            Ok(Err(_)) => Err("瀏覽器中斷了".into()),
-            Err(_) => Err("瀏覽器 60 秒沒有回應".into()),
+            Ok(Err(_)) => Err("The browser went away".into()),
+            Err(_) => Err("The browser did not answer within 60 seconds".into()),
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (wv, op, args);
-        Err("macOS 還不支援 agent 操作瀏覽器".into())
+        Err("Agents can't drive the browser on macOS yet".into())
     }
 }
 
@@ -214,8 +214,8 @@ mod agent {
         let r = v
             .call_async_javascript_function_future(&body, None, Some("recursion-agent"), None)
             .await
-            .map_err(|e| format!("網頁裡的程式出錯：{e}"))?;
-        let out: Value = serde_json::from_str(&r.to_str()).map_err(|e| format!("看不懂網頁回傳的資料：{e}"))?;
+            .map_err(|e| format!("Script error in the page: {e}"))?;
+        let out: Value = serde_json::from_str(&r.to_str()).map_err(|e| format!("Couldn't read what the page returned: {e}"))?;
         match out.get("error").and_then(|e| e.as_str()) {
             Some(e) => Err(e.to_string()),
             None => Ok(out),
@@ -239,11 +239,11 @@ mod agent {
     }
 
     async fn screenshot(v: &WebView) -> Result<Value, String> {
-        let shot = v.snapshot_future(SnapshotRegion::Visible, SnapshotOptions::NONE).await.map_err(|e| format!("截圖失敗：{e}"))?;
-        let src = gtk::cairo::ImageSurface::try_from(shot).map_err(|_| "截圖格式不對")?;
+        let shot = v.snapshot_future(SnapshotRegion::Visible, SnapshotOptions::NONE).await.map_err(|e| format!("Screenshot failed: {e}"))?;
+        let src = gtk::cairo::ImageSurface::try_from(shot).map_err(|_| "Unexpected screenshot format")?;
         let (w, h) = (src.width() as f64, src.height() as f64);
         if w < 2.0 || h < 2.0 {
-            return Err("畫面是空的（panel 可能還沒顯示過）".into());
+            return Err("The view is empty (the panel may not have been shown yet)".into());
         }
         let k = (SHOT_WIDTH / w).min(1.0);
         let out = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, (w * k) as i32, (h * k) as i32).map_err(|e| e.to_string())?;
@@ -261,7 +261,7 @@ mod agent {
     pub async fn run(v: &WebView, op: &str, args: &Value) -> Result<Value, String> {
         match op {
             "open" => {
-                let url = args["url"].as_str().ok_or("缺少網址")?;
+                let url = args["url"].as_str().ok_or("Missing url")?;
                 // Already there, or already loading it (a new webview, or the panel itself navigated).
                 if v.uri().as_deref() != Some(url) {
                     v.load_uri(url);
@@ -293,7 +293,7 @@ mod agent {
                 }
                 Ok(r)
             }
-            other => Err(format!("未知的瀏覽器動作：{other}")),
+            other => Err(format!("Unknown browser action: {other}")),
         }
     }
 }

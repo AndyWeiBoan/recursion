@@ -6,11 +6,14 @@
 mod accounts;
 mod agents;
 mod browse;
+mod diagram;
 mod docs;
+mod i18n;
 mod model;
 mod pty;
 mod workspace;
 
+use crate::i18n::tr;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State as AxState};
 use axum::http::StatusCode;
@@ -29,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 24;
+pub const PROTOCOL: u32 = 26;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -99,6 +102,10 @@ enum In {
     WsAttach { panel: String },
     WsAddAgent { panel: String, kind: AgentKind, alias: String, model: Option<String>, account: Option<String>, #[serde(default)] mode: workspace::PermMode },
     WsSetMode { panel: String, member: String, mode: workspace::PermMode },
+    /// Have an idle agent compact (summarise) its conversation.
+    WsCompact { panel: String, member: String },
+    /// The human's language; `None` follows the system.
+    SetLang { lang: Option<String> },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
     WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String> },
@@ -183,13 +190,13 @@ impl App {
     /// Open a terminal window in the current session that runs the CLI's own login for this
     /// account, then watch until the login lands.
     fn account_login(&self, account: &str) -> Result<(), String> {
-        let a = self.hub.accounts.get(account).ok_or("找不到這個帳號")?;
+        let a = self.hub.accounts.get(account).ok_or_else(|| tr!("err.noAccount"))?;
         let panel = {
             let mut st = self.state.lock().unwrap();
-            let session = st.active_session.clone().or_else(|| st.sessions.first().map(|s| s.id.clone())).ok_or("先開一個 session，才能開登入用的終端")?;
+            let session = st.active_session.clone().or_else(|| st.sessions.first().map(|s| s.id.clone())).ok_or_else(|| tr!("acct.err.needSession"))?;
             let wid = st.create_window(&session, model::PanelKind::Terminal).map_err(|e| e.to_string())?;
             let kind = if a.kind == AgentKind::Claude { "Claude" } else { "Codex" };
-            st.rename_window(&session, &wid, format!("登入 {kind}「{}」", a.name)).map_err(|e| e.to_string())?;
+            st.rename_window(&session, &wid, tr!("acct.loginWindow", kind = kind, name = a.name)).map_err(|e| e.to_string())?;
             let s = st.sessions.iter().find(|s| s.id == session).unwrap();
             s.windows.iter().find(|w| w.id == wid).unwrap().focus.clone()
         };
@@ -319,10 +326,10 @@ impl App {
                 self.state.lock().unwrap().open_doc(&panel, &doc, true).map_err(e)?;
             }
             ArtifactOpen { panel, artifact } => {
-                let a = self.hub.artifact(&panel, &artifact).ok_or("找不到這個產出")?;
+                let a = self.hub.artifact(&panel, &artifact).ok_or_else(|| tr!("err.noOutput"))?;
                 let mut st = self.state.lock().unwrap();
                 match a.kind {
-                    workspace::ArtifactKind::Doc => {
+                    workspace::ArtifactKind::Doc | workspace::ArtifactKind::Diagram => {
                         st.open_doc(&panel, &a.target, true).map_err(e)?;
                     }
                     workspace::ArtifactKind::Page => {
@@ -413,7 +420,7 @@ impl App {
                     st.panels.values().filter(|p| p.kind == model::PanelKind::Workspace).map(|p| p.id.clone()).collect()
                 };
                 if let Some(who) = self.hub.account_in_use(&account, &chats) {
-                    return Err(format!("{who} 還在用這個帳號，先把它移出群聊再刪除"));
+                    return Err(tr!("acct.err.inUse", who = who));
                 }
                 self.hub.accounts.remove(&account)?;
                 self.hub.emit_accounts();
@@ -422,6 +429,15 @@ impl App {
             WsAddAgent { panel, kind, alias, model, account, mode } => {
                 self.hub.add_agent(&panel, kind, alias, model, account, mode).await?;
                 changed = false;
+            }
+            WsCompact { panel, member } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.compact(&panel, &member, cwd).await?;
+                changed = false;
+            }
+            SetLang { lang } => {
+                i18n::set_lang(lang.as_deref());
+                self.state.lock().unwrap().lang = lang;
             }
             WsSetMode { panel, member, mode } => {
                 self.hub.set_mode(&panel, &member, mode).await?;
@@ -566,10 +582,12 @@ async fn client(socket: WebSocket, app: Arc<App>) {
 }
 
 fn load_state() -> State {
-    std::fs::read(home().join("state.json"))
+    let st: State = std::fs::read(home().join("state.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    i18n::set_lang(st.lang.as_deref());
+    st
 }
 
 /// Is another daemon already serving? (discovery file + live health check)

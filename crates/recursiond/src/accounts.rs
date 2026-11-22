@@ -4,6 +4,7 @@
 //! of each kind is the CLI's own folder, untouched. An agent keeps the account it was created with:
 //! its conversation is stored in that folder.
 
+use crate::i18n::tr;
 use crate::workspace::{now_ms, AgentKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -128,14 +129,14 @@ impl Accounts {
     pub fn create(&self, kind: AgentKind, name: &str) -> Result<Account, String> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("帳號名稱不能是空的".into());
+            return Err(tr!("acct.err.emptyName"));
         }
         if self.list.lock().unwrap().iter().any(|a| a.kind == kind && a.name == name) {
-            return Err(format!("已經有叫「{name}」的帳號了"));
+            return Err(tr!("acct.err.duplicate", name = name));
         }
         let id = crate::model::new_id();
-        let d = dir(&id).ok_or("帳號 id 無效")?;
-        std::fs::create_dir_all(&d).map_err(|e| format!("無法建立帳號資料夾：{e}"))?;
+        let d = dir(&id).ok_or("invalid account id")?;
+        std::fs::create_dir_all(&d).map_err(|e| tr!("acct.err.mkdir", error = e))?;
         let (src, items) = shared(kind);
         for item in items {
             let from = src.join(item);
@@ -153,10 +154,10 @@ impl Accounts {
     pub fn rename(&self, id: &str, name: &str) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("帳號名稱不能是空的".into());
+            return Err(tr!("acct.err.emptyName"));
         }
         let mut list = self.list.lock().unwrap();
-        let a = list.iter_mut().find(|a| a.id == id).ok_or("找不到這個帳號")?;
+        let a = list.iter_mut().find(|a| a.id == id).ok_or_else(|| tr!("err.noAccount"))?;
         a.name = name.into();
         drop(list);
         self.save();
@@ -164,7 +165,7 @@ impl Accounts {
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let d = dir(id).ok_or("預設帳號不能刪除")?;
+        let d = dir(id).ok_or_else(|| tr!("acct.err.deleteDefault"))?;
         self.list.lock().unwrap().retain(|a| a.id != id);
         self.save();
         let _ = std::fs::remove_dir_all(d);

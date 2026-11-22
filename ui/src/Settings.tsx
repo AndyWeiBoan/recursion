@@ -1,20 +1,22 @@
 // Settings window (⌘, / Ctrl+,): pages on the left, the page on the right.
 import { useState, useSyncExternalStore } from "react";
 import { AccountsPane } from "./Accounts";
-import { isMac, send, useDaemonInfo } from "./client";
+import { isMac, send, useDaemonInfo, useSnapshot } from "./client";
+import { languages, pick, t } from "./i18n";
 import { Modal } from "./WorkspaceView";
 
-export type SettingsPage = "accounts" | "keys" | "about";
+export type SettingsPage = "general" | "accounts" | "keys" | "about";
 const PAGES: { id: SettingsPage; label: string; icon: string }[] = [
-  { id: "accounts", label: "帳號", icon: "👤" },
-  { id: "keys", label: "快捷鍵", icon: "⌨" },
-  { id: "about", label: "關於", icon: "ⓘ" },
+  { id: "general", get label() { return t("settings.general"); }, icon: "⚙" },
+  { id: "accounts", get label() { return t("settings.accounts"); }, icon: "👤" },
+  { id: "keys", get label() { return t("settings.keys"); }, icon: "⌨" },
+  { id: "about", get label() { return t("settings.about"); }, icon: "ⓘ" },
 ];
 
 // Open/closed lives outside React so the sidebar button and the keyboard shortcut share it.
 let open: SettingsPage | null = null;
 const subs = new Set<() => void>();
-export function openSettings(page: SettingsPage = "accounts") {
+export function openSettings(page: SettingsPage = "general") {
   open = page;
   subs.forEach((f) => f());
 }
@@ -30,40 +32,41 @@ export function useSettingsOpen() {
 }
 
 const mod = isMac ? "⌘" : "Ctrl+Shift+";
+// Groups and descriptions are i18n keys.
 const KEYS: { group: string; rows: [string, string][] }[] = [
   {
-    group: "版面",
+    group: "keys.layout",
     rows: [
-      [isMac ? "⌘⇧N" : "Ctrl+Shift+N", "新 session（選專案資料夾）"],
-      [`${mod}T`, "新 window"],
-      [`${mod}D`, "左右分割"],
-      [isMac ? "⌘⇧D" : "Ctrl+Shift+Alt+D", "上下分割"],
-      [`${mod}W`, "關閉 panel"],
-      [`${mod}1–9`, "切到第幾個 window"],
-      [`${mod}[  ${mod}]`, "上一個／下一個 window"],
-      [`${mod}B`, "顯示／隱藏側欄"],
-      ["Ctrl+H/J/K/L", "在 panel 之間移動（終端前景是 vim／nvim 時交給它）"],
-      [isMac ? "⌘C  ⌘V" : "Ctrl+Shift+C  Ctrl+Shift+V", "在終端機裡複製、貼上"],
-      [isMac ? "⌘," : "Ctrl+,", "設定"],
+      [isMac ? "⌘⇧N" : "Ctrl+Shift+N", "keys.newSession"],
+      [`${mod}T`, "window.new"],
+      [`${mod}D`, "panel.splitRight"],
+      [isMac ? "⌘⇧D" : "Ctrl+Shift+Alt+D", "panel.splitDown"],
+      [`${mod}W`, "keys.closePanel"],
+      [`${mod}1–9`, "keys.gotoWindow"],
+      [`${mod}[  ${mod}]`, "keys.prevNextWindow"],
+      [`${mod}B`, "side.toggle"],
+      ["Ctrl+H/J/K/L", "keys.movePanels"],
+      [isMac ? "⌘C  ⌘V" : "Ctrl+Shift+C  Ctrl+Shift+V", "keys.termCopyPaste"],
+      [isMac ? "⌘," : "Ctrl+,", "settings.title"],
     ],
   },
   {
-    group: "群聊",
+    group: "kind.workspace",
     rows: [
-      ["Enter", "送出"],
-      ["Shift+Enter", "換行"],
-      ["@", "指定要問哪個 agent（沒有 @ 就問全部）"],
-      ["Esc", "停止正在回覆的 agent"],
-      ["在訊息上按右鍵", "回覆它、針對整則或選取的那段開討論串、複製"],
-      ["反白一段字", "針對那段開討論串"],
+      ["Enter", "keys.send"],
+      ["Shift+Enter", "keys.newline"],
+      ["@", "keys.mention"],
+      ["Esc", "keys.stopAgents"],
+      ["keys.rightClick", "keys.rightClickWhat"],
+      ["keys.select", "keys.selectWhat"],
     ],
   },
   {
-    group: "選 panel 種類時",
+    group: "keys.picker",
     rows: [
-      ["T / G / B", "終端／群聊／瀏覽器"],
-      ["↑ ↓  Enter", "移動、選取"],
-      ["Esc", "取消"],
+      ["T / G / B", "keys.pickerKinds"],
+      ["↑ ↓  Enter", "keys.pickerMove"],
+      ["Esc", "common.cancel"],
     ],
   },
 ];
@@ -73,7 +76,7 @@ function Keys() {
     <div className="set-keys">
       {KEYS.map((g) => (
         <section key={g.group}>
-          <h3>{g.group}</h3>
+          <h3>{t(g.group)}</h3>
           <table>
             <tbody>
               {g.rows.map(([k, what]) => (
@@ -83,7 +86,7 @@ function Keys() {
                       <kbd key={part}>{part}</kbd>
                     ))}
                   </td>
-                  <td>{what}</td>
+                  <td>{t(what)}</td>
                 </tr>
               ))}
             </tbody>
@@ -96,22 +99,49 @@ function Keys() {
 
 function ago(ms: number) {
   const m = Math.floor((Date.now() - ms) / 60000);
-  if (m < 1) return "剛剛";
-  if (m < 60) return `${m} 分鐘前`;
+  if (m < 1) return t("time.justNow");
+  if (m < 60) return t("time.minAgo", { n: m });
   const h = Math.floor(m / 60);
-  return h < 24 ? `${h} 小時前` : `${Math.floor(h / 24)} 天前`;
+  return h < 24 ? t("time.hourAgo", { n: h }) : t("time.dayAgo", { n: Math.floor(h / 24) });
+}
+
+/** General settings: for now the language. */
+function General() {
+  const { state } = useSnapshot();
+  const saved = state?.lang ?? null;
+  return (
+    <div className="set-general">
+      <label className="field">
+        <span className="field-label">{t("settings.language")}</span>
+        <div className="select-wrap">
+          <select value={saved ?? ""} onChange={(e) => send({ t: "set_lang", lang: e.target.value || null })}>
+            <option value="">{t("settings.languageSystem", { name: languages.find((l) => l.code === pick(navigator.languages))?.name ?? "" })}</option>
+            {languages.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+          <span className="chev" aria-hidden="true">
+            ⌄
+          </span>
+        </div>
+        <span className="field-hint">{t("settings.languageHint")}</span>
+      </label>
+    </div>
+  );
 }
 
 function About() {
   const info = useDaemonInfo();
   const [confirm, setConfirm] = useState(false);
   const desktop = "__TAURI_INTERNALS__" in window;
-  if (!info) return <p className="dim">讀取中…</p>;
+  if (!info) return <p className="dim">{t("common.loading")}</p>;
   const rows: [string, string][] = [
-    ["版本", `${info.version}（協定 ${info.protocol}）`],
-    ["背景服務", `執行中，pid ${info.pid}，${ago(info.started)}啟動`],
-    ["資料資料夾", info.home],
-    ["執行檔", info.exe ?? "—"],
+    [t("about.version"), t("about.versionValue", { version: info.version, protocol: info.protocol })],
+    [t("about.daemon"), t("about.daemonValue", { pid: info.pid, ago: ago(info.started) })],
+    [t("about.home"), info.home],
+    [t("about.exe"), info.exe ?? "—"],
   ];
   return (
     <div className="set-about">
@@ -128,15 +158,15 @@ function About() {
       {desktop && (
         <div className="set-restart">
           <div>
-            <b>重啟背景服務</b>
-            <p className="dim">換上新編譯的 daemon 用。版面和對話都會保留，但開著的終端會被關掉、正在回覆的 agent 會中斷。</p>
+            <b>{t("about.restart")}</b>
+            <p className="dim">{t("about.restartHint")}</p>
           </div>
           {confirm ? (
             <button className="danger" onClick={() => (send({ t: "daemon_restart" }), closeSettings())} onMouseLeave={() => setConfirm(false)}>
-              確定重啟？
+              {t("about.confirmRestart")}
             </button>
           ) : (
-            <button onClick={() => setConfirm(true)}>重啟</button>
+            <button onClick={() => setConfirm(true)}>{t("about.restartButton")}</button>
           )}
         </div>
       )}
@@ -149,10 +179,10 @@ export function SettingsModal() {
   if (!page) return null;
   const title = PAGES.find((p) => p.id === page)!.label;
   return (
-    <Modal title="設定" onClose={closeSettings}>
+    <Modal title={t("settings.title")} onClose={closeSettings}>
       <div className="settings">
         <nav className="set-nav">
-          <h2>設定</h2>
+          <h2>{t("settings.title")}</h2>
           {PAGES.map((p) => (
             <button key={p.id} className={p.id === page ? "on" : ""} onClick={() => openSettings(p.id)}>
               <span aria-hidden="true">{p.icon}</span>
@@ -162,6 +192,7 @@ export function SettingsModal() {
         </nav>
         <div className="set-page">
           <h2>{title}</h2>
+          {page === "general" && <General />}
           {page === "accounts" && <AccountsPane onLeave={closeSettings} />}
           {page === "keys" && <Keys />}
           {page === "about" && <About />}
