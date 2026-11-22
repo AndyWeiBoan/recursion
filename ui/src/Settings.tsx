@@ -4,6 +4,7 @@ import { AccountsPane } from "./Accounts";
 import { isMac, send, useDaemonInfo, useSnapshot } from "./client";
 import { languages, pick, t } from "./i18n";
 import { Modal } from "./WorkspaceView";
+import { UpdateSection, useAppVersion } from "./Update";
 
 export type SettingsPage = "general" | "accounts" | "keys" | "about";
 const PAGES: { id: SettingsPage; label: string; icon: string }[] = [
@@ -134,11 +135,12 @@ function General() {
 
 function About() {
   const info = useDaemonInfo();
+  const app = useAppVersion();
   const [confirm, setConfirm] = useState(false);
   const desktop = "__TAURI_INTERNALS__" in window;
   if (!info) return <p className="dim">{t("common.loading")}</p>;
   const rows: [string, string][] = [
-    [t("about.version"), t("about.versionValue", { version: info.version, protocol: info.protocol })],
+    [t("about.version"), t("about.versionValue", { version: app ?? info.version, protocol: info.protocol })],
     [t("about.daemon"), t("about.daemonValue", { pid: info.pid, ago: ago(info.started) })],
     [t("about.home"), info.home],
     [t("about.exe"), info.exe ?? "—"],
@@ -155,6 +157,7 @@ function About() {
           ))}
         </tbody>
       </table>
+      <UpdateSection />
       {desktop && (
         <div className="set-restart">
           <div>
@@ -193,7 +196,7 @@ export function SettingsModal() {
         <div className="set-page">
           <h2>{title}</h2>
           {page === "general" && <General />}
-          {page === "accounts" && <AccountsPane onLeave={closeSettings} />}
+          {page === "accounts" && <AccountsPane />}
           {page === "keys" && <Keys />}
           {page === "about" && <About />}
         </div>

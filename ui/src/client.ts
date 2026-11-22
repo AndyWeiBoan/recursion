@@ -97,6 +97,9 @@ export async function connect() {
             return { ...w, threads: i >= 0 ? list.map((x, k) => (k === i ? m.thread : x)) : [...list, m.thread] };
           });
           break;
+        case "ws_settings":
+          wsUpdate(m.panel, (w) => ({ ...w, settings: m.settings }));
+          break;
         case "ws_poll":
           wsUpdate(m.panel, (w) => {
             const list = w.polls ?? [];
@@ -117,7 +120,17 @@ export async function connect() {
           break;
         case "accounts":
           accounts = m.accounts;
+          accountsLoaded = true;
           accountSubs.forEach((f) => f());
+          break;
+        case "cli_status":
+          setSetup({ cli: { claude: m.claude ?? null, codex: m.codex ?? null } });
+          break;
+        case "logins_found":
+          setSetup({ logins: m.found });
+          break;
+        case "setup_panel":
+          setSetup({ panel: { id: m.panel, title: m.title } });
           break;
         case "browse_req":
           agentBrowse(m.panel, m.op, m.args).then(
@@ -274,18 +287,19 @@ export function useWorkspace(panel: string): Workspace | null {
 }
 
 // ---------- toasts ----------
-let toastMsg: { id: number; text: string } | null = null;
+let toastMsg: { id: number; text: string; ok: boolean } | null = null;
 const toastSubs = new Set<() => void>();
-export function toast(text: string) {
+/** A short note at the bottom of the window: an error by default, `ok` for a confirmation. */
+export function toast(text: string, ok = false) {
   const id = Date.now();
-  toastMsg = { id, text };
+  toastMsg = { id, text, ok };
   toastSubs.forEach((f) => f());
   setTimeout(() => {
     if (toastMsg?.id === id) {
       toastMsg = null;
       toastSubs.forEach((f) => f());
     }
-  }, 5000);
+  }, ok ? 1800 : 5000);
 }
 export function useToast() {
   return useSyncExternalStore(
@@ -464,7 +478,44 @@ export function requestAddAgent(panel: string) {
 
 // ---------- accounts ----------
 let accounts: Account[] = [];
+let accountsLoaded = false;
 const accountSubs = new Set<() => void>();
+
+/** Whether the daemon has sent the account list yet (an empty list then means "none"). */
+export function useAccountsLoaded(): boolean {
+  return useSyncExternalStore(
+    (f) => (accountSubs.add(f), () => accountSubs.delete(f)),
+    () => accountsLoaded,
+  );
+}
+
+export interface CliInfo {
+  path: string;
+  version: string;
+}
+/** What the setup screens know: installed CLIs, logins found on this computer, the open setup terminal. */
+export interface SetupState {
+  cli: { claude: CliInfo | null; codex: CliInfo | null } | null;
+  logins: { kind: AgentKind; email?: string | null; plan?: string | null }[] | null;
+  panel: { id: string; title: string } | null;
+}
+let setup: SetupState = { cli: null, logins: null, panel: null };
+const setupSubs = new Set<() => void>();
+export function setSetup(p: Partial<SetupState>) {
+  setup = { ...setup, ...p };
+  setupSubs.forEach((f) => f());
+}
+/** Look for logins the CLIs already have; `logins` is null until the answer comes (it takes seconds). */
+export function detectLogins() {
+  setSetup({ logins: null });
+  send({ t: "logins_detect" });
+}
+export function useSetup(): SetupState {
+  return useSyncExternalStore(
+    (f) => (setupSubs.add(f), () => setupSubs.delete(f)),
+    () => setup,
+  );
+}
 
 export function useAccounts(): Account[] {
   return useSyncExternalStore(
@@ -475,7 +526,8 @@ export function useAccounts(): Account[] {
 
 /** The account name to show next to an agent, or "" for the default account. */
 export function accountName(list: Account[], m: { account?: string | null }) {
-  return m.account ? (list.find((a) => a.id === m.account)?.name ?? "") : "";
+  const a = m.account ? list.find((x) => x.id === m.account) : undefined;
+  return a ? a.name || a.email || "" : "";
 }
 
 export interface DaemonInfo {

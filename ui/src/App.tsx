@@ -8,7 +8,10 @@ import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
 import { openSettings, SettingsModal } from "./Settings";
+import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
 import { UsagePanel } from "./Usage";
+import { UpdateNotice } from "./Update";
+import { Onboarding, SetupTerminal } from "./Setup";
 import { closeThreads, useZoomed } from "./threadsUI";
 import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
 
@@ -181,6 +184,9 @@ export default function App() {
       </main>
       {pick && <KindPicker req={pick} close={closePicker} />}
       <Toast />
+      <UpdateNotice />
+      <Onboarding />
+      <SetupTerminal />
     </div>
   );
 }
@@ -299,6 +305,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         </button>
                         <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>{t("common.rename")}</button>
                         <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>{t("session.moveGroup")}</button>
+                        <button onClick={() => (setMenu(null), openSessionSettings(s.id))}>{t("scope.sessionMenu")}</button>
                         {confirmDelete === s.id ? (
                           <button className="danger" onClick={() => (setMenu(null), send({ t: "session_delete", session: s.id }))}>
                             {t("session.confirmDelete")}
@@ -326,6 +333,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
         </button>
       </div>
       <SettingsModal />
+      <SessionSettingsModal />
     </aside>
   );
 }
@@ -445,7 +453,7 @@ function Toast() {
   const t = useToast();
   if (!t) return null;
   return (
-    <div className="toast" role="status" key={t.id}>
+    <div className={`toast${t.ok ? " ok" : ""}`} role="status" key={t.id}>
       {t.text}
     </div>
   );

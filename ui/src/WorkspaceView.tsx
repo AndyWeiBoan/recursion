@@ -1,4 +1,7 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
+import { ChatSettingsForm } from "./ScopeSettings";
+import { openSettings } from "./Settings";
+import { accountLabel } from "./Setup";
 import { FileChip, FilePicker } from "./Files";
 import { useDragWidth } from "./Layout";
 import { Icon } from "./icons";
@@ -15,7 +18,7 @@ import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { accountName, isMac, onAddAgentRequest, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -34,6 +37,30 @@ const marked = new Marked(
   { gfm: true, breaks: false },
 );
 
+// One listener for every rendered code block's copy button (chat, threads, …); once, even when
+// a dev reload runs this module again.
+const w = window as { __codeCopy?: boolean };
+if (!w.__codeCopy) {
+  w.__codeCopy = true;
+  document.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest?.(".code-copy");
+    const pre = btn?.parentElement?.querySelector("pre");
+    if (!btn || !pre) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void copyText(pre.textContent ?? "").then((ok) => {
+      if (!ok) return toast(tr("code.copyFailed"));
+      toast(tr("code.copied"), true);
+      btn.classList.add("done");
+      btn.textContent = tr("code.copiedShort");
+      setTimeout(() => {
+        btn.classList.remove("done");
+        btn.textContent = tr("code.copy");
+      }, 1500);
+    });
+  });
+}
+
 const AVATAR_COLORS = ["#e8714a", "#3fb8a8", "#6a8cff", "#c792ea", "#e0a83a", "#4ab36b", "#e05d8c", "#4aa3d9"];
 export function colorFor(id: string) {
   let h = 0;
@@ -44,6 +71,8 @@ export function colorFor(id: string) {
 /** Markdown → sanitized HTML, with @alias mentions highlighted (outside tags and code). */
 export function renderMarkdown(text: string, aliases: string[]): string {
   let html = DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
+  // Every code block gets a copy button (handled by the click listener below).
+  html = html.replace(/<pre>/g, `<div class="code-wrap"><button class="code-copy" type="button" title="${tr("code.copy")}">${tr("code.copy")}</button><pre>`).replace(/<\/pre>/g, "</pre></div>");
   if (aliases.length) {
     const known = new Set(aliases.map((a) => a.toLowerCase()).concat(["all", "全部", "所有人"]));
     let inCode = 0;
@@ -161,7 +190,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
         ) : (
           <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} />
         )}
-        <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} focused={focused && !ui.open} round={ws.round} />
+        <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} working={busy} focused={focused && !ui.open} round={ws.round} />
       </div>
       {ui.open && <ThreadDrawer panel={panel} ws={ws} byId={byId} ui={ui} />}
     </div>
@@ -178,13 +207,16 @@ export function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
 }
 
 /** Centered dialog over the whole app. Closes on ✕, Esc, or a click outside. */
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+/** `escape: false` keeps Esc for what is inside (a terminal), and a click outside does not close it. */
+export function Modal({ title, onClose, children, escape = true }: { title: string; onClose: () => void; children: React.ReactNode; escape?: boolean }) {
   const close = useRef(onClose);
   close.current = onClose;
+  const esc = useRef(escape);
+  esc.current = escape;
   useEffect(() => {
     const restore = overlay(); // native browser panels would draw on top of it
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && esc.current) {
         e.stopPropagation();
         close.current();
       }
@@ -196,7 +228,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
     };
   }, []);
   return createPortal(
-    <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="modal-scrim" onMouseDown={(e) => escape && e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <button className="modal-x" onClick={onClose} aria-label={tr("common.close")} title={tr("common.close") + "（Esc）"}>
           ✕
@@ -213,6 +245,7 @@ export function ChatHead({ panel }: { panel: string }) {
   const ws = useWorkspace(panel);
   const ui = useThreadsUI(panel);
   const [adding, setAdding] = useState(false);
+  const [setting, setSetting] = useState(false);
   useEffect(() => onAddAgentRequest(panel, () => setAdding(true)), [panel]);
   const members = ws?.members ?? [];
   // The empty chat shows the big form instead; otherwise "add" must always be reachable,
@@ -245,9 +278,18 @@ export function ChatHead({ panel }: { panel: string }) {
         📎 {tr("outputs.title")}{outputs > 0 ? ` ${outputs}` : ""}
       </button>
       {cost > 0 && (
-        <span className="chat-cost" title={tr("chat.costHint")}>
+        <span className={`chat-cost${ws.settings?.budget_usd && cost >= ws.settings.budget_usd ? " over" : ""}`} title={tr("chat.costHint") + (ws.settings?.budget_usd ? ` · ${tr("scope.budget")} $${ws.settings.budget_usd.toFixed(2)}` : "")}>
           ${cost.toFixed(2)}
+          {ws.settings?.budget_usd ? <span className="dim"> / ${ws.settings.budget_usd.toFixed(2)}</span> : null}
         </span>
+      )}
+      <button className={`chat-gear${ws.settings?.rules ? " has-rules" : ""}`} onClick={() => setSetting(true)} title={tr("scope.chat")} aria-label={tr("scope.chat")}>
+        ⚙
+      </button>
+      {setting && (
+        <Modal title={tr("scope.chat")} onClose={() => setSetting(false)}>
+          <ChatSettingsForm panel={panel} onDone={() => setSetting(false)} />
+        </Modal>
       )}
     </span>
   );
@@ -259,9 +301,12 @@ const KIND_INFO: Record<AgentKind, { vendor: string; glyph: string; color: strin
 };
 
 function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone?: () => void }) {
-  const [kind, setKind] = useState<AgentKind>("claude");
   // Any chat of this session can be the target; the one it was opened from is the default.
   const { state } = useSnapshot();
+  // The session's defaults (its settings) are where the form starts.
+  const defaults = state?.sessions.find((x) => x.windows.some((w) => leaves(w.root).includes(panel)))?.defaults ?? {};
+  const defaultModel = (k: AgentKind) => (k === "claude" ? defaults.claude_model : defaults.codex_model) ?? "";
+  const [kind, setKind] = useState<AgentKind>(defaults.kind ?? "claude");
   const chats = useMemo(() => {
     const s = state?.sessions.find((x) => x.windows.some((w) => leaves(w.root).includes(panel)));
     return s && state ? chatsOf(s, state) : [];
@@ -273,18 +318,18 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
     if (!taken.includes(base)) return base;
     for (let i = 2; ; i++) if (!taken.includes(base + i)) return base + i;
   };
-  const [alias, setAlias] = useState(free("claude"));
+  const [alias, setAlias] = useState(free(kind));
   const [touched, setTouched] = useState(false);
   // The member list may arrive after the form opens: keep the suggested alias free of clashes.
   const takenKey = (roster[target] ?? []).map((m) => m.alias).join(",");
   useEffect(() => {
     if (!touched) setAlias(free(kind));
   }, [takenKey]);
-  const [model, setModel] = useState("");
-  const [mode, setMode] = useState<PermMode>("edits");
+  const [model, setModel] = useState(defaultModel(kind));
+  const [mode, setMode] = useState<PermMode>(defaults.mode ?? "edits");
   const accounts = useAccounts().filter((a) => a.kind === kind);
   const [account, setAccount] = useState("");
-  const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.id === `${kind}-default`);
+  const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.logged_in) ?? accounts[0];
   const list = useModels(kind);
   const options = list.models.length ? list.models : [{ value: "", label: tr("agent.defaultModel"), description: "" }];
   const picked = options.find((m) => m.value === model);
@@ -294,8 +339,8 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
       className={`add-card${big ? " big" : ""}`}
       onSubmit={(e) => {
         e.preventDefault();
-        const acc = pickedAccount && !pickedAccount.id.endsWith("-default") ? pickedAccount.id : null;
-        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: acc, mode });
+        if (!pickedAccount) return;
+        send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: pickedAccount.id, mode });
         if (target !== panel) send({ t: "panel_focus", panel: target });
         onDone?.();
       }}
@@ -339,7 +384,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
             className={`kind-card${kind === k ? " on" : ""}`}
             onClick={() => {
               setKind(k);
-              setModel("");
+              setModel(defaultModel(k));
               setAccount("");
               if (!touched) setAlias(free(k));
             }}
@@ -371,6 +416,16 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
           />
         </div>
       </div>
+      {accounts.length === 0 && (
+        <div className="field">
+          <span className="field-hint warn">
+            {tr("acct.noneOfKind", { name: kind === "claude" ? "Claude" : "Codex" })}{" "}
+            <button type="button" className="link" onClick={() => openSettings("accounts")}>
+              {tr("acct.addOne")}
+            </button>
+          </span>
+        </div>
+      )}
       {accounts.length > 1 && (
         <div className="field">
           <label htmlFor={`account-${id}`}>{tr("settings.accounts")}</label>
@@ -378,8 +433,8 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
             <select id={`account-${id}`} value={pickedAccount?.id ?? ""} onChange={(e) => setAccount(e.target.value)}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name}
-                  {a.email ? ` · ${a.email}` : ""}
+                  {accountLabel(a)}
+                  {a.email && a.email !== accountLabel(a) ? ` · ${a.email}` : ""}
                   {a.logged_in ? "" : tr("acct.notLoggedInParen")}
                 </option>
               ))}
@@ -422,7 +477,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         </div>
         <span className={`field-hint${mode === "auto" ? " warn" : ""}`}>{PERM_MODES.find((p) => p.id === mode)?.hint}</span>
       </div>
-      <button className="add-submit" type="submit" disabled={!alias.trim()}>
+      <button className="add-submit" type="submit" disabled={!alias.trim() || !pickedAccount}>
         {tr("agent.join", { alias: alias.trim() || "…" })}
       </button>
       <p className="add-hint">{KIND_INFO[kind].hint}</p>
@@ -437,6 +492,35 @@ function ReplyQuote({ r, byId }: { r: NonNullable<Msg["reply_to"]>; byId: Map<st
       <span className="reply-who">{authorName(r.from, byId)}</span>
       <span className="reply-text">{excerpt(r.text)}</span>
     </button>
+  );
+}
+
+/** Everyone still working, on one line above the chat box (so scrolling up never hides it),
+ *  grouped by what they are doing. */
+function BusyLine({ busy }: { busy: Member[] }) {
+  if (!busy.length) return null;
+  return (
+    <div className="ws-busy-row">
+      <span className="spin">✳</span>
+      <span className="ws-busy-faces">
+        {busy.map((b) => (
+          <Avatar key={b.id} m={b} size={18} />
+        ))}
+      </span>
+      <span className="ws-busy">
+        {[...new Set(busy.map((b) => b.status))].map((st, i) => (
+          <span key={st}>
+            {i > 0 && " · "}
+            {busy
+              .filter((b) => b.status === st)
+              .map((b) => `@${b.alias}`)
+              .join(tr("common.listSep"))}{" "}
+            {STATUS_LABEL[st]}…
+          </span>
+        ))}
+      </span>
+      <span className="dim">{tr("chat.escStops")}</span>
+    </div>
   );
 }
 
@@ -490,11 +574,6 @@ function Transcript({
   const last = messages[messages.length - 1];
   const lastLen = last && last.kind === "text" ? last.text.length : 0;
   const aliases = useMemo(() => [...byId.values()].map((m) => m.alias), [byId]);
-  // Agents already visibly producing output (streaming text, running tool) don't need the spinner.
-  const producing = new Set(
-    messages.filter((m) => (m.kind === "text" || m.kind === "tool") && (m.streaming || (m.kind === "tool" && m.result == null))).map((m) => m.from),
-  );
-  const waiting = busy.filter((b) => b.status === "waiting_permission" || !producing.has(b.id));
 
   useLayoutEffect(() => {
     const el = box.current;
@@ -607,30 +686,6 @@ function Transcript({
           <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} />
         );
       })}
-      {/* Everyone still working, on one line: grouped by what they are doing. */}
-      {waiting.length > 0 && (
-        <div className="ws-busy-row">
-          <span className="spin">✳</span>
-          <span className="ws-busy-faces">
-            {waiting.map((b) => (
-              <Avatar key={b.id} m={b} size={18} />
-            ))}
-          </span>
-          <span className="ws-busy">
-            {[...new Set(waiting.map((b) => b.status))].map((st, i) => (
-              <span key={st}>
-                {i > 0 && " · "}
-                {waiting
-                  .filter((b) => b.status === st)
-                  .map((b) => `@${b.alias}`)
-                  .join(tr("common.listSep"))}{" "}
-                {STATUS_LABEL[st]}…
-              </span>
-            ))}
-          </span>
-          <span className="dim">{tr("chat.escStops")}</span>
-        </div>
-      )}
       {pick &&
         createPortal(
           <button
@@ -1013,6 +1068,7 @@ function Composer({
   messages,
   disabled,
   busy,
+  working,
   focused,
   round,
 }: {
@@ -1021,6 +1077,8 @@ function Composer({
   messages: Msg[];
   disabled: boolean;
   busy: boolean;
+  /** Agents still answering, for the line above the box. */
+  working: Member[];
   focused: boolean;
   round?: { active: boolean; queued: number };
 }) {
@@ -1099,6 +1157,7 @@ function Composer({
   const queued = round?.active ? round.queued : 0;
   return (
     <div className="ws-input">
+      <BusyLine busy={working} />
       {queued > 0 && (
         <div className="queue-bar">
           <span>{tr("queue.waiting", { n: queued })}</span>

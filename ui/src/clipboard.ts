@@ -5,12 +5,15 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-export async function copyText(text: string) {
+/** Puts text on the clipboard; false if that failed. */
+export async function copyText(text: string): Promise<boolean> {
   try {
     if (isTauri) await writeText(text);
     else await navigator.clipboard.writeText(text);
+    return true;
   } catch (e) {
     console.warn("copy failed", e);
+    return false;
   }
 }
 

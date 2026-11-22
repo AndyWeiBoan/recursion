@@ -1,14 +1,10 @@
 // Accounts window: every login of each CLI, who it is, how much of its limits is used, and a way
-// to add one or log in again (the CLI's own login runs in a terminal window).
+// to add one or log in again (the CLI's own login runs in a setup terminal, see Setup.tsx).
 import { t } from "./i18n";
 import { useEffect, useState } from "react";
-import { send, useAccounts } from "./client";
+import { detectLogins, send, useAccounts } from "./client";
+import { accountDetail, accountLabel, AddAccountChoices, KINDS } from "./Setup";
 import type { Account, AgentKind } from "./types";
-
-const KINDS: { kind: AgentKind; name: string }[] = [
-  { kind: "claude", name: "Claude" },
-  { kind: "codex", name: "Codex" },
-];
 
 const WINDOWS: [string, string][] = [
   ["five_hour", "usage.5h.long"],
@@ -38,7 +34,6 @@ function Usage({ a }: { a: Account }) {
 }
 
 function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
-  const isDefault = a.id.endsWith("-default");
   const [editing, setEditing] = useState(false);
   const [confirm, setConfirm] = useState(false);
   return (
@@ -59,57 +54,35 @@ function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
             />
           ) : (
             <b onDoubleClick={() => setEditing(true)} title={t("common.doubleClickRename")}>
-              {a.name}
+              {accountLabel(a)}
             </b>
           )}
-          {isDefault && <span className="acct-tag">{t("acct.cliDefault")}</span>}
         </div>
-        <span className="acct-who">{a.logged_in ? [a.email, a.plan].filter(Boolean).join(" · ") || t("acct.loggedIn") : t("acct.notLoggedIn")}</span>
+        <span className="acct-who">{a.logged_in ? accountDetail(a) || t("acct.loggedIn") : t("acct.notLoggedIn")}</span>
         <Usage a={a} />
       </div>
       <div className="acct-acts">
         <button onClick={onLogin}>{a.logged_in ? t("acct.relogin") : t("acct.login")}</button>
-        {!isDefault &&
-          (confirm ? (
-            <button className="danger" onClick={() => send({ t: "account_remove", account: a.id })} onMouseLeave={() => setConfirm(false)}>
-              {t("common.confirmDelete")}
-            </button>
-          ) : (
-            <button className="danger" onClick={() => setConfirm(true)}>
-              {t("common.delete")}
-            </button>
-          ))}
+        {confirm ? (
+          <button className="danger" onClick={() => (send({ t: "account_remove", account: a.id }), detectLogins())} onMouseLeave={() => setConfirm(false)}>
+            {t("common.confirmDelete")}
+          </button>
+        ) : (
+          <button className="danger" onClick={() => setConfirm(true)} title={a.id.endsWith("-default") ? t("acct.removeKeepsLogin") : undefined}>
+            {t("acct.remove")}
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function AddAccount({ kind, onDone }: { kind: AgentKind; onDone: () => void }) {
-  const [name, setName] = useState("");
-  return (
-    <form
-      className="acct-add"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!name.trim()) return;
-        send({ t: "account_create", kind, name: name.trim() });
-        onDone();
-      }}
-    >
-      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={t("acct.namePlaceholder")} />
-      <button type="submit" disabled={!name.trim()}>
-        {t("acct.createAndLogin")}
-      </button>
-    </form>
-  );
-}
-
-/** The accounts page of the settings. `onLeave` closes the settings when a login window opens. */
-export function AccountsPane({ onLeave }: { onLeave: () => void }) {
+/** The accounts page of the settings. */
+export function AccountsPane() {
   const accounts = useAccounts();
   const [adding, setAdding] = useState<AgentKind | null>(null);
-  const login = (id: string) => (send({ t: "account_login", account: id }), onLeave());
-  useEffect(() => send({ t: "accounts_refresh" }), []);
+  const login = (id: string) => send({ t: "account_login", account: id });
+  useEffect(() => (send({ t: "accounts_refresh" }), detectLogins()), []);
   return (
     <div className="acct">
       <p className="acct-hint">{t("acct.hint")}</p>
@@ -122,7 +95,7 @@ export function AccountsPane({ onLeave }: { onLeave: () => void }) {
               <Row key={a.id} a={a} onLogin={() => login(a.id)} />
             ))}
           {adding === kind ? (
-            <AddAccount kind={kind} onDone={onLeave} />
+            <AddAccountChoices kind={kind} />
           ) : (
             <button className="acct-new" onClick={() => setAdding(kind)}>
               {t("acct.add", { name })}

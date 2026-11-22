@@ -218,6 +218,22 @@ pub struct Workspace {
     pub grants: Vec<String>,
     #[serde(default)]
     pub next_poll: u64,
+    #[serde(default)]
+    pub settings: ChatSettings,
+}
+
+/// What the human set for one chat.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ChatSettings {
+    /// Shown instead of 群聊 in the tree and the chat's header.
+    #[serde(default)]
+    pub name: String,
+    /// Standing instructions for every agent in this chat.
+    #[serde(default)]
+    pub rules: String,
+    /// Stop taking messages once the agents' known spend reaches this (USD).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

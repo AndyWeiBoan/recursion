@@ -101,8 +101,25 @@ const settle = () => new Promise((r) => setTimeout(r, 150));
 // A click or submit may navigate away, which throws this world away mid-call and the answer never
 // comes back. So the action runs just after we return; the app then waits to see where it landed.
 const later = (f) => setTimeout(f, 0);
+// `defer: false` (macOS): don't schedule anything. A hidden WKWebView's timers are paused, so a
+// scheduled click never happens; the app sends the action as its own "act" call instead.
+const deferred = args.defer !== false;
+
+function submit(el) {
+  const enter = { key: "Enter", code: "Enter", keyCode: 13, bubbles: true, cancelable: true };
+  const go = el.dispatchEvent(new KeyboardEvent("keydown", enter));
+  el.dispatchEvent(new KeyboardEvent("keyup", enter));
+  if (go && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+}
 
 switch (op) {
+  case "act": {
+    const el = byRef(args.ref);
+    if (!el) return JSON.stringify({ error: `No element #${args.ref}` });
+    if (args.what === "click") el.click();
+    else if (args.what === "submit") submit(el);
+    return JSON.stringify({});
+  }
   case "info":
     return JSON.stringify({ ...info(), ready: document.readyState });
   case "read": {
@@ -117,7 +134,7 @@ switch (op) {
     if (!el) return JSON.stringify({ error: `No element #${args.ref} on this page. Call browse_read to get fresh numbers.` });
     el.scrollIntoView({ block: "center" });
     el.focus?.();
-    later(() => el.click());
+    if (deferred) later(() => el.click());
     return JSON.stringify({ ...info(), did: `clicked ${describe(el, args.ref)}` });
   }
   case "fill": {
@@ -142,14 +159,10 @@ switch (op) {
     }
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    await settle();
-    if (args.submit)
-      later(() => {
-        const enter = { key: "Enter", code: "Enter", keyCode: 13, bubbles: true, cancelable: true };
-        const go = el.dispatchEvent(new KeyboardEvent("keydown", enter));
-        el.dispatchEvent(new KeyboardEvent("keyup", enter));
-        if (go && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
-      });
+    if (deferred) {
+      await settle();
+      if (args.submit) later(() => submit(el));
+    }
     return JSON.stringify({ ...info(), did: `filled ${describe(el, args.ref)}${args.submit ? " and submitted" : ""}` });
   }
 }

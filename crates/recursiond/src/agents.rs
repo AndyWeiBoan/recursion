@@ -117,6 +117,9 @@ struct Runtime {
     roster_seen: HashMap<String, u64>,
     /// member → id of the first message of its turn in progress.
     turn_first: HashMap<String, String>,
+    /// Bumped when the chat's rules change; each member gets them again once (see `deliver`).
+    rules_version: u64,
+    rules_seen: HashMap<String, u64>,
     /// Members compacting their conversation → the chat's folder, to deliver what waited meanwhile.
     compacting: HashMap<String, String>,
     /// Compacting members a round skipped: they get their own round once the compact is done.
@@ -131,7 +134,8 @@ pub struct Hub {
     dirty: Mutex<HashSet<String>>,
     pub save_notify: tokio::sync::Notify,
     pub tx: broadcast::Sender<String>,
-    env: tokio::sync::RwLock<Option<AgentEnv>>,
+    /// The CLIs found and when we looked.
+    env: tokio::sync::RwLock<Option<(AgentEnv, std::time::Instant)>>,
     /// Model lists per CLI, cached for a while (asking spawns the CLI).
     models: tokio::sync::Mutex<HashMap<&'static str, (std::time::Instant, Vec<ModelOption>)>>,
     generation: std::sync::atomic::AtomicU64,
@@ -185,6 +189,52 @@ impl Hub {
             self.emit_accounts();
         }
         changed
+    }
+
+    /// The CLI's full path, if installed.
+    pub async fn cli_bin(&self, kind: AgentKind) -> Option<String> {
+        let env = self.env().await;
+        if kind == AgentKind::Claude { env.claude } else { env.codex }
+    }
+
+    /// Look for the CLIs again now (after an install).
+    pub async fn redetect(&self) -> AgentEnv {
+        let e = AgentEnv::detect().await;
+        *self.env.write().await = Some((e.clone(), std::time::Instant::now()));
+        e
+    }
+
+    /// Which CLIs are installed, with their versions, for the setup screen.
+    pub async fn cli_status(&self, fresh: bool) -> Value {
+        let env = if fresh { self.redetect().await } else { self.env().await };
+        let mut out = json!({ "t": "cli_status" });
+        for (key, bin) in [("claude", env.claude.as_deref()), ("codex", env.codex.as_deref())] {
+            let Some(bin) = bin else {
+                out[key] = Value::Null;
+                continue;
+            };
+            let ver = Command::new(bin).arg("--version").env("PATH", &env.path).stdin(Stdio::null()).output();
+            let ver = tokio::time::timeout(std::time::Duration::from_secs(10), ver).await.ok().and_then(|r| r.ok());
+            let ver = ver.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            out[key] = json!({ "path": bin, "version": ver.split_whitespace().find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit())).unwrap_or("") });
+        }
+        out
+    }
+
+    /// Logins the CLIs already have on this computer that are not in Recursion yet.
+    pub async fn detect_logins(&self) -> Value {
+        let env = self.env().await;
+        let mut found = vec![];
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            let id = crate::accounts::default_id(kind);
+            if self.accounts.get(id).is_some() {
+                continue;
+            }
+            if let Some((true, email, plan)) = crate::accounts::status(kind, id, &env.path, env.claude.as_deref(), env.codex.as_deref()).await {
+                found.push(json!({ "kind": kind, "email": email, "plan": plan }));
+            }
+        }
+        json!({ "t": "logins_found", "found": found })
     }
 
     /// Ask the providers for every logged-in account's limits (see accounts::fetch_usage).
@@ -340,14 +390,21 @@ impl Hub {
     }
 
     async fn env(&self) -> AgentEnv {
-        if let Some(e) = self.env.read().await.clone() {
-            if e.claude.is_some() || e.codex.is_some() {
+        // A CLI installed after the daemon started must still be found: while one is missing,
+        // look again, at most every 10 seconds (each look starts a login shell).
+        if let Some((e, at)) = self.env.read().await.clone() {
+            if (e.claude.is_some() && e.codex.is_some()) || at.elapsed() < std::time::Duration::from_secs(10) {
                 return e;
             }
         }
         let e = AgentEnv::detect().await;
-        *self.env.write().await = Some(e.clone());
+        *self.env.write().await = Some((e.clone(), std::time::Instant::now()));
         e
+    }
+
+    /// Send a message to every client.
+    pub fn broadcast(&self, v: Value) {
+        self.emit(v);
     }
 
     fn emit(&self, v: Value) {
@@ -528,6 +585,24 @@ impl Hub {
         crate::files::resolve(cwd, path)
     }
 
+    /// The chat's name, rules and budget. New rules reach each agent with its next message.
+    pub fn set_chat_settings(&self, panel: &str, settings: crate::workspace::ChatSettings) {
+        let mut settings = settings;
+        settings.name = settings.name.trim().to_string();
+        settings.rules = settings.rules.trim().to_string();
+        settings.budget_usd = settings.budget_usd.filter(|b| *b > 0.0);
+        let changed_rules = self.with_ws(panel, |ws| {
+            let changed = ws.settings.rules != settings.rules;
+            ws.settings = settings.clone();
+            changed
+        });
+        if changed_rules {
+            self.rt(panel, |r| r.rules_version += 1);
+        }
+        self.emit(json!({ "t": "ws_settings", "panel": panel, "settings": settings }));
+        self.mark_dirty(panel);
+    }
+
     pub fn is_compacting(&self, panel: &str, member: &str) -> bool {
         self.rt(panel, |r| r.compacting.contains_key(member))
     }
@@ -686,6 +761,13 @@ impl Hub {
         let members: Vec<Member> = self.with_ws(panel, |ws| ws.members.clone());
         if members.is_empty() {
             return Err(tr!("err.noAgents"));
+        }
+        // Over budget: hold the message rather than spend more.
+        if let Some(budget) = self.with_ws(panel, |ws| ws.settings.budget_usd) {
+            let spent: f64 = members.iter().map(|m| m.cost_usd).sum();
+            if spent >= budget {
+                return Err(tr!("chat.err.budget", spent = format!("{spent:.2}"), budget = format!("{budget:.2}")));
+            }
         }
         let targeted = mentions(&text, &members, None);
         let all = targeted.is_empty() || targeted.len() == members.len();
@@ -1055,6 +1137,16 @@ impl Hub {
         if seen_ver != Some(ver) {
             text.push_str(&format!("[Recursion] Members of this chat: {roster}. You are @{}.\n", m.alias));
             self.rt(panel, |r| r.roster_seen.insert(m.id.clone(), ver));
+        }
+        // The chat's rules: again whenever they changed since this agent last got them.
+        let (rules, rver, rseen) = (self.with_ws(panel, |ws| ws.settings.rules.clone()), self.rt(panel, |r| r.rules_version), self.rt(panel, |r| r.rules_seen.get(&m.id).copied()));
+        if rseen != Some(rver) {
+            if !rules.is_empty() {
+                text.push_str(&format!("[Recursion] Rules the human set for this chat (they replace any earlier ones; follow them):\n{rules}\n"));
+            } else if rseen.is_some() {
+                text.push_str("[Recursion] The human removed this chat's rules.\n");
+            }
+            self.rt(panel, |r| r.rules_seen.insert(m.id.clone(), rver));
         }
         if omitted > 0 {
             text.push_str(&format!("[Recursion] ({omitted} earlier messages omitted)\n"));

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Must match `recursiond::PROTOCOL`.
-const PROTOCOL: u32 = 27;
+const PROTOCOL: u32 = 28;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct DaemonInfo {
@@ -90,8 +90,15 @@ fn spawn_daemon() -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+/// The daemon to talk to, started (or replaced when outdated) if need be. Runs on a worker
+/// thread: it can wait several seconds, and the main thread must keep answering the window
+/// system meanwhile (on macOS a blocked main thread bounces in the Dock and ignores Quit).
 #[tauri::command]
-fn daemon_info() -> Result<DaemonInfo, String> {
+async fn daemon_info() -> Result<DaemonInfo, String> {
+    tauri::async_runtime::spawn_blocking(find_or_start_daemon).await.map_err(|e| e.to_string())?
+}
+
+fn find_or_start_daemon() -> Result<DaemonInfo, String> {
     if let Some(info) = read_discovery().filter(healthy) {
         if current(&info) {
             return Ok(info);
@@ -131,12 +138,14 @@ fn dev_tour() -> Option<String> {
 /// Writes a file a doc page downloaded (an exported diagram, say) to the path the human picked.
 /// The bytes are the raw request body; the path comes percent-encoded in the `path` header.
 #[tauri::command]
-fn save_bytes(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+async fn save_bytes(request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected raw bytes".into());
     };
-    let path = request.headers().get("path").and_then(|v| v.to_str().ok()).ok_or("missing path")?;
-    std::fs::write(percent_decode(path)?, bytes).map_err(|e| e.to_string())
+    let path = percent_decode(request.headers().get("path").and_then(|v| v.to_str().ok()).ok_or("missing path")?)?;
+    // Off the main thread: a big export must not freeze the window.
+    let bytes = bytes.clone();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(path, bytes)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
 }
 
 /// Undoes `encodeURIComponent`.
@@ -157,16 +166,44 @@ fn percent_decode(s: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|e| e.to_string())
 }
 
+/// A newer release found by `update_check`, kept for `update_install`.
+#[derive(Default)]
+struct PendingUpdate(std::sync::Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// The version of a newer published release, if any. The background check ignores errors
+/// (offline, no build for this platform); Settings shows them.
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<Option<String>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let found = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| e.to_string())?;
+    let version = found.as_ref().map(|u| u.version.clone());
+    *pending.0.lock().unwrap() = found;
+    Ok(version)
+}
+
+/// Downloads and installs the release `update_check` found, then restarts into it. The daemon
+/// keeps running; the new app replaces it because its binary on disk changed (see `current`).
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, pending: tauri::State<'_, PendingUpdate>) -> Result<(), String> {
+    let update = pending.0.lock().unwrap().take().ok_or("no update")?;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(PendingUpdate::default())
         .invoke_handler(tauri::generate_handler![
             daemon_info,
             dev_tour,
             save_bytes,
+            update_check,
+            update_install,
             browser::browser_show,
             browser::browser_bounds,
             browser::browser_hide,
@@ -176,6 +213,27 @@ pub fn run() {
             browser::browser_ensure,
             browser::browser_agent
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Recursion");
+        // macOS: closing the window keeps the app in the Dock, and clicking the Dock icon brings
+        // the window back. Quitting the app on close looked like "it won't open" to people.
+        .on_window_event(|window, event| {
+            if cfg!(target_os = "macos") && window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while running Recursion")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                use tauri::Manager;
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            let _ = (app, event);
+        });
 }

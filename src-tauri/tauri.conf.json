@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Recursion",
-  "version": "0.1.0",
+  "version": "0.1.10",
   "identifier": "dev.recursion.app",
   "build": {
     "frontendDist": "../dist",
@@ -44,6 +44,15 @@
     ],
     "externalBin": [
       "binaries/recursiond"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYxNDg3NjA4MTI1NUVDQjcKUldTMzdGVVNDSFpJWVZEOVVBV1BDNEpXTlI1NDNnbUV2UkQwOFNZUmFBSkJkWkQxZGhvWGMzTU0K",
+      "endpoints": [
+        "https://github.com/AndyWeiBoan/recursion-releases/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

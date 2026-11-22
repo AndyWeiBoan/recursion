@@ -1,8 +1,9 @@
 //! Several logins per CLI. Each extra account is a config folder (`~/.recursion/accounts/<id>/`)
 //! handed to the CLI as `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; only the login lives there, the rest
-//! (settings, CLAUDE.md, skills, …) is linked back to `~/.claude` / `~/.codex`. The default account
-//! of each kind is the CLI's own folder, untouched. An agent keeps the account it was created with:
-//! its conversation is stored in that folder.
+//! (settings, CLAUDE.md, skills, …) is linked back to `~/.claude` / `~/.codex`. The login the CLI
+//! already had on this computer (its own folder, untouched) can be added too, as `<kind>-default`;
+//! nothing is added on its own. An agent keeps the account it was created with: its conversation
+//! is stored in that folder.
 
 use crate::i18n::tr;
 use crate::workspace::{now_ms, AgentKind};
@@ -74,11 +75,14 @@ pub fn env_prefix(kind: AgentKind, id: &str) -> String {
     }
 }
 
-pub fn login_command(kind: AgentKind, id: &str) -> String {
+/// `bin` is the CLI's full path when known: one installed a moment ago is not on the terminal's
+/// PATH yet.
+pub fn login_command(kind: AgentKind, id: &str, bin: Option<&str>) -> String {
     let p = env_prefix(kind, id);
+    let bin = bin.map(|b| format!("'{}'", b.replace('\'', r"'\''"))).unwrap_or_else(|| if kind == AgentKind::Claude { "claude".into() } else { "codex".into() });
     match kind {
-        AgentKind::Claude => format!("{p}claude auth login"),
-        AgentKind::Codex => format!("{p}codex login"),
+        AgentKind::Claude => format!("{p}{bin} auth login"),
+        AgentKind::Codex => format!("{p}{bin} login"),
     }
 }
 
@@ -90,10 +94,11 @@ pub struct Accounts {
 impl Accounts {
     pub fn load() -> Self {
         let mut list: Vec<Account> = std::fs::read(file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        for kind in [AgentKind::Claude, AgentKind::Codex] {
-            if !list.iter().any(|a| a.id == default_id(kind)) {
-                list.insert(0, Account { id: default_id(kind).into(), kind, name: "預設".into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() });
-            }
+        // Older versions put the CLI's own login in the list unasked, named 預設 ("default"): keep
+        // it only if it was really logged in, under its email.
+        list.retain(|a| !a.id.ends_with("-default") || a.logged_in || a.email.is_some());
+        for a in list.iter_mut().filter(|a| a.name == "預設") {
+            a.name = a.email.clone().unwrap_or_default();
         }
         Accounts { list: Mutex::new(list) }
     }
@@ -126,12 +131,10 @@ impl Accounts {
         }
     }
 
+    /// A new, empty login. Without a name it is named after its email once logged in.
     pub fn create(&self, kind: AgentKind, name: &str) -> Result<Account, String> {
         let name = name.trim();
-        if name.is_empty() {
-            return Err(tr!("acct.err.emptyName"));
-        }
-        if self.list.lock().unwrap().iter().any(|a| a.kind == kind && a.name == name) {
+        if !name.is_empty() && self.list.lock().unwrap().iter().any(|a| a.kind == kind && a.name == name) {
             return Err(tr!("acct.err.duplicate", name = name));
         }
         let id = crate::model::new_id();
@@ -164,11 +167,27 @@ impl Accounts {
         Ok(())
     }
 
+    /// Add the login the CLI already has on this computer (its own folder).
+    pub fn adopt(&self, kind: AgentKind) -> Account {
+        let id = default_id(kind);
+        if let Some(a) = self.get(id) {
+            return a;
+        }
+        let a = Account { id: id.into(), kind, name: String::new(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() };
+        self.list.lock().unwrap().push(a.clone());
+        self.save();
+        a
+    }
+
+    /// Take an account out of Recursion. An added CLI login stays logged in on the computer; an
+    /// account made here loses its folder (and the login in it).
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let d = dir(id).ok_or_else(|| tr!("acct.err.deleteDefault"))?;
+        self.get(id).ok_or_else(|| tr!("err.noAccount"))?;
         self.list.lock().unwrap().retain(|a| a.id != id);
         self.save();
-        let _ = std::fs::remove_dir_all(d);
+        if let Some(d) = dir(id) {
+            let _ = std::fs::remove_dir_all(d);
+        }
         Ok(())
     }
 
@@ -192,37 +211,20 @@ impl Accounts {
     /// Ask the CLI who is logged in on this account. Returns whether anything changed.
     pub async fn refresh(&self, id: &str, path: &str, claude: Option<&str>, codex: Option<&str>) -> bool {
         let Some(a) = self.get(id) else { return false };
-        let (logged_in, email, plan) = match a.kind {
-            AgentKind::Claude => {
-                let Some(bin) = claude else { return false };
-                let mut cmd = Command::new(bin);
-                cmd.args(["auth", "status"]).env("PATH", path);
-                self.apply(&mut cmd, a.kind, Some(id));
-                let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
-                let Ok(Ok(out)) = out else { return false };
-                let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-                (v["loggedIn"].as_bool().unwrap_or(false), v["email"].as_str().map(String::from), v["subscriptionType"].as_str().map(String::from))
-            }
-            AgentKind::Codex => {
-                let Some(bin) = codex else { return false };
-                let mut cmd = Command::new(bin);
-                cmd.args(["login", "status"]).env("PATH", path);
-                self.apply(&mut cmd, a.kind, Some(id));
-                let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await;
-                let Ok(Ok(out)) = out else { return false };
-                let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
-                let ok = out.status.success() && !text.to_lowercase().contains("not logged in");
-                let (email, plan) = codex_identity(id);
-                (ok, email, plan)
-            }
-        };
+        let Some((logged_in, email, plan)) = status(a.kind, id, path, claude, codex).await else { return false };
         let mut list = self.list.lock().unwrap();
         let Some(a) = list.iter_mut().find(|a| a.id == id) else { return false };
-        let changed = a.logged_in != logged_in || a.email != email || a.plan != plan;
+        let mut changed = a.logged_in != logged_in || a.email != email || a.plan != plan;
         a.logged_in = logged_in;
         if logged_in {
             a.email = email;
             a.plan = plan;
+            if a.name.is_empty() {
+                if let Some(e) = &a.email {
+                    a.name = e.clone();
+                    changed = true;
+                }
+            }
         }
         drop(list);
         if changed {
@@ -232,9 +234,55 @@ impl Accounts {
     }
 }
 
+/// Who is logged in on an account's folder (`<kind>-default`: the CLI's own): (logged in, email,
+/// plan), or `None` when the CLI is missing or did not answer.
+pub async fn status(kind: AgentKind, id: &str, path: &str, claude: Option<&str>, codex: Option<&str>) -> Option<(bool, Option<String>, Option<String>)> {
+    let mut cmd = match kind {
+        AgentKind::Claude => {
+            let mut c = Command::new(claude?);
+            c.args(["auth", "status"]);
+            c
+        }
+        AgentKind::Codex => {
+            let mut c = Command::new(codex?);
+            c.args(["login", "status"]);
+            c
+        }
+    };
+    cmd.env("PATH", path).stdin(std::process::Stdio::null());
+    if let Some(d) = dir(id) {
+        cmd.env(env_var(kind), d);
+    }
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output()).await.ok()?.ok()?;
+    Some(match kind {
+        AgentKind::Claude => {
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+            (v["loggedIn"].as_bool().unwrap_or(false), v["email"].as_str().map(String::from), v["subscriptionType"].as_str().map(String::from))
+        }
+        AgentKind::Codex => {
+            let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+            let ok = out.status.success() && !text.to_lowercase().contains("not logged in");
+            let (email, plan) = codex_identity(id);
+            (ok, email, plan)
+        }
+    })
+}
+
+/// The official installer, run in a terminal: puts the CLI in ~/.local/bin, no root needed.
+pub fn install_command(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::Claude => "curl -fsSL https://claude.ai/install.sh | bash",
+        AgentKind::Codex => "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
+    }
+}
+
 /// When the account's login file last changed: a fresh login rewrites it, even if the CLI
 /// already counted the account as logged in (an expired token still "is" a login).
 pub fn credentials_mtime(kind: AgentKind, id: &str) -> Option<std::time::SystemTime> {
+    #[cfg(target_os = "macos")]
+    if kind == AgentKind::Claude {
+        return keychain::modified(&keychain::claude_service(id));
+    }
     let home = dirs::home_dir().unwrap_or_default();
     let base = dir(id).unwrap_or_else(|| home.join(if kind == AgentKind::Claude { ".claude" } else { ".codex" }));
     let f = base.join(if kind == AgentKind::Claude { ".credentials.json" } else { "auth.json" });
@@ -256,10 +304,57 @@ pub async fn fetch_usage(kind: AgentKind, id: &str, path: &str, codex: Option<&s
     r
 }
 
-async fn claude_usage(id: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+/// The login Claude Code saved for this account: a file on Linux, the login keychain on macOS.
+fn claude_credentials(id: &str) -> Option<serde_json::Value> {
     let base = dir(id).unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
-    let raw = std::fs::read(base.join(".credentials.json")).ok()?;
-    let creds: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    if let Some(v) = std::fs::read(base.join(".credentials.json")).ok().and_then(|raw| serde_json::from_slice(&raw).ok()) {
+        return Some(v);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(v) = keychain::secret(&keychain::claude_service(id)).and_then(|raw| serde_json::from_str(&raw).ok()) {
+        return Some(v);
+    }
+    None
+}
+
+/// macOS keeps Claude Code's login in the login keychain instead of `.credentials.json`. Read
+/// through `security`, as Claude Code itself does, so no keychain prompt appears.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::process::Command;
+
+    /// "Claude Code-credentials"; an account with its own config folder adds the first 8 hex
+    /// digits of that folder's SHA-256.
+    pub fn claude_service(id: &str) -> String {
+        let Some(dir) = super::dir(id) else { return "Claude Code-credentials".into() };
+        let out = Command::new("/bin/sh").args(["-c", "printf %s \"$1\" | /usr/bin/shasum -a 256", "sh"]).arg(dir).output().ok();
+        let hash = out.map(|o| String::from_utf8_lossy(&o.stdout).chars().take(8).collect::<String>()).unwrap_or_default();
+        format!("Claude Code-credentials-{hash}")
+    }
+
+    fn user() -> String {
+        std::env::var("USER").unwrap_or_default()
+    }
+
+    pub fn secret(service: &str) -> Option<String> {
+        let out = Command::new("/usr/bin/security").args(["find-generic-password", "-a", &user(), "-s", service, "-w"]).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// When the item last changed (its `mdat`), without reading the secret.
+    pub fn modified(service: &str) -> Option<std::time::SystemTime> {
+        let out = Command::new("/usr/bin/security").args(["find-generic-password", "-a", &user(), "-s", service]).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        // "mdat"<timedate>=0x… "20261122041722Z\000"
+        let line = text.lines().find(|l| l.contains("\"mdat\""))?;
+        let stamp = line.split('"').nth(3)?.get(..14)?;
+        let t = super::parse_rfc3339(&format!("{}-{}-{}T{}:{}:{}Z", &stamp[0..4], &stamp[4..6], &stamp[6..8], &stamp[8..10], &stamp[10..12], &stamp[12..14]))?;
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t))
+    }
+}
+
+async fn claude_usage(id: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+    let creds = claude_credentials(id)?;
     let oauth = &creds["claudeAiOauth"];
     let token = oauth["accessToken"].as_str()?;
     if oauth["expiresAt"].as_u64().is_some_and(|t| t <= now_ms()) {
@@ -397,7 +492,8 @@ mod tests {
         assert!(dir("../etc").is_none());
         assert!(dir("abc123").is_some());
         assert_eq!(env_prefix(AgentKind::Claude, "claude-default"), "");
-        assert!(login_command(AgentKind::Codex, "abc123").starts_with("CODEX_HOME='"));
+        assert!(login_command(AgentKind::Codex, "abc123", None).starts_with("CODEX_HOME='"));
+        assert!(login_command(AgentKind::Codex, "abc123", Some("/a b/codex")).ends_with("'/a b/codex' login"));
     }
 
     #[test]

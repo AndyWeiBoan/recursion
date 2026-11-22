@@ -162,7 +162,7 @@ function host(url: string) {
 /** Icon, label and detail for one panel, as the tree shows it. */
 function describe(p: Panel, docs: Doc[], terms: Record<string, TermInfo>) {
   if (p.kind === "terminal") return { icon: ICON.terminal, cls: "terminal", label: t("kind.terminal"), detail: terms[p.id]?.fg ?? "shell" };
-  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: t("kind.workspace"), detail: "" };
+  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: p.title || t("kind.workspace"), detail: "" };
   if (p.url?.startsWith("doc:")) {
     const d = docs.find((x) => x.id === p.url!.slice(4));
     return { icon: "▤", cls: "browser", label: t("kind.doc"), detail: d?.title ?? t("common.deleted") };

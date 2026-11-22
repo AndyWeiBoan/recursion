@@ -11,6 +11,23 @@ export interface Panel {
   id: string;
   kind: PanelKind;
   url?: string | null;
+  /** A chat's own name, from its settings. */
+  title?: string;
+}
+
+/** Starting values for agents added in a session. */
+export interface AgentDefaults {
+  kind?: AgentKind;
+  claude_model?: string;
+  codex_model?: string;
+  mode?: PermMode;
+}
+
+/** A chat's name, standing rules for its agents, and spending limit. */
+export interface ChatSettings {
+  name: string;
+  rules: string;
+  budget_usd?: number;
 }
 
 export interface Window {
@@ -28,6 +45,7 @@ export interface Session {
   windows: Window[];
   active_window: string | null;
   docs?: Doc[];
+  defaults?: AgentDefaults;
 }
 
 /** An HTML document an agent wrote for the session; browser panels show it at `doc:<id>`. */
@@ -79,12 +97,19 @@ export type Cmd =
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
   | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
   | { t: "set_lang"; lang: string | null }
+  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults }
+  | { t: "ws_settings"; panel: string; settings: ChatSettings }
   | { t: "ws_compact"; panel: string; member: string }
   | { t: "accounts_list" }
   | { t: "accounts_refresh" }
   | { t: "daemon_info" }
   | { t: "daemon_restart" }
-  | { t: "account_create"; kind: AgentKind; name: string }
+  | { t: "account_create"; kind: AgentKind; name?: string }
+  | { t: "account_adopt"; kind: AgentKind }
+  | { t: "logins_detect" }
+  | { t: "cli_status"; fresh?: boolean }
+  | { t: "cli_install"; kind: AgentKind }
+  | { t: "setup_close"; panel: string }
   | { t: "account_login"; account: string }
   | { t: "account_rename"; account: string; name: string }
   | { t: "account_remove"; account: string }
@@ -255,6 +280,7 @@ export interface Workspace {
   /** Documents and pages the agents made for this chat. */
   artifacts?: Artifact[];
   round?: { active: boolean; queued: number };
+  settings?: ChatSettings;
 }
 
 export interface Artifact {

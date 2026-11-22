@@ -190,10 +190,211 @@ pub async fn browser_agent<R: Runtime>(app: AppHandle<R>, panel: String, op: Str
             Err(_) => Err("The browser did not answer within 60 seconds".into()),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        match tokio::time::timeout(std::time::Duration::from_secs(60), mac_agent::run(&wv, &op, &args)).await {
+            Ok(r) => r,
+            Err(_) => Err("The browser did not answer within 60 seconds".into()),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (wv, op, args);
-        Err("Agents can't drive the browser on macOS yet".into())
+        Err("Agents can't drive the browser on this system yet".into())
+    }
+}
+
+/// The same steps as `agent` (Linux) on macOS's WKWebView. Each WebKit call happens on the main
+/// thread (`with_webview`) and hands its answer back through a channel; the waiting happens here.
+#[cfg(target_os = "macos")]
+mod mac_agent {
+    use base64::Engine;
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber, NSString};
+    use objc2_web_kit::{WKContentWorld, WKSnapshotConfiguration, WKWebView};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use tauri::{Runtime, Webview};
+    use tokio::sync::oneshot;
+
+    const PAGE: &str = include_str!("agent_page.js");
+    /// Screenshots are at most this many pixels wide.
+    const SHOT_WIDTH: f64 = 1280.0;
+
+    /// Run `f` with the WKWebView on the main thread; `f` answers through the sender it gets.
+    async fn on_main<R: Runtime, T: Send + 'static>(wv: &Webview<R>, f: impl FnOnce(&WKWebView, oneshot::Sender<T>) + Send + 'static) -> Result<T, String> {
+        let (tx, rx) = oneshot::channel();
+        wv.with_webview(move |p| {
+            // SAFETY: on macOS `inner()` is the WKWebView, and this closure runs on the main thread.
+            let v: &WKWebView = unsafe { &*(p.inner() as *const WKWebView) };
+            f(v, tx);
+        })
+        .map_err(|e| e.to_string())?;
+        rx.await.map_err(|_| "The browser went away".to_string())
+    }
+
+    fn error_text(e: *mut NSError) -> String {
+        // SAFETY: WebKit passes a valid NSError or null.
+        unsafe { e.as_ref() }.map(|e| e.localizedDescription().to_string()).unwrap_or_else(|| "unknown error".into())
+    }
+
+    /// The page script, in WebKit's isolated client world (the page's own scripts can't see it).
+    async fn page<R: Runtime>(wv: &Webview<R>, op: &str, args: &Value) -> Result<Value, String> {
+        let body = format!("const op = {};\nconst args = {};\n{PAGE}", json!(op), args);
+        let r: Result<String, String> = on_main(wv, move |v, tx| {
+            let tx = Mutex::new(Some(tx));
+            let done = RcBlock::new(move |res: *mut AnyObject, err: *mut NSError| {
+                let out = if !err.is_null() {
+                    Err(format!("Script error in the page: {}", error_text(err)))
+                } else {
+                    // SAFETY: WebKit passes the function's result (our JSON string) or null.
+                    match unsafe { res.as_ref() }.and_then(|o| o.downcast_ref::<NSString>()) {
+                        Some(s) => Ok(s.to_string()),
+                        None => Err("The page returned nothing".into()),
+                    }
+                };
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(out);
+                }
+            });
+            let mtm = MainThreadMarker::new().expect("with_webview runs on the main thread");
+            let args: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::new();
+            // SAFETY: plain WebKit call on the main thread with valid arguments.
+            unsafe {
+                v.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                    &NSString::from_str(&body),
+                    Some(&args),
+                    None,
+                    &WKContentWorld::defaultClientWorld(mtm),
+                    Some(&done),
+                )
+            };
+        })
+        .await?;
+        let out: Value = serde_json::from_str(&r?).map_err(|e| format!("Couldn't read what the page returned: {e}"))?;
+        match out.get("error").and_then(|e| e.as_str()) {
+            Some(e) => Err(e.to_string()),
+            None => Ok(out),
+        }
+    }
+
+    /// (loading, current url)
+    async fn state<R: Runtime>(wv: &Webview<R>) -> (bool, Option<String>) {
+        on_main(wv, |v, tx| {
+            // SAFETY: plain property reads on the main thread.
+            let r = unsafe { (v.isLoading(), v.URL().and_then(|u| u.absoluteString()).map(|s| s.to_string())) };
+            let _ = tx.send(r);
+        })
+        .await
+        .unwrap_or((false, None))
+    }
+
+    /// Until the page has loaded (or 20 s): WebKit's own flag, then the document's.
+    async fn settle<R: Runtime>(wv: &Webview<R>) {
+        let end = Instant::now() + Duration::from_secs(20);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        while Instant::now() < end {
+            if !state(wv).await.0 {
+                if let Ok(i) = page(wv, "info", &json!({})).await {
+                    if i["ready"] == "complete" {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+    }
+
+    async fn screenshot<R: Runtime>(wv: &Webview<R>) -> Result<Value, String> {
+        let png: Result<(Vec<u8>, usize, usize), String> = on_main(wv, |v, tx| {
+            let mtm = MainThreadMarker::new().expect("with_webview runs on the main thread");
+            let width = v.bounds().size.width;
+            if width < 2.0 || v.bounds().size.height < 2.0 {
+                let _ = tx.send(Err("The view is empty (the panel may not have been shown yet)".into()));
+                return;
+            }
+            let scale = v.window().map(|w| w.backingScaleFactor()).unwrap_or(1.0);
+            // SAFETY: WebKit objects created and used on the main thread.
+            let conf = unsafe { WKSnapshotConfiguration::new(mtm) };
+            unsafe { conf.setSnapshotWidth(Some(&NSNumber::new_f64(width.min(SHOT_WIDTH / scale)))) };
+            let tx = Mutex::new(Some(tx));
+            let done = RcBlock::new(move |img: *mut NSImage, err: *mut NSError| {
+                // SAFETY: WebKit passes a valid NSImage or null.
+                let out = match unsafe { img.as_ref() } {
+                    None => Err(format!("Screenshot failed: {}", error_text(err))),
+                    Some(img) => img
+                        .TIFFRepresentation()
+                        .and_then(|tiff| NSBitmapImageRep::imageRepWithData(&tiff))
+                        .and_then(|rep| {
+                            // SAFETY: standard PNG encoding with no options.
+                            let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+                            Some((data.to_vec(), rep.pixelsWide() as usize, rep.pixelsHigh() as usize))
+                        })
+                        .ok_or_else(|| "Couldn't encode the screenshot".to_string()),
+                };
+                if let Some(tx) = tx.lock().unwrap().take() {
+                    let _ = tx.send(out);
+                }
+            });
+            // SAFETY: plain WebKit call on the main thread.
+            unsafe { v.takeSnapshotWithConfiguration_completionHandler(Some(&conf), &done) };
+        })
+        .await?;
+        let (png, w, h) = png?;
+        Ok(json!({ "png": base64::engine::general_purpose::STANDARD.encode(png), "width": w, "height": h }))
+    }
+
+    pub async fn run<R: Runtime>(wv: &Webview<R>, op: &str, args: &Value) -> Result<Value, String> {
+        match op {
+            "open" => {
+                let url = args["url"].as_str().ok_or("Missing url")?;
+                // Already there, or already loading it (a new webview, or the panel itself navigated).
+                if state(wv).await.1.as_deref() != Some(url) {
+                    wv.navigate(super::parse(url)?).map_err(|e| e.to_string())?;
+                }
+                settle(wv).await;
+                page(wv, "read", &json!({})).await
+            }
+            "read" => page(wv, "read", args).await,
+            "click" | "fill" => {
+                let before = state(wv).await.1;
+                let mut quiet = args.clone();
+                quiet["defer"] = json!(false);
+                let mut r = page(wv, op, &quiet).await?;
+                let what = if op == "click" { Some("click") } else if args["submit"].as_bool().unwrap_or(false) { Some("submit") } else { None };
+                if let Some(what) = what {
+                    // Its own call, since it may navigate away mid-call and never answer.
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let _ = tokio::time::timeout(Duration::from_secs(2), page(wv, "act", &json!({ "ref": args["ref"], "what": what }))).await;
+                }
+                // A click may start a navigation: let it land before reporting where we are.
+                tokio::time::sleep(Duration::from_millis(350)).await;
+                let (loading, now) = state(wv).await;
+                if loading || now != before {
+                    settle(wv).await;
+                    if let Ok(i) = page(wv, "info", &json!({})).await {
+                        r["url"] = i["url"].clone();
+                        r["title"] = i["title"].clone();
+                        r["navigated"] = json!(true);
+                    }
+                }
+                Ok(r)
+            }
+            "screenshot" => {
+                let mut r = screenshot(wv).await?;
+                if let Ok(i) = page(wv, "info", &json!({})).await {
+                    r["url"] = i["url"].clone();
+                    r["title"] = i["title"].clone();
+                }
+                Ok(r)
+            }
+            other => Err(format!("Unknown browser action: {other}")),
+        }
     }
 }
 

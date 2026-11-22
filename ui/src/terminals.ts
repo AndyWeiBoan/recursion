@@ -126,10 +126,19 @@ export function restartTerminal(id: string) {
   if (e) send({ t: "term_restart", panel: id, cols: e.term.cols, rows: e.term.rows });
 }
 
-/** Drop terminals whose panels no longer exist. */
+/** Drop one terminal (a closed setup terminal). */
+export function disposeTerminal(id: string) {
+  const e = entries.get(id);
+  if (!e) return;
+  e.term.dispose();
+  e.el.remove();
+  entries.delete(id);
+}
+
+/** Drop terminals whose panels no longer exist. Setup terminals belong to no panel. */
 export function pruneTerminals(alive: Set<string>) {
   entries.forEach((e, id) => {
-    if (!alive.has(id)) {
+    if (!alive.has(id) && !id.startsWith("setup-")) {
       e.term.dispose();
       e.el.remove();
       entries.delete(id);

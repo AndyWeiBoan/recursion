@@ -33,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 27;
+pub const PROTOCOL: u32 = 28;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -85,6 +85,10 @@ enum In {
     SessionDelete { session: String },
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
+    /// A session's project folder and the defaults for agents added to it.
+    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults },
+    /// A chat's name, rules and budget.
+    WsSettings { panel: String, settings: workspace::ChatSettings },
     SessionSelect { session: String },
     WindowCreate { session: String, kind: Option<PanelKind> },
     WindowSelect { session: String, window: String },
@@ -146,8 +150,19 @@ enum In {
     DaemonInfo,
     /// Exit cleanly; the desktop app starts a fresh daemon (the current binary) when it reconnects.
     DaemonRestart,
-    AccountCreate { kind: AgentKind, name: String },
+    /// `name` may be empty: the account is then named after its email once logged in.
+    AccountCreate { kind: AgentKind, #[serde(default)] name: String },
     AccountLogin { account: String },
+    /// Add the login a CLI already has on this computer.
+    AccountAdopt { kind: AgentKind },
+    /// Logins the CLIs already have here that are not in Recursion yet (setup, add account).
+    LoginsDetect,
+    /// Which CLIs are installed; `fresh` looks again instead of using what is known.
+    CliStatus { #[serde(default)] fresh: bool },
+    /// Run a CLI's official installer in a setup terminal.
+    CliInstall { kind: AgentKind },
+    /// The setup terminal was closed.
+    SetupClose { panel: String },
     AccountRename { account: String, name: String },
     AccountRemove { account: String },
     /// This client is the desktop app and can run agents' browser steps.
@@ -196,21 +211,27 @@ impl App {
         }
     }
 
-    /// Open a terminal window in the current session that runs the CLI's own login for this
-    /// account, then watch until the login lands.
-    fn account_login(&self, account: &str) -> Result<(), String> {
+    /// A setup terminal (not part of any session) that runs `cmd` once the UI shows it. Returns
+    /// the message telling the UI to show it, and whether it was started now: one that is still
+    /// running is shown again, never started twice (a second CLI login wipes the first).
+    fn setup_terminal(&self, panel: String, title: String, cmd: String) -> (String, bool) {
+        let running = self.terms.infos().get(&panel).is_some_and(|i| i.alive);
+        if !running {
+            self.terms.kill(&panel);
+            self.pending_cmd.lock().unwrap().insert(panel.clone(), cmd);
+        }
+        (serde_json::json!({ "t": "setup_panel", "panel": panel, "title": title }).to_string(), !running)
+    }
+
+    /// Run the CLI's own login for this account in a setup terminal, then watch until it lands.
+    async fn account_login(&self, account: &str) -> Result<String, String> {
         let a = self.hub.accounts.get(account).ok_or_else(|| tr!("err.noAccount"))?;
-        let panel = {
-            let mut st = self.state.lock().unwrap();
-            let session = st.active_session.clone().or_else(|| st.sessions.first().map(|s| s.id.clone())).ok_or_else(|| tr!("acct.err.needSession"))?;
-            let wid = st.create_window(&session, model::PanelKind::Terminal).map_err(|e| e.to_string())?;
-            let kind = if a.kind == AgentKind::Claude { "Claude" } else { "Codex" };
-            st.rename_window(&session, &wid, tr!("acct.loginWindow", kind = kind, name = a.name)).map_err(|e| e.to_string())?;
-            let s = st.sessions.iter().find(|s| s.id == session).unwrap();
-            s.windows.iter().find(|w| w.id == wid).unwrap().focus.clone()
-        };
-        self.pending_cmd.lock().unwrap().insert(panel, accounts::login_command(a.kind, &a.id));
-        self.mark_changed();
+        let kind_name = if a.kind == AgentKind::Claude { "Claude" } else { "Codex" };
+        let title = tr!("acct.loginWindow", kind = kind_name, name = if a.name.is_empty() { tr!("acct.newAccount") } else { a.name.clone() });
+        let (reply, started) = self.setup_terminal(format!("setup-login-{}", a.id), title, accounts::login_command(a.kind, &a.id, self.hub.cli_bin(a.kind).await.as_deref()));
+        if !started {
+            return Ok(reply);
+        }
         let hub = self.hub.clone();
         let (id, kind) = (a.id.clone(), a.kind);
         let before = accounts::credentials_mtime(kind, &id);
@@ -228,7 +249,27 @@ impl App {
                 }
             }
         });
-        Ok(())
+        Ok(reply)
+    }
+
+    /// Run a CLI's official installer in a setup terminal; tell the UI when the CLI shows up.
+    fn cli_install(&self, kind: AgentKind) -> String {
+        let name = if kind == AgentKind::Claude { "Claude Code" } else { "Codex" };
+        let (reply, started) = self.setup_terminal(format!("setup-install-{}", if kind == AgentKind::Claude { "claude" } else { "codex" }), tr!("setup.installing", name = name), accounts::install_command(kind).into());
+        if started {
+            let hub = self.hub.clone();
+            tokio::spawn(async move {
+                for _ in 0..200 {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let env = hub.redetect().await;
+                    if (kind == AgentKind::Claude && env.claude.is_some()) || (kind == AgentKind::Codex && env.codex.is_some()) {
+                        hub.broadcast(hub.cli_status(false).await);
+                        return;
+                    }
+                }
+            });
+        }
+        reply
     }
 
     /// Apply one client command. Returns an optional direct reply for the sender.
@@ -248,6 +289,17 @@ impl App {
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
+            SessionSettings { session, cwd, defaults } => {
+                let cwd = cwd.trim().to_string();
+                if !std::path::Path::new(&cwd).is_dir() {
+                    return Err(i18n::tr!("session.err.noFolder", path = cwd));
+                }
+                self.state.lock().unwrap().set_session_settings(&session, cwd, defaults).map_err(e)?;
+            }
+            WsSettings { panel, settings } => {
+                self.state.lock().unwrap().set_panel_title(&panel, settings.name.trim().to_string()).map_err(e)?;
+                self.hub.set_chat_settings(&panel, settings);
+            }
             SessionSelect { session } => self.state.lock().unwrap().select_session(&session).map_err(e)?,
             WindowCreate { session, kind } => {
                 self.state.lock().unwrap().create_window(&session, kind.unwrap_or(model::PanelKind::Terminal)).map_err(e)?;
@@ -280,7 +332,11 @@ impl App {
             PanelUrl { panel, url } => self.state.lock().unwrap().set_panel_url(&panel, url).map_err(e)?,
             LayoutResize { window, split, sizes } => self.state.lock().unwrap().resize(&window, &split, &sizes).map_err(e)?,
             TermAttach { panel, cols, rows } | TermRestart { panel, cols, rows } => {
-                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                let cwd = if panel.starts_with("setup-") {
+                    dirs::home_dir().unwrap_or_default().to_string_lossy().to_string()
+                } else {
+                    self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?
+                };
                 let back = self.terms.ensure(&panel, &cwd, cols.max(2), rows.max(2)).map_err(|e| e.to_string())?;
                 if let Some(cmd) = self.pending_cmd.lock().unwrap().remove(&panel) {
                     self.terms.write(&panel, format!("{cmd}\r").as_bytes());
@@ -415,9 +471,38 @@ impl App {
             AccountCreate { kind, name } => {
                 let a = self.hub.accounts.create(kind, &name)?;
                 self.hub.emit_accounts();
-                self.account_login(&a.id)?;
+                reply = Some(self.account_login(&a.id).await?);
+                changed = false;
             }
-            AccountLogin { account } => self.account_login(&account)?,
+            AccountLogin { account } => {
+                reply = Some(self.account_login(&account).await?);
+                changed = false;
+            }
+            AccountAdopt { kind } => {
+                let a = self.hub.accounts.adopt(kind);
+                self.hub.refresh_accounts(Some(&a.id)).await;
+                self.hub.emit_accounts();
+                changed = false;
+            }
+            LoginsDetect => {
+                reply = Some(self.hub.detect_logins().await.to_string());
+                changed = false;
+            }
+            CliStatus { fresh } => {
+                reply = Some(self.hub.cli_status(fresh).await.to_string());
+                changed = false;
+            }
+            CliInstall { kind } => {
+                reply = Some(self.cli_install(kind));
+                changed = false;
+            }
+            SetupClose { panel } => {
+                if panel.starts_with("setup-") {
+                    self.terms.kill(&panel);
+                    self.pending_cmd.lock().unwrap().remove(&panel);
+                }
+                changed = false;
+            }
             AccountRename { account, name } => {
                 self.hub.accounts.rename(&account, &name)?;
                 self.hub.emit_accounts();

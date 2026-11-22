@@ -39,6 +39,9 @@ pub struct Panel {
     /// The agent (member id) whose browser this is; it opens pages here with the browse_* tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// A chat's own name (its settings), shown instead of the kind.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,22 @@ pub struct Session {
     /// Documents agents wrote for this session (content lives in `docs/<session>/<id>.html`).
     #[serde(default)]
     pub docs: Vec<Doc>,
+    /// What the add-agent form starts from in this session.
+    #[serde(default)]
+    pub defaults: AgentDefaults,
+}
+
+/// Starting values for agents added in a session; empty fields keep the form's own defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AgentDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<crate::workspace::AgentKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<crate::workspace::PermMode>,
 }
 
 /// An HTML document attached to a session. Rewriting it replaces it (same id, higher rev).
@@ -235,7 +254,7 @@ impl State {
 
     fn new_panel(&mut self, kind: PanelKind) -> String {
         let id = new_id();
-        self.panels.insert(id.clone(), Panel { id: id.clone(), kind, url: None, agent: None });
+        self.panels.insert(id.clone(), Panel { id: id.clone(), kind, url: None, agent: None, title: String::new() });
         id
     }
 
@@ -255,6 +274,7 @@ impl State {
             active_window: Some(window.id.clone()),
             windows: vec![window],
             docs: vec![],
+            defaults: AgentDefaults::default(),
         };
         self.sessions.push(session);
         self.active_session = Some(id.clone());
@@ -277,6 +297,19 @@ impl State {
 
     pub fn rename_session(&mut self, id: &str, name: String) -> Res<()> {
         self.session_mut(id)?.name = name;
+        Ok(())
+    }
+
+    /// A session's project folder (new terminals and agents start there) and agent defaults.
+    pub fn set_session_settings(&mut self, id: &str, cwd: String, defaults: AgentDefaults) -> Res<()> {
+        let s = self.session_mut(id)?;
+        s.cwd = cwd;
+        s.defaults = defaults;
+        Ok(())
+    }
+
+    pub fn set_panel_title(&mut self, panel: &str, title: String) -> Res<()> {
+        self.panels.get_mut(panel).ok_or(ModelError::NotFound("panel"))?.title = title;
         Ok(())
     }
 

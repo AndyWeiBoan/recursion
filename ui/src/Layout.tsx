@@ -200,7 +200,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
     <section className={`panel${focused ? " focused" : ""}`} data-panel={panel.id} onMouseDown={focus}>
       <header className="panel-head">
         <button className="kind" onClick={() => setMenu((v) => !v)} title={t("panel.switchKind")}>
-          {KIND_LABEL[panel.kind]} ▾
+          {(panel.kind === "workspace" && panel.title) || KIND_LABEL[panel.kind]} ▾
         </button>
         {panel.kind === "workspace" ? <ChatHead panel={panel.id} /> : <span className="title">{title}</span>}
         {sourceChat && (
