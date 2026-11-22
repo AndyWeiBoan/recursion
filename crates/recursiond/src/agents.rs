@@ -147,7 +147,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], usage: None, body }
 }
 
 impl Hub {
@@ -485,6 +485,49 @@ impl Hub {
         Ok(())
     }
 
+    /// Lets this chat use files the human picked from their computer. One that is in the project
+    /// after all comes back as its project path (nothing to grant); the others are granted and
+    /// come back as canonical absolute paths. Missing files are left out.
+    pub fn grant(&self, panel: &str, cwd: &str, paths: &[String]) -> Vec<String> {
+        let root = std::fs::canonicalize(cwd).ok();
+        let mut out = Vec::new();
+        let mut granted = Vec::new();
+        for p in paths.iter().filter_map(|p| std::fs::canonicalize(p).ok()).filter(|p| p.is_file()) {
+            match root.as_ref().and_then(|r| p.strip_prefix(r).ok()) {
+                Some(rel) => out.push(rel.to_string_lossy().to_string()),
+                None => {
+                    let s = p.to_string_lossy().to_string();
+                    granted.push(s.clone());
+                    out.push(s);
+                }
+            }
+        }
+        if !granted.is_empty() {
+            self.with_ws(panel, |ws| {
+                for p in granted {
+                    if !ws.grants.contains(&p) {
+                        ws.grants.push(p);
+                    }
+                }
+            });
+            self.mark_dirty(panel);
+        }
+        out
+    }
+
+    /// A file this chat may use: inside the project, or one the human granted.
+    pub fn usable_file(&self, panel: &str, cwd: &str, path: &str) -> Option<std::path::PathBuf> {
+        if std::path::Path::new(path).is_absolute() {
+            let p = std::fs::canonicalize(path).ok()?;
+            if std::fs::canonicalize(cwd).is_ok_and(|root| p.starts_with(root)) {
+                return Some(p);
+            }
+            let s = p.to_string_lossy().to_string();
+            return self.with_ws(panel, |ws| ws.grants.contains(&s)).then_some(p);
+        }
+        crate::files::resolve(cwd, path)
+    }
+
     pub fn is_compacting(&self, panel: &str, member: &str) -> bool {
         self.rt(panel, |r| r.compacting.contains_key(member))
     }
@@ -633,9 +676,11 @@ impl Hub {
 
     /// A human message. It is shown right away; the round starts once the human has been quiet
     /// for MERGE_WINDOW_MS, or — if a round is running — right after that round ends.
-    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>) -> Result<(), String> {
+    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>, files: Vec<String>) -> Result<(), String> {
         let text = text.trim().to_string();
-        if text.is_empty() {
+        // Only files in the project, or picked from the computer (granted).
+        let files: Vec<String> = files.into_iter().filter(|f| self.usable_file(panel, &cwd, f).is_some()).collect();
+        if text.is_empty() && files.is_empty() {
             return Ok(());
         }
         let members: Vec<Member> = self.with_ws(panel, |ws| ws.members.clone());
@@ -646,6 +691,7 @@ impl Hub {
         let all = targeted.is_empty() || targeted.len() == members.len();
         let mut m = msg("you", Body::Text { text }, false);
         m.to = if all { vec![] } else { targeted.clone() };
+        m.files = files;
         m.via = via;
         m.reply_to = reply_to.and_then(|id| {
             self.with_ws(panel, |ws| {
@@ -965,7 +1011,12 @@ impl Hub {
                 .filter_map(|x| match &x.body {
                     Body::Text { text } if x.from == "you" => {
                         let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
-                        Some(format!("[#{} human → {to}{}]: {text}", x.seq, re(x)))
+                        let files = if x.files.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n(attached files, read them yourself: {})", x.files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", "))
+                        };
+                        Some(format!("[#{} human → {to}{}]: {text}{files}", x.seq, re(x)))
                     }
                     Body::Text { text } if x.from_thread.is_some() => Some(format!(
                         "[#{} @{} — conclusion of thread #{}, brought back to the chat]: {}",
@@ -1276,6 +1327,17 @@ impl ClaudeReader {
                 let req = &v["request"];
                 if req["subtype"] == "can_use_tool" {
                     let request_id = v["request_id"].as_str().unwrap_or("").to_string();
+                    // Reading a file the human picked for this chat was already their go-ahead.
+                    let read = matches!(req["tool_name"].as_str(), Some("Read" | "Grep" | "Glob" | "LS"));
+                    let target = req["input"]["file_path"].as_str().or(req["input"]["path"].as_str()).unwrap_or("");
+                    if read && !target.is_empty() && hub.usable_file(&panel, &self.cwd, target).is_some() && std::path::Path::new(target).is_absolute() {
+                        let (hub, panel, member, input) = (hub.clone(), panel.clone(), member.clone(), req["input"].clone());
+                        tokio::spawn(async move {
+                            let response = json!({ "behavior": "allow", "updatedInput": input });
+                            let _ = hub.write(&panel, &member, json!({ "type": "control_response", "response": { "subtype": "success", "request_id": request_id, "response": response } })).await;
+                        });
+                        return;
+                    }
                     let tool = req["display_name"].as_str().or(req["tool_name"].as_str()).unwrap_or("tool").to_string();
                     let (summary, detail) = summarize_tool(req["tool_name"].as_str().unwrap_or(""), &req["input"], &self.cwd);
                     let msg_id = self.new_msg(Body::Permission { request_id: request_id.clone(), tool, summary, detail, state: PermState::Pending }, false);

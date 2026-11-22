@@ -430,19 +430,30 @@ impl State {
     /// Show a doc next to `from` (a panel in the same session): focus the panel already showing
     /// it, otherwise split `from` and open it there. With `focus: false` the keyboard stays put.
     pub fn open_doc(&mut self, from: &str, doc: &str, focus: bool) -> Res<String> {
-        let (si, wi) = self.locate_panel(from)?;
+        let (si, _) = self.locate_panel(from)?;
         if !self.sessions[si].docs.iter().any(|d| d.id == doc) {
             return Err(ModelError::NotFound("doc"));
         }
-        let url = doc_url(doc);
+        self.open_beside(from, doc_url(doc), focus)
+    }
+
+    /// A project file in the viewer next to `from` (`path` relative to the session's folder).
+    pub fn open_file(&mut self, from: &str, path: &str, focus: bool) -> Res<String> {
+        self.open_beside(from, format!("file:{path}"), focus)
+    }
+
+    /// Shows `url` (a document or a file) next to `from`: focus the panel already showing it,
+    /// else switch a viewer panel (this window's first), else split `from`.
+    fn open_beside(&mut self, from: &str, url: String, focus: bool) -> Res<String> {
+        let (si, wi) = self.locate_panel(from)?;
         let existing = self.sessions[si]
             .windows
             .iter()
             .flat_map(|w| w.panel_ids())
             .find(|p| self.panels.get(p).is_some_and(|x| x.url.as_deref() == Some(url.as_str())));
-        // Not open yet: switch a panel that shows another document (this window's first), so
-        // documents take turns in one panel instead of piling up.
-        let is_doc = |p: &String| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.url.as_deref().is_some_and(|u| u.starts_with("doc:")));
+        // Not open yet: switch a panel that shows another document or file (this window's first),
+        // so they take turns in one panel instead of piling up.
+        let is_doc = |p: &String| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.url.as_deref().is_some_and(|u| u.starts_with("doc:") || u.starts_with("file:")));
         let windows = &self.sessions[si].windows;
         let reuse = existing.clone().or_else(|| {
             windows[wi].panel_ids().into_iter().find(|p| is_doc(p)).or_else(|| windows.iter().flat_map(|w| w.panel_ids()).find(|p| is_doc(p)))

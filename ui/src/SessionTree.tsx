@@ -167,6 +167,7 @@ function describe(p: Panel, docs: Doc[], terms: Record<string, TermInfo>) {
     const d = docs.find((x) => x.id === p.url!.slice(4));
     return { icon: "▤", cls: "browser", label: t("kind.doc"), detail: d?.title ?? t("common.deleted") };
   }
+  if (p.url?.startsWith("file:")) return { icon: "▤", cls: "browser", label: t("kind.file"), detail: p.url.slice(p.url.lastIndexOf("/") + 1).replace(/^file:/, "") };
   return { icon: ICON.browser, cls: "browser", label: t("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
 }
 

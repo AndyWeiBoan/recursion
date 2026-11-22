@@ -171,6 +171,18 @@ export async function connect() {
           docHtml.set(`${m.session}/${m.doc}`, m.html ?? null);
           docSubs.forEach((f) => f());
           break;
+        case "files":
+          projectFiles.set(m.panel, m.files);
+          fileSubs.forEach((f) => f());
+          break;
+        case "file":
+          fileContent.set(`${m.panel}/${m.path}`, m.file);
+          fileSubs.forEach((f) => f());
+          break;
+        case "files_granted":
+          grantWaiters.get(m.panel)?.(m.paths);
+          grantWaiters.delete(m.panel);
+          break;
         case "models":
           setModels(m.kind, { models: m.models, error: m.error ?? null, loading: false });
           break;
@@ -332,6 +344,62 @@ export function useModels(kind: AgentKind): ModelList {
 }
 
 // Document contents, fetched on demand and refetched when the doc's rev changes.
+// Project files (📎 picker) per panel, and the content of files open in viewers.
+const projectFiles = new Map<string, string[]>();
+const fileContent = new Map<string, FileContent>();
+const fileSubs = new Set<() => void>();
+export interface FileContent {
+  text?: string;
+  image?: string;
+  error?: string;
+  size: number;
+}
+
+const grantWaiters = new Map<string, (paths: string[]) => void>();
+
+/**
+ * Pick files anywhere on the computer (the system's own dialog) and let this chat use them:
+ * picking is the go-ahead for its agents to read them. Resolves to the accepted paths.
+ */
+export async function pickComputerFiles(panel: string): Promise<string[]> {
+  let paths: string[] = [];
+  if (isTauri) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const r = await open({ multiple: true, directory: false, title: t("file.fromComputer") });
+    paths = Array.isArray(r) ? r : typeof r === "string" ? [r] : [];
+  } else {
+    const p = window.prompt(t("file.fromComputerPrompt"), "");
+    paths = p ? [p] : [];
+  }
+  if (!paths.length) return [];
+  return new Promise((resolve) => {
+    grantWaiters.set(panel, resolve);
+    send({ t: "files_grant", panel, paths });
+  });
+}
+
+/** The project's files for a chat panel, asked for when `active` turns on; undefined while loading. */
+export function useProjectFiles(panel: string, active: boolean): string[] | undefined {
+  useEffect(() => {
+    if (active) send({ t: "files_list", panel });
+  }, [panel, active]);
+  return useSyncExternalStore(
+    (f) => (fileSubs.add(f), () => fileSubs.delete(f)),
+    () => projectFiles.get(panel),
+  );
+}
+
+/** A project file's content for the viewer; `rev` asks again (reload). */
+export function useProjectFile(panel: string, path: string, rev: number): FileContent | undefined {
+  useEffect(() => {
+    send({ t: "file_get", panel, path });
+  }, [panel, path, rev]);
+  return useSyncExternalStore(
+    (f) => (fileSubs.add(f), () => fileSubs.delete(f)),
+    () => fileContent.get(`${panel}/${path}`),
+  );
+}
+
 const docHtml = new Map<string, string | null>();
 const docSubs = new Set<() => void>();
 

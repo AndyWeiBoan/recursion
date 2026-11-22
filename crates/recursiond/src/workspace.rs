@@ -149,6 +149,9 @@ pub struct Message {
     /// The message the human was answering (their "回覆").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<ReplyRef>,
+    /// Project files the human attached (paths relative to the session's folder).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
@@ -209,6 +212,10 @@ pub struct Workspace {
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
     pub polls: Vec<Poll>,
+    /// Files outside the project the human picked from their computer: picking one lets the
+    /// chat's agents read it (and the viewer show it). Absolute, canonical paths.
+    #[serde(default)]
+    pub grants: Vec<String>,
     #[serde(default)]
     pub next_poll: u64,
 }
@@ -614,7 +621,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

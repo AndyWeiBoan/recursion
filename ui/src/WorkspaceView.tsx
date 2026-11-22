@@ -1,4 +1,5 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
+import { FileChip, FilePicker } from "./Files";
 import { useDragWidth } from "./Layout";
 import { Icon } from "./icons";
 import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
@@ -501,22 +502,25 @@ function Transcript({
   }, [messages.length, lastLen, busy.length]);
 
   const [menu, setMenu] = useState<CtxMenu | null>(null);
-  // Tool calls one agent makes back to back (within one turn) show as one line.
-  const { runs, inRun } = useMemo(() => {
-    const runs = new Map<string, Msg[]>();
-    const inRun = new Set<string>();
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i];
-      if (m.kind !== "tool") continue;
-      let j = i + 1;
-      while (j < messages.length && messages[j].kind === "tool" && messages[j].from === m.from && !messages[j].turn) j++;
-      if (j - i > 1) {
-        runs.set(m.id, messages.slice(i, j));
-        for (const x of messages.slice(i + 1, j)) inRun.add(x.id);
+  // One block per agent turn, even when other agents' messages land in between: its words in
+  // one bubble, its tool calls as one line under it, then cards (documents, approvals, errors).
+  const { turns, inTurn } = useMemo(() => {
+    const turns = new Map<string, Msg[]>();
+    const inTurn = new Set<string>();
+    const open = new Map<string, string>();
+    const own = new Set(["text", "tool", "doc", "permission", "error"]);
+    for (const m of messages) {
+      if (m.from === "you" || m.from === "system" || !own.has(m.kind)) continue;
+      const cur = open.get(m.from);
+      if (m.turn || !cur || (m.kind === "text" && m.from_thread)) {
+        open.set(m.from, m.id);
+        turns.set(m.id, [m]);
+      } else {
+        turns.get(cur)!.push(m);
+        inTurn.add(m.id);
       }
-      i = j - 1;
     }
-    return { runs, inRun };
+    return { turns, inTurn };
   }, [messages]);
   // Text selected inside one agent reply → a "discuss this" button next to it.
   const [pick, setPick] = useState<{ x: number; y: number; msg: string; quote: string } | null>(null);
@@ -581,21 +585,52 @@ function Transcript({
       }}
     >
       {messages.map((m, i) => {
-        if (inRun.has(m.id)) return null;
+        if (inTurn.has(m.id)) return null;
+        const turn = turns.get(m.id);
+        if (turn) {
+          const texts = turn.filter((x) => x.kind === "text");
+          const tools = turn.filter((x) => x.kind === "tool");
+          const rest = turn.filter((x) => x.kind !== "text" && x.kind !== "tool");
+          const blocks: { m: Msg; parts?: Msg[]; group?: Msg[] }[] = [
+            ...(texts.length ? [{ m: texts[0], parts: texts }] : []),
+            ...(tools.length ? [{ m: tools[0], group: tools.length > 1 ? tools : undefined }] : []),
+            ...rest.map((x) => ({ m: x })),
+          ];
+          const who = byId.get(m.from);
+          return blocks.map((b, k) => (
+            <MessageView key={b.m.id} panel={panel} m={b.m} who={who} byId={byId} first={k === 0} head={turn[0]} aliases={aliases} threads={threadCounts.get(b.m.id) ?? 0} parts={b.parts} partThreads={threadCounts} group={b.group} />
+          ));
+        }
         const prev = messages[i - 1];
         const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
         return (
-          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} group={runs.get(m.id)} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} />
+          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} />
         );
       })}
-      {waiting.map((b) => (
-        <div key={b.id} className="row agent">
-          <Avatar m={b} />
-          <div className="ws-busy">
-            <span className="spin">✳</span> @{b.alias} {STATUS_LABEL[b.status]}… <span className="dim">{tr("chat.escStops")}</span>
-          </div>
+      {/* Everyone still working, on one line: grouped by what they are doing. */}
+      {waiting.length > 0 && (
+        <div className="ws-busy-row">
+          <span className="spin">✳</span>
+          <span className="ws-busy-faces">
+            {waiting.map((b) => (
+              <Avatar key={b.id} m={b} size={18} />
+            ))}
+          </span>
+          <span className="ws-busy">
+            {[...new Set(waiting.map((b) => b.status))].map((st, i) => (
+              <span key={st}>
+                {i > 0 && " · "}
+                {waiting
+                  .filter((b) => b.status === st)
+                  .map((b) => `@${b.alias}`)
+                  .join(tr("common.listSep"))}{" "}
+                {STATUS_LABEL[st]}…
+              </span>
+            ))}
+          </span>
+          <span className="dim">{tr("chat.escStops")}</span>
         </div>
-      ))}
+      )}
       {pick &&
         createPortal(
           <button
@@ -696,6 +731,9 @@ const MessageView = memo(function MessageView({
   threads,
   group,
   poll,
+  parts,
+  partThreads,
+  head,
 }: {
   panel: string;
   m: Msg;
@@ -709,6 +747,12 @@ const MessageView = memo(function MessageView({
   group?: Msg[];
   /** For a poll message: the poll. */
   poll?: Poll;
+  /** An agent's whole turn in one bubble: its text messages, each a part of it. */
+  parts?: Msg[];
+  /** Threads per message, for the parts. */
+  partThreads?: Map<string, number>;
+  /** The turn's first message: the header shows its time and usage. */
+  head?: Msg;
 }) {
   const accounts = useAccounts();
 
@@ -730,7 +774,14 @@ const MessageView = memo(function MessageView({
           ) : (
             <div className="bubble you" data-msg={m.id}>
               {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
-              <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />
+              {m.text && <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />}
+              {!!m.files?.length && (
+                <div className="bubble-files">
+                  {m.files.map((f) => (
+                    <FileChip key={f} panel={panel} path={f} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
           <div className="meta">
@@ -775,30 +826,9 @@ const MessageView = memo(function MessageView({
   switch (m.kind) {
     case "text":
       body = (
-        <div className="bubble agent" data-msg={m.id} data-threadable={!m.streaming && who ? "" : undefined}>
-          {m.from_thread && (
-            <button className="from-thread" onClick={() => openThreads(panel, { view: { kind: "thread", id: m.from_thread!.thread }, msg: null })}>
-              ↩ {tr("thread.conclusionOf", { num: m.from_thread.num })}
-            </button>
-          )}
-          {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
-          {/* While it streams, a reply's opening `↩#12` isn't turned into the quote yet: hide it. */}
-          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.streaming ? m.text.replace(/^\s*↩\s*#\d+\s*/, "") : m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
-          {!m.streaming && who && threads > 0 && (
-            <button
-              className="thread-btn has"
-              title={tr("thread.countHint", { n: threads })}
-              // Keep the text selection: it becomes the quote.
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={(e) => {
-                const sel = window.getSelection();
-                const bubble = e.currentTarget.parentElement!;
-                const quote = sel && !sel.isCollapsed && bubble.contains(sel.anchorNode) ? sel.toString().trim() : "";
-                openThreadsFor(panel, m.id, threads, quote);
-              }}
-            >
-              💬 {threads}
-            </button>
+        <div className="bubble agent">
+          {(parts ?? [m]).map((p) =>
+            p.kind !== "text" ? null : <TextPart key={p.id} panel={panel} m={p} who={who} byId={byId} aliases={aliases} threads={partThreads?.get(p.id) ?? (p.id === m.id ? threads : 0)} />,
           )}
         </div>
       );
@@ -873,8 +903,8 @@ const MessageView = memo(function MessageView({
                 {accountName(accounts, who) && ` · ${accountName(accounts, who)}`}
               </span>
             )}
-            <span>{time(m.ts)}</span>
-            {m.usage && <UsageTag u={m.usage} />}
+            <span>{time((head ?? m).ts)}</span>
+            {(head ?? m).usage && <UsageTag u={(head ?? m).usage!} />}
           </div>
         )}
         {body}
@@ -882,6 +912,38 @@ const MessageView = memo(function MessageView({
     </div>
   );
 });
+
+/** One text message inside an agent's turn bubble: right-click, threads and quotes work per part. */
+function TextPart({ panel, m, who, byId, aliases, threads }: { panel: string; m: Extract<Msg, { kind: "text" }>; who?: Member; byId: Map<string, Member>; aliases: string[]; threads: number }) {
+  return (
+    <div className="bubble-part" data-msg={m.id} data-threadable={!m.streaming && who ? "" : undefined}>
+      {m.from_thread && (
+        <button className="from-thread" onClick={() => openThreads(panel, { view: { kind: "thread", id: m.from_thread!.thread }, msg: null })}>
+          ↩ {tr("thread.conclusionOf", { num: m.from_thread.num })}
+        </button>
+      )}
+      {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
+      {/* While it streams, a reply's opening `↩#12` isn't turned into the quote yet: hide it. */}
+      <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.streaming ? m.text.replace(/^\s*↩\s*#\d+\s*/, "") : m.text, aliases) + (m.streaming ? '<span class="caret"></span>' : "") }} />
+      {!m.streaming && who && threads > 0 && (
+        <button
+          className="thread-btn has"
+          title={tr("thread.countHint", { n: threads })}
+          // Keep the text selection: it becomes the quote.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={(e) => {
+            const sel = window.getSelection();
+            const bubble = e.currentTarget.parentElement!;
+            const quote = sel && !sel.isCollapsed && bubble.contains(sel.anchorNode) ? sel.toString().trim() : "";
+            openThreadsFor(panel, m.id, threads, quote);
+          }}
+        >
+          💬 {threads}
+        </button>
+      )}
+    </div>
+  );
+}
 
 type ToolMsg = Extract<Msg, { kind: "tool" }>;
 
@@ -969,6 +1031,9 @@ function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const replyId = useReplying(panel);
   const [polling, setPolling] = useState(false);
+  // Project files this message references (📎), and whether the picker is open.
+  const [files, setFiles] = useState<string[]>([]);
+  const [picking, setPicking] = useState(false);
   const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
   useEffect(() => {
     if ((focused || replyId) && !disabled) ref.current?.focus();
@@ -1025,10 +1090,11 @@ function Composer({
     { key: "fmt.quote", make: (t, a, b) => prefix(t, a, b, "quote") },
   ];
   const submit = () => {
-    if (!text.trim() || disabled) return;
-    send({ t: "ws_send", panel, text, reply_to: reply?.id });
+    if ((!text.trim() && !files.length) || disabled) return;
+    send({ t: "ws_send", panel, text, reply_to: reply?.id, files });
     setReplying(panel, null);
     setText("");
+    setFiles([]);
     setCaret(0);
   };
   const queued = round?.active ? round.queued : 0;
@@ -1084,10 +1150,31 @@ function Composer({
           </button>
         ))}
         <span className="cmp-sep" />
+        <button className={`cmp-tool${picking ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={() => setPicking((v) => !v)} disabled={disabled} title={tr("file.attach")} aria-label={tr("file.attach")}>
+          <Icon name="attach" />
+        </button>
         <button className="cmp-tool" onClick={() => setPolling(true)} disabled={disabled} title={tr("poll.buttonHint")} aria-label={tr("poll.start")}>
           <Icon name="poll" />
         </button>
       </div>
+      {picking && (
+        <FilePicker
+          panel={panel}
+          onPick={(path) => {
+            setFiles((f) => (f.includes(path) ? f : [...f, path]));
+            setPicking(false);
+            ref.current?.focus();
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
+      {files.length > 0 && (
+        <div className="cmp-files">
+          {files.map((f) => (
+            <FileChip key={f} panel={panel} path={f} onRemove={() => setFiles((x) => x.filter((y) => y !== f))} />
+          ))}
+        </div>
+      )}
       <textarea
         ref={ref}
         rows={1}
@@ -1138,7 +1225,7 @@ function Composer({
       />
       </div>
       {/* Stopping lives on each agent in the sidebar (and Esc stops all); sending while they work queues. */}
-      <button className="send-btn" onClick={submit} disabled={disabled || !text.trim()} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
+      <button className="send-btn" onClick={submit} disabled={disabled || (!text.trim() && !files.length)} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
         ↑
       </button>
     </div>

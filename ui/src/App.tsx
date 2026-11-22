@@ -140,7 +140,7 @@ export default function App() {
     if (!state) return;
     const alive = new Set(Object.values(state.panels).filter((p) => p.kind === "terminal").map((p) => p.id));
     pruneTerminals(alive);
-    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:")).map((p) => p.id)));
+    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:") && !p.url?.startsWith("file:")).map((p) => p.id)));
   }, [state]);
   useEffect(() => (pick ? overlay() : undefined), [pick]);
   // A drawer's chat was closed or turned into something else: drop the zoom with it.

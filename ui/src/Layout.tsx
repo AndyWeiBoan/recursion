@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FileBody } from "./Files";
 import { DiagramView } from "./Diagram";
 import { t } from "./i18n";
 import { copyText, saveDownload } from "./clipboard";
@@ -179,7 +180,9 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         ? doc
           ? `${doc.title} · @${doc.author}`
           : t("doc.gone")
-        : panel.kind === "browser"
+        : panel.kind === "browser" && panel.url?.startsWith("file:")
+          ? panel.url.slice(5)
+          : panel.kind === "browser"
           ? panel.url || t("browser.newTab")
           : "";
 
@@ -225,7 +228,9 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
       <div className="panel-body">
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
         {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
-        {docId ? (
+        {panel.kind === "browser" && panel.url?.startsWith("file:") ? (
+          <FileBody panel={panel.id} path={panel.url.slice(5)} />
+        ) : docId ? (
           <DocBody session={ctx.session} doc={docId} rev={doc?.rev ?? 0} diagram={doc?.kind === "diagram"} title={doc?.title ?? ""} />
         ) : (
           panel.kind === "browser" && <BrowserBody panel={panel} />

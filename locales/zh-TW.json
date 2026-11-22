@@ -396,5 +396,20 @@
   "fmt.bullets": "項目清單",
   "fmt.numbers": "編號清單",
   "fmt.quote": "引用",
-  "composer.resize": "拖曳調整輸入框高度（雙擊恢復預設）"
+  "composer.resize": "拖曳調整輸入框高度（雙擊恢復預設）",
+  "file.err.outside": "這個檔案不在專案資料夾裡，或已經不存在",
+  "file.err.tooBig": "檔案太大，沒辦法在這裡顯示",
+  "file.err.binary": "這不是文字檔，沒辦法在這裡顯示",
+  "file.attach": "引用檔案",
+  "file.search": "搜尋專案裡的檔案…",
+  "file.none": "沒有符合的檔案",
+  "file.loading": "正在列出檔案…",
+  "file.remove": "移除 {name}",
+  "file.open": "在旁邊打開 {path}",
+  "kind.file": "檔案",
+  "file.lines": "{n} 行",
+  "file.fromComputer": "從電腦選…",
+  "file.fromComputerHint": "選工作區以外的檔案：選了就讓這個群聊的 agent 可以讀它，檔案不會被複製",
+  "file.fromComputerPrompt": "檔案的完整路徑",
+  "file.outside": "工作區外的檔案（你授權給這個群聊）"
 }

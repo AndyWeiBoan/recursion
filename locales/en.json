@@ -410,5 +410,21 @@
   "fmt.bullets": "Bulleted list",
   "fmt.numbers": "Numbered list",
   "fmt.quote": "Quote",
-  "composer.resize": "Drag to resize the message box (double-click to reset)"
+  "composer.resize": "Drag to resize the message box (double-click to reset)",
+  "file.err.outside": "That file isn't in the project folder, or no longer exists",
+  "file.err.tooBig": "The file is too big to show here",
+  "file.err.binary": "This isn't a text file, so it can't be shown here",
+  "file.attach": "Reference a file",
+  "file.search": "Search the project's files…",
+  "file.none": "No matching files",
+  "file.loading": "Listing files…",
+  "file.remove": "Remove {name}",
+  "file.open": "Open {path} beside",
+  "kind.file": "File",
+  "file.lines": "{n} lines",
+  "file.lines_one": "1 line",
+  "file.fromComputer": "From computer…",
+  "file.fromComputerHint": "Pick a file outside the workspace: picking it lets this chat's agents read it; nothing is copied",
+  "file.fromComputerPrompt": "Full path of the file",
+  "file.outside": "Outside the workspace (you opened it to this chat)"
 }

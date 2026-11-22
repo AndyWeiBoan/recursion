@@ -8,6 +8,7 @@ mod agents;
 mod browse;
 mod diagram;
 mod docs;
+mod files;
 mod i18n;
 mod model;
 mod pty;
@@ -32,7 +33,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, Notify};
 
 /// Bump whenever the client↔daemon protocol changes; the app restarts an older daemon.
-pub const PROTOCOL: u32 = 26;
+pub const PROTOCOL: u32 = 27;
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -108,7 +109,15 @@ enum In {
     SetLang { lang: Option<String> },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
-    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String> },
+    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String> },
+    /// The project's files, for the 📎 picker.
+    FilesList { panel: String },
+    /// One project file's content, for the viewer.
+    FileGet { panel: String, path: String },
+    /// Show a project file next to a panel.
+    FileOpen { panel: String, path: String },
+    /// Files the human picked from their computer: this chat may use them.
+    FilesGrant { panel: String, paths: Vec<String> },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
     /// Start a poll; `vote` is the human's own pick (option index), if any.
@@ -451,10 +460,30 @@ impl App {
                 self.hub.remove_agent(&panel, &member).await;
                 changed = false;
             }
-            WsSend { panel, text, reply_to } => {
+            WsSend { panel, text, reply_to, files } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.send(&panel, text, cwd, None, reply_to.as_deref()).await?;
+                self.hub.send(&panel, text, cwd, None, reply_to.as_deref(), files).await?;
                 changed = false;
+            }
+            FilesList { panel } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                reply = Some(serde_json::json!({ "t": "files", "panel": panel, "files": files::list(&cwd).await }).to_string());
+                changed = false;
+            }
+            FileGet { panel, path } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                reply = Some(serde_json::json!({ "t": "file", "panel": panel, "path": path, "file": files::read(self.hub.usable_file(&panel, &cwd, &path)) }).to_string());
+                changed = false;
+            }
+            FilesGrant { panel, paths } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                reply = Some(serde_json::json!({ "t": "files_granted", "panel": panel, "paths": self.hub.grant(&panel, &cwd, &paths) }).to_string());
+                changed = false;
+            }
+            FileOpen { panel, path } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.usable_file(&panel, &cwd, &path).ok_or_else(|| i18n::t("file.err.outside"))?;
+                self.state.lock().unwrap().open_file(&panel, &path, true).map_err(e)?;
             }
             WsPerm { request_id, decision } => {
                 self.hub.decide(&request_id, &decision).await?;

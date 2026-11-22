@@ -320,7 +320,7 @@ impl App {
             other => return Err(format!("Unknown document action: {other}")),
         };
         let via = crate::workspace::DocVia { doc: d.id.clone(), title: d.title.clone(), data: data.to_string() };
-        self.hub.send(&d.chat, text, cwd, Some(via), None).await
+        self.hub.send(&d.chat, text, cwd, Some(via), None, vec![]).await
     }
 }
 

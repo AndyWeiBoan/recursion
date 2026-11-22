@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recursion 競爭定位評估</title><style>
+:root{--bg:#090d14;--panel:#111824;--panel2:#151f2d;--line:#28364a;--text:#eff5ff;--muted:#94a3b8;--cyan:#59d9ff;--green:#77e3ad;--amber:#f5c76a;--red:#ff7c88;--violet:#a995ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 82% -10%,#19304b 0,transparent 35rem),var(--bg);color:var(--text);font:15px/1.65 ui-sans-serif,system-ui,-apple-system,"Noto Sans TC",sans-serif}.wrap{width:min(1140px,calc(100% - 36px));margin:auto;padding:56px 0 80px}h1{font-size:clamp(2.3rem,6vw,4.8rem);letter-spacing:-.06em;line-height:1;margin:.25rem 0 1rem}.eyebrow{color:var(--cyan);font:700 12px ui-monospace;letter-spacing:.16em}.lead{max-width:850px;color:#b7c4d6;font-size:1.08rem}.hero{display:grid;grid-template-columns:1fr 280px;gap:18px;margin:30px 0}.card{background:linear-gradient(155deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:20px;padding:24px}.score{display:grid;place-items:center;text-align:center}.score strong{font-size:5.4rem;line-height:.85;letter-spacing:-.08em;color:var(--amber)}.score span{color:var(--muted)}h2{font-size:1.6rem;margin:46px 0 14px;letter-spacing:-.03em}h3{margin:0 0 5px}.verdict{font-size:1.3rem;line-height:1.5}.verdict b{color:var(--amber)}.muted{color:var(--muted)}.bars{display:grid;gap:13px}.barrow{display:grid;grid-template-columns:130px 1fr 44px;gap:13px;align-items:center}.track{height:11px;background:#202b3b;border-radius:999px;overflow:hidden}.fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--violet),var(--cyan))}.rank{display:grid;gap:9px}.r{display:grid;grid-template-columns:70px 170px 1fr;gap:15px;align-items:center;padding:13px 15px;border:1px solid var(--line);border-radius:13px;background:#101722}.r.rec{border-color:#6388b8;background:#142136}.badge{font:800 15px ui-monospace}.tiergrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.tier{display:grid;grid-template-columns:48px 1fr;gap:13px;padding:14px;border:1px solid var(--line);border-radius:13px;background:#101722}.tier .n{font:800 24px ui-monospace;color:var(--cyan)}.tier p{margin:2px 0;color:var(--muted);font-size:.9rem}table{border-collapse:collapse;width:100%;min-width:850px;background:#101722}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:.78rem;letter-spacing:.06em;color:#a8bbd3;background:#151f2d}.scroll{overflow:auto;border:1px solid var(--line);border-radius:16px}.yes{color:var(--green)}.no{color:var(--red)}.mid{color:var(--amber)}ul{padding-left:21px}.callout{border-left:4px solid var(--amber);background:#171d27;padding:18px 20px;border-radius:0 14px 14px 0}.sources a{color:#8fdfff;text-decoration:none}.sources li{margin:.45rem 0}.foot{margin-top:35px;color:#77869c;font-size:.82rem}@media(max-width:720px){.hero{grid-template-columns:1fr}.tiergrid{grid-template-columns:1fr}.r{grid-template-columns:58px 110px 1fr}.barrow{grid-template-columns:105px 1fr 38px}}
+</style></head><body><main class="wrap"><div class="eyebrow">COMPETITIVE POSITION · 2026-11-22</div><h1>Recursion 現在是第 7 檔</h1><p class="lead">不是玩具，也還不是市場領先產品。它已經有一套難以混淆的產品思想與可用核心，但在「交付完整工作」和「讓陌生人容易採用」上，仍落後領先群。</p>
+<section class="hero"><div class="card"><div class="verdict"><b>總分 7.0 / 10</b>：強差異化的進階開發者工具，產品成熟度約在競爭群的中上段。</div><p class="muted">若只評創新與產品觀點，Recursion 是 <b>9/10</b>；若評今天可下載、安裝、完成開發任務並交付成果的完整產品，則是 <b>6–7/10</b>。本報告採後者。</p></div><div class="card score"><strong>7.0</strong><span>中上段 · 尚未進入領先群</span></div></section>
+<h2>競爭排序</h2><div class="rank">
+<div class="r"><span class="badge">9.2</span><b>Paradev</b><span>100+ 平行 agent、worktree、diff/PR、遠端、手機與自動化，完成工作閉環最完整。</span></div>
+<div class="r"><span class="badge">9.0</span><b>Codeg</b><span>20+ agent、跨裝置、worktree、Git、排程、用量分析、fork/steer；廣度與交付成熟度領先。</span></div>
+<div class="r"><span class="badge">8.6</span><b>Emdash</b><span>34 種 CLI agent、平行 worktree、排程、diff、issues、遠端與 CI；方向清楚且很實用。</span></div>
+<div class="r"><span class="badge">8.4</span><b>Threadlines</b><span>多 agent 同 thread、精準引用、Git/PR/CI、瀏覽器、手機、排程與跨電腦，和 Recursion 最直接。</span></div>
+<div class="r"><span class="badge">8.1</span><b>OpenAgents</b><span>人與 agent 的 shared threads、檔案、知識庫、tasks、workflows、團隊協作與本機/雲端 agent。</span></div>
+<div class="r"><span class="badge">7.8</span><b>agentes.chat</b><span>成熟的 Slack 形狀、桌面/手機、MCP、routine、memory、approval；但偏團隊協作而非本機 coding cockpit。</span></div>
+<div class="r"><span class="badge">7.5</span><b>nodeterm</b><span>持久化無限畫布、tmux 終端與 agent node，版面模型強；協作與完整開發閉環較弱。</span></div>
+<div class="r rec"><span class="badge">7.0</span><b>Recursion</b><span>回合制群聊、唯讀私密分岔、互動文件與 tmux 式工作台獨特；但尚缺打包、worktree、diff/PR、workflow 與公開驗證。</span></div>
+<div class="r"><span class="badge">5.5</span><b>agentchattr</b><span>解決 agent 共用聊天室的單點需求，但產品表面、工作閉環與治理能力較薄。</span></div></div>
+
+<h2>10 到 1 分，各檔代表什麼</h2><div class="tiergrid">
+<div class="tier"><div class="n">10</div><div><b>類別定義者</b><p>完成度、生態、分發與口碑都形成明顯領先。此細分類目前沒有公認 10 分產品。</p></div></div>
+<div class="tier"><div class="n">9</div><div><b>領先產品</b><p>陌生使用者能安裝，核心工作閉環完整，已有廣泛平台與整合。Paradev、Codeg。</p></div></div>
+<div class="tier"><div class="n">8</div><div><b>強勢競爭者</b><p>核心成熟且有明確市場，但部分平台、流程或規模仍在補。Emdash、Threadlines、OpenAgents、agentes.chat。</p></div></div>
+<div class="tier"><div class="n">7</div><div><b>成形產品</b><p>有真正差異化與日常可用核心，仍缺幾項商業級閉環。Recursion、nodeterm。</p></div></div>
+<div class="tier"><div class="n">6</div><div><b>可用早期產品</b><p>能解主要問題，但功能、可靠性或交付面還窄。較成熟的 agentchattr 類工具。</p></div></div>
+<div class="tier"><div class="n">5</div><div><b>完整原型</b><p>主要流程跑得通，還不適合承擔每日工作。</p></div></div>
+<div class="tier"><div class="n">4</div><div><b>功能型 MVP</b><p>一兩個亮點可展示，但需使用者自行補大量流程。</p></div></div>
+<div class="tier"><div class="n">3</div><div><b>工程展示</b><p>證明技術可行，沒有穩定產品體驗。</p></div></div>
+<div class="tier"><div class="n">2</div><div><b>概念原型</b><p>只能走 happy path，資料、錯誤與生命週期不完整。</p></div></div>
+<div class="tier"><div class="n">1</div><div><b>想法或壞掉的 demo</b><p>沒有可重複驗證的核心流程。</p></div></div></div>
+
+<h2>Recursion 的分數怎麼來</h2><div class="card bars">
+<div class="barrow"><span>核心實用性</span><div class="track"><div class="fill" style="width:76%"></div></div><b>7.6</b></div>
+<div class="barrow"><span>差異化</span><div class="track"><div class="fill" style="width:91%"></div></div><b>9.1</b></div>
+<div class="barrow"><span>可靠性／安全</span><div class="track"><div class="fill" style="width:73%"></div></div><b>7.3</b></div>
+<div class="barrow"><span>產品完整度</span><div class="track"><div class="fill" style="width:62%"></div></div><b>6.2</b></div>
+<div class="barrow"><span>整合廣度</span><div class="track"><div class="fill" style="width:53%"></div></div><b>5.3</b></div>
+<div class="barrow"><span>安裝／分發</span><div class="track"><div class="fill" style="width:37%"></div></div><b>3.7</b></div></div>
+
+<h2>真正領先與真正落後的地方</h2><div class="scroll"><table><thead><tr><th>面向</th><th>Recursion</th><th>領先競品</th><th>判定</th></tr></thead><tbody>
+<tr><td>多 agent 對話控制</td><td>固定回合、同時獨立回答、不讓 agent 自觸發</td><td>多為自由 thread、委派或平行任務</td><td class="yes">Recursion 有獨特主張</td></tr>
+<tr><td>上下文分岔</td><td>私密、唯讀、可帶回主線</td><td>Codeg 有 fork/steer；Threadlines 有新 thread/subtask</td><td class="yes">Recursion 的約束設計更完整</td></tr>
+<tr><td>人機共同介面</td><td>互動 HTML 文件、投票、圖、群聊、終端、瀏覽器</td><td>多數有 chat/browser/files，但互動文件較少見</td><td class="yes">Recursion 領先</td></tr>
+<tr><td>完成 coding 任務</td><td>agent 可改碼、跑工具；缺 worktree、diff、PR/CI 閉環</td><td>Paradev/Emdash/Codeg/Threadlines 已內建</td><td class="no">明顯落後</td></tr>
+<tr><td>Agent 廣度</td><td>Claude、Codex</td><td>20–34 種或任何 CLI/ACP agent</td><td class="no">明顯落後</td></tr>
+<tr><td>Workflow／排程</td><td>尚在設計</td><td>多家已有 cron、webhook、issue/event trigger</td><td class="no">落後一代</td></tr>
+<tr><td>跨裝置／團隊</td><td>本機單人，設計上不做遠端</td><td>手機、Web、遠端主機、團隊 workspace 已普遍</td><td class="mid">有意取捨，但限縮市場</td></tr>
+<tr><td>可靠性證據</td><td>31 個 daemon 測試通過、TypeScript typecheck 通過；另有真 agent E2E</td><td>領先產品有公開使用者、release 與多平台下載</td><td class="mid">工程基礎好，外部證據不足</td></tr>
+<tr><td>分發</td><td>M8 打包尚未完成</td><td>DMG/AppImage、Docker、手機商店、雲端 onboarding</td><td class="no">目前最大短板</td></tr>
+</tbody></table></div>
+
+<h2>忠告：先把 7 分變成可交付的 8 分</h2><div class="callout"><b>下一步不是再加一個聰明功能，而是完成一條外部使用者能驗證的工作閉環。</b><ol><li><b>先完成打包與首次啟動</b>：陌生人 10 分鐘內能安裝、匯入帳號並開始第一個群聊。</li><li><b>補最小 Git 交付面</b>：至少 worktree 隔離、diff review、接受／丟棄變更。這是競品的基本盤。</li><li><b>把唯讀 thread 做成展示核心</b>：60 秒 demo 只講「選一句 → 私下深挖 → 帶回結論」，不要用泛化的 multi-agent workspace 當第一句。</li></ol><p>Workflow 值得做，但不是把 7 分推到 8 分的最短路；如果安裝與交付閉環沒補，workflow 只會讓功能更多、產品仍難採用。</p></div>
+
+<h2>資料來源</h2><ul class="sources">
+<li><a href="https://github.com/nobug-project/codeg">Codeg 官方 GitHub</a>：agent 支援、worktree/Git、automation、fork/steer、跨裝置。</li>
+<li><a href="https://emdash.com/docs">Emdash 官方文件</a>：34 CLI agents、parallel worktrees、automation、diff、issues、remote、CI。</li>
+<li><a href="https://github.com/Threadlines/threadlines">Threadlines 官方 GitHub</a>：multi-agent thread、subthreads、Git/PR/CI、browser、mobile、schedule。</li>
+<li><a href="https://github.com/ParadevAI/Paradev">Paradev 官方 GitHub</a>：parallel workspaces、diff/PR、remote/mobile、automation。</li>
+<li><a href="https://openagents.org/docs/en/getting-started/overview">OpenAgents 官方文件</a>：threads、files、knowledge、tasks、workflows、local/cloud agents。</li>
+<li><a href="https://github.com/agentes-chat/agentes-chat">agentes.chat 官方 GitHub</a>：channels/DM、MCP、routines、memory、approval、自架與多平台。</li>
+<li><a href="https://www.nodeterm.dev/docs/get-started/quickstart">nodeterm 官方文件</a>：canvas、terminal/agent nodes、tmux persistence。</li>
+<li><a href="https://github.com/bcurts/agentchattr">agentchattr 官方 GitHub</a>：本機多 agent chat。</li></ul>
+<p class="foot">評估基準日：2026-11-22。Recursion 證據來自本機 README/SPEC、實際程式樹，以及本次執行的 31/31 recursiond tests 與 TypeScript typecheck。分數是產品判斷，不是下載量或 star 數的數學排名。</p>
+</main></body></html>

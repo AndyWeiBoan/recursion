@@ -88,7 +88,11 @@ export type Cmd =
   | { t: "account_remove"; account: string }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
-  | { t: "ws_send"; panel: string; text: string; reply_to?: string }
+  | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[] }
+  | { t: "files_list"; panel: string }
+  | { t: "file_get"; panel: string; path: string }
+  | { t: "file_open"; panel: string; path: string }
+  | { t: "files_grant"; panel: string; paths: string[] }
   | { t: "ws_stop_agent"; panel: string; member: string }
   | { t: "poll_create"; panel: string; question: string; description: string; options: string[]; vote?: number | null }
   | { t: "poll_vote"; panel: string; poll: string; option: number }
@@ -175,7 +179,7 @@ export interface ReplyRef {
   text: string;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; usage?: TurnUsage } & (
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; files?: string[]; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
