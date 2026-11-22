@@ -721,7 +721,9 @@ impl Hub {
         Ok(())
     }
 
-    pub async fn remove_agent(&self, panel: &str, member: &str) {
+    /// `cwd` is the chat's folder: if this agent was the last one answering, the round ends and
+    /// any queued messages start the next one, as when an agent finishes.
+    pub async fn remove_agent(self: &Arc<Self>, panel: &str, member: &str, cwd: Option<String>) {
         self.kill(panel, member).await;
         let alias = self.with_ws(panel, |ws| {
             let gone = ws.members.iter().find(|m| m.id == member).cloned();
@@ -732,14 +734,18 @@ impl Hub {
             })
         });
         self.emit(json!({ "t": "ws_member_removed", "panel": panel, "member": member }));
-        self.rt(panel, |r| {
+        let next = self.rt(panel, |r| {
             r.roster_version += 1;
             r.pending.remove(member);
-            r.speaking.remove(member);
+            let was = r.speaking.remove(member);
+            was && r.speaking.is_empty() && r.queued_count > 0
         });
         self.emit_round(panel);
         if let Some(a) = alias {
             self.system(panel, "system", tr!("agent.left", alias = a), false);
+        }
+        if let (true, Some(cwd)) = (next, cwd) {
+            self.start_round(panel, &cwd).await;
         }
     }
 

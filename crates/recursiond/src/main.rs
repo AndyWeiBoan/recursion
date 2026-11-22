@@ -542,7 +542,8 @@ impl App {
                 changed = false;
             }
             WsRemoveAgent { panel, member } => {
-                self.hub.remove_agent(&panel, &member).await;
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel);
+                self.hub.remove_agent(&panel, &member, cwd).await;
                 changed = false;
             }
             WsSend { panel, text, reply_to, files } => {

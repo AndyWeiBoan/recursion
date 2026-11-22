@@ -401,10 +401,18 @@ mod mac_agent {
                 }
                 if moved {
                     settle(wv).await;
-                    if let Ok(i) = page(wv, "info", &json!({})).await {
-                        r["url"] = i["url"].clone();
-                        r["title"] = i["title"].clone();
-                        r["navigated"] = json!(true);
+                    // A single-page site changes the title a little after the address.
+                    let old_title = r["title"].clone();
+                    for _ in 0..5 {
+                        if let Ok(i) = page(wv, "info", &json!({})).await {
+                            r["url"] = i["url"].clone();
+                            r["title"] = i["title"].clone();
+                            r["navigated"] = json!(true);
+                            if i["title"] != old_title {
+                                break;
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(150)).await;
                     }
                 }
                 Ok(r)
@@ -523,10 +531,18 @@ mod agent {
                 }
                 if moved {
                     settle(v).await;
-                    if let Ok(i) = page(v, "info", &json!({})).await {
-                        r["url"] = i["url"].clone();
-                        r["title"] = i["title"].clone();
-                        r["navigated"] = json!(true);
+                    // A single-page site changes the title a little after the address.
+                    let old_title = r["title"].clone();
+                    for _ in 0..5 {
+                        if let Ok(i) = page(v, "info", &json!({})).await {
+                            r["url"] = i["url"].clone();
+                            r["title"] = i["title"].clone();
+                            r["navigated"] = json!(true);
+                            if i["title"] != old_title {
+                                break;
+                            }
+                        }
+                        glib::timeout_future(Duration::from_millis(150)).await;
                     }
                 }
                 Ok(r)
