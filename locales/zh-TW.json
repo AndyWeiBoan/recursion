@@ -395,5 +395,6 @@
   "fmt.codeBlock": "程式碼區塊",
   "fmt.bullets": "項目清單",
   "fmt.numbers": "編號清單",
-  "fmt.quote": "引用"
+  "fmt.quote": "引用",
+  "composer.resize": "拖曳調整輸入框高度（雙擊恢復預設）"
 }

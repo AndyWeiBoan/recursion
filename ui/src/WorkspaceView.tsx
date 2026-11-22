@@ -1,4 +1,5 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
+import { useDragWidth } from "./Layout";
 import { Icon } from "./icons";
 import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
 import { t as tr } from "./i18n";
@@ -972,13 +973,19 @@ function Composer({
   useEffect(() => {
     if ((focused || replyId) && !disabled) ref.current?.focus();
   }, [focused, disabled, replyId]);
+  // The box grows with the text (up to 200px). Dragging its top edge sets a height of its own
+  // instead; double-clicking the edge goes back to growing.
+  const AUTO = 200;
+  const tall = useDragWidth({ key: "recursion.composerHeight", initial: AUTO, min: 60, max: 900, edge: "top", from: () => ref.current?.offsetHeight ?? AUTO });
+  const fixed = tall.width !== AUTO || tall.dragging;
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight + 2, 200) + "px";
-    el.style.overflowY = el.scrollHeight > 200 ? "auto" : "hidden";
-  }, [text]);
+    const h = fixed ? tall.width : Math.min(el.scrollHeight + 2, AUTO);
+    el.style.height = h + "px";
+    el.style.overflowY = el.scrollHeight > h ? "auto" : "hidden";
+  }, [text, tall.width, fixed]);
 
   // @mention autocomplete for the word under the caret.
   const token = /(^|\s)@([\w\-一-鿿]*)$/.exec(text.slice(0, caret));
@@ -1059,7 +1066,8 @@ function Composer({
           <PollForm panel={panel} onDone={() => setPolling(false)} />
         </Modal>
       )}
-      <div className={`cmp-box${disabled ? " off" : ""}`}>
+      <div className={`cmp-box${disabled ? " off" : ""}${tall.dragging ? " resizing" : ""}`}>
+        <div className="cmp-resize" onPointerDown={tall.onPointerDown} onDoubleClick={tall.reset} title={tr("composer.resize")} role="separator" aria-orientation="horizontal" />
       <div className="cmp-bar" role="toolbar" aria-label={tr("fmt.toolbar")}>
         {TOOLS.map((tool) => (
           <button

@@ -48,11 +48,11 @@ export function shield(cursor: string) {
 }
 
 /**
- * A width the user drags by one edge of the element (`edge: "right"` grows to the right, as
- * the sidebar; `"left"` grows to the left, as a drawer). Double-click the handle to reset;
- * remembered across launches.
+ * A size the user drags by one edge of the element: `right` / `left` drag a width (the
+ * sidebar grows to the right, a drawer to the left), `top` a height that grows upwards (the
+ * chat box). Double-click the handle to reset; remembered across launches.
  */
-export function useDragWidth({ key, initial, min, max, edge }: { key: string; initial: number; min: number; max: number; edge: "left" | "right" }) {
+export function useDragWidth({ key, initial, min, max, edge, from }: { key: string; initial: number; min: number; max: number; edge: "left" | "right" | "top"; from?: () => number }) {
   const clamp = (w: number) => Math.round(Math.min(max, Math.max(min, w)));
   const [width, setWidth] = useState(() => {
     try {
@@ -72,13 +72,16 @@ export function useDragWidth({ key, initial, min, max, edge }: { key: string; in
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const sign = edge === "right" ? 1 : -1;
-    const start = e.clientX;
-    const base = width;
-    let last = width;
+    const vertical = edge === "top";
+    const start = vertical ? e.clientY : e.clientX;
+    // Start from what is on screen (a box that grew with its text), not the remembered size.
+    const base = from ? clamp(from()) : width;
+    let last = base;
+    setWidth(base);
     setDragging(true);
-    const unshield = shield("col-resize");
+    const unshield = shield(vertical ? "row-resize" : "col-resize");
     const move = (ev: PointerEvent) => {
-      last = clamp(base + sign * (ev.clientX - start));
+      last = clamp(base + sign * ((vertical ? ev.clientY : ev.clientX) - start));
       setWidth(last);
     };
     let done = false;

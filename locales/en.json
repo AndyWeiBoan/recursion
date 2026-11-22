@@ -409,5 +409,6 @@
   "fmt.codeBlock": "Code block",
   "fmt.bullets": "Bulleted list",
   "fmt.numbers": "Numbered list",
-  "fmt.quote": "Quote"
+  "fmt.quote": "Quote",
+  "composer.resize": "Drag to resize the message box (double-click to reset)"
 }
