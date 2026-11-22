@@ -323,8 +323,9 @@ impl Hub {
         format!("http://127.0.0.1:{}/mcp/{key}", self.port.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// The member's alias, or the one it had if it left the chat.
     pub fn alias_of(&self, panel: &str, member: &str) -> Option<String> {
-        self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone()))
+        self.with_ws(panel, |ws| ws.names().remove(member))
     }
 
     /// Who an MCP key belongs to: (panel, member id, alias).
@@ -723,9 +724,12 @@ impl Hub {
     pub async fn remove_agent(&self, panel: &str, member: &str) {
         self.kill(panel, member).await;
         let alias = self.with_ws(panel, |ws| {
-            let a = ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone());
+            let gone = ws.members.iter().find(|m| m.id == member).cloned();
             ws.members.retain(|m| m.id != member);
-            a
+            gone.map(|g| {
+                ws.former.insert(g.id.clone(), crate::workspace::FormerMember { alias: g.alias.clone(), kind: g.kind });
+                g.alias
+            })
         });
         self.emit(json!({ "t": "ws_member_removed", "panel": panel, "member": member }));
         self.rt(panel, |r| {
@@ -1077,7 +1081,7 @@ impl Hub {
     /// Send an agent everything it hasn't seen yet (other people's text), as one user turn.
     async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
         let (batch, upto) = self.with_ws(panel, |ws| {
-            let names: HashMap<String, String> = ws.members.iter().map(|x| (x.id.clone(), x.alias.clone())).collect();
+            let names = ws.names();
             let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && (x.from != m.id || x.from_thread.is_some())).collect();
             let upto = ws.next_seq;
             // What a message answers, for its header: `, replying to @x's message: "…"`.

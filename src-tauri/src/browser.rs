@@ -50,6 +50,14 @@ fn parse(url: &str) -> Result<Url, String> {
     }
 }
 
+/// What an agent is told when `browse_open` could not load the page.
+fn load_failed(url: &str, why: Option<&str>) -> String {
+    match why {
+        Some(w) => format!("Could not load {url}: {w}. The page was not opened."),
+        None => format!("Could not load {url}: the address may not exist or the server did not answer. The page was not opened."),
+    }
+}
+
 /// Move/resize a browser webview. Linux goes through our own GTK overlay (see `gtk_layer`).
 fn place<R: Runtime>(wv: &Webview<R>, b: Bounds) -> Result<(), String> {
     #[cfg(target_os = "linux")]
@@ -353,11 +361,19 @@ mod mac_agent {
         match op {
             "open" => {
                 let url = args["url"].as_str().ok_or("Missing url")?;
+                let before = state(wv).await.1;
                 // Already there, or already loading it (a new webview, or the panel itself navigated).
-                if state(wv).await.1.as_deref() != Some(url) {
+                if before.as_deref() != Some(url) {
                     wv.navigate(super::parse(url)?).map_err(|e| e.to_string())?;
                 }
                 settle(wv).await;
+                // WebKit keeps the old page when a load fails (no such host), or shows nothing
+                // (connection refused); either way the address did not move to anything new.
+                let now = state(wv).await.1;
+                let blank = now.as_deref().is_none_or(|u| u.is_empty() || u == "about:blank");
+                if before.as_deref() != Some(url) && ((now == before && before.is_some()) || (blank && url != "about:blank")) {
+                    return Err(super::load_failed(url, None));
+                }
                 page(wv, "read", &json!({})).await
             }
             "read" => page(wv, "read", args).await,
@@ -372,10 +388,18 @@ mod mac_agent {
                     tokio::time::sleep(Duration::from_millis(150)).await;
                     let _ = tokio::time::timeout(Duration::from_secs(2), page(wv, "act", &json!({ "ref": args["ref"], "what": what }))).await;
                 }
-                // A click may start a navigation: let it land before reporting where we are.
-                tokio::time::sleep(Duration::from_millis(350)).await;
-                let (loading, now) = state(wv).await;
-                if loading || now != before {
+                // A click may start a navigation, and a single-page site (GitHub's Turbo, say) only
+                // changes the address after fetching: watch for up to 2 s before reporting.
+                let mut moved = false;
+                for _ in 0..13 {
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let (loading, now) = state(wv).await;
+                    if loading || now != before {
+                        moved = true;
+                        break;
+                    }
+                }
+                if moved {
                     settle(wv).await;
                     if let Ok(i) = page(wv, "info", &json!({})).await {
                         r["url"] = i["url"].clone();
@@ -463,20 +487,41 @@ mod agent {
         match op {
             "open" => {
                 let url = args["url"].as_str().ok_or("Missing url")?;
+                let failed = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+                let f = failed.clone();
+                let handler = v.connect_load_failed(move |_, _, _, err| {
+                    // A load that another navigation replaced (a redirect, say) is not a failure.
+                    if !err.matches(webkit2gtk::NetworkError::Cancelled) {
+                        *f.borrow_mut() = Some(err.to_string());
+                    }
+                    false
+                });
                 // Already there, or already loading it (a new webview, or the panel itself navigated).
                 if v.uri().as_deref() != Some(url) {
                     v.load_uri(url);
                 }
                 settle(v).await;
+                glib::prelude::ObjectExt::disconnect(v, handler);
+                if let Some(e) = failed.borrow_mut().take() {
+                    return Err(super::load_failed(url, Some(&e)));
+                }
                 page(v, "read", &json!({})).await
             }
             "read" => page(v, "read", args).await,
             "click" | "fill" => {
                 let before = v.uri().map(|u| u.to_string());
                 let mut r = page(v, op, args).await?;
-                // A click may start a navigation: let it land before reporting where we are.
-                glib::timeout_future(Duration::from_millis(350)).await;
-                if v.is_loading() || v.uri().map(|u| u.to_string()) != before {
+                // A click may start a navigation, and a single-page site (GitHub's Turbo, say) only
+                // changes the address after fetching: watch for up to 2 s before reporting.
+                let mut moved = false;
+                for _ in 0..13 {
+                    glib::timeout_future(Duration::from_millis(150)).await;
+                    if v.is_loading() || v.uri().map(|u| u.to_string()) != before {
+                        moved = true;
+                        break;
+                    }
+                }
+                if moved {
                     settle(v).await;
                     if let Ok(i) = page(v, "info", &json!({})).await {
                         r["url"] = i["url"].clone();

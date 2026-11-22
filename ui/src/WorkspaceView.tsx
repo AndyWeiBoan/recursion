@@ -169,7 +169,11 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   }, [panel]);
 
   const members = ws?.members ?? [];
-  const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
+  // Agents that left stay findable by id, so their old messages, votes and threads keep their names.
+  const byId = useMemo(() => {
+    const gone = Object.entries(ws?.former ?? {}).map(([id, f]): [string, Member] => [id, { id, kind: f.kind, alias: f.alias, cost_usd: 0, status: "idle", usage: {} }]);
+    return new Map([...gone, ...members.map((m): [string, Member] => [m.id, m])]);
+  }, [members, ws?.former]);
   const busy = members.filter((m) => m.status !== "idle");
   const ui = useThreadsUI(panel);
   const threadCounts = useMemo(() => {

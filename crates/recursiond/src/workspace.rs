@@ -220,6 +220,9 @@ pub struct Workspace {
     pub next_poll: u64,
     #[serde(default)]
     pub settings: ChatSettings,
+    /// Agents that left, by member id: their messages, votes and threads keep their names.
+    #[serde(default)]
+    pub former: std::collections::BTreeMap<String, FormerMember>,
 }
 
 /// What the human set for one chat.
@@ -382,7 +385,20 @@ pub struct Artifact {
     pub removed: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FormerMember {
+    pub alias: String,
+    pub kind: AgentKind,
+}
+
 impl Workspace {
+    /// Member id → alias, for everyone who has been in the chat (current names win).
+    pub fn names(&self) -> std::collections::HashMap<String, String> {
+        let mut n: std::collections::HashMap<String, String> = self.former.iter().map(|(id, f)| (id.clone(), f.alias.clone())).collect();
+        n.extend(self.members.iter().map(|m| (m.id.clone(), m.alias.clone())));
+        n
+    }
+
     /// Adds an artifact, or refreshes the one with the same kind and target. Returns it.
     pub fn record_artifact(&mut self, kind: ArtifactKind, target: &str, title: &str, by: &str, at: u64) -> Artifact {
         if let Some(a) = self.artifacts.iter_mut().find(|a| a.kind == kind && a.target == target) {
@@ -762,5 +778,20 @@ mod mention_tests {
         assert!(p.vote("b", 0, "", 5).is_err());
         let r = p.result(&|v| format!("@{v}"));
         assert!(r.contains("B) Wait: 1 (@a)") && r.contains("@a chose B: changed my mind"), "{r}");
+    }
+}
+
+#[cfg(test)]
+mod former_tests {
+    use super::*;
+
+    #[test]
+    fn departed_members_keep_their_names() {
+        let mut ws = Workspace::default();
+        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() });
+        ws.former.insert("b".into(), FormerMember { alias: "claude".into(), kind: AgentKind::Claude });
+        let n = ws.names();
+        assert_eq!(n.get("a").map(String::as_str), Some("codex"));
+        assert_eq!(n.get("b").map(String::as_str), Some("claude"));
     }
 }

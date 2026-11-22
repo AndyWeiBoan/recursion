@@ -281,6 +281,8 @@ export interface Workspace {
   artifacts?: Artifact[];
   round?: { active: boolean; queued: number };
   settings?: ChatSettings;
+  /** Agents that left, by member id, so their messages and votes keep their names. */
+  former?: Record<string, { alias: string; kind: AgentKind }>;
 }
 
 export interface Artifact {

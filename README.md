@@ -18,8 +18,11 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **討論串**：在 agent 的回覆上按右鍵討論整則，或反白一段文字討論那段；在分岔的對話裡跟原作者討論，主對話看不到；可搜尋（整則／片段），結論可帶回主對話。
 - **投票**：輸入框左邊的 📊 發起（標題、描述、選項，自己也可以投）；每個 agent 用 `poll_vote` 選一個並附理由，全部投完才公開誰選了什麼，結果會告訴所有 agent；過去的投票在「📎 產出 → 投票」，agent 也能用 `poll_list`／`poll_read` 查。
 - **回覆**：在任何訊息上按右鍵 →「回覆」，送出的訊息會帶著被回覆的那段，點一下跳回原訊息；agent 也會知道你在回哪一則。
-- **agent 的瀏覽器**：每個 agent 在群聊旁有自己的瀏覽器 panel，用 `browse_open`／`browse_read`／`browse_click`／`browse_fill`／`browse_screenshot` 開網頁、填表單、截圖，你看得到它在做什麼（目前 Linux；macOS 還沒做）。
-- **多帳號**：側欄「帳號」管理 Claude／Codex 的多個登入（每個帳號一個設定資料夾，設定、skills 等連回原本的 `~/.claude`／`~/.codex`），顯示 email、方案、5 小時／7 天用量；加 agent 時選帳號；登入過期時聊天裡出現「重新登入」卡片。
+- **agent 的瀏覽器**：每個 agent 在群聊旁有自己的瀏覽器 panel，用 `browse_open`／`browse_read`／`browse_click`／`browse_fill`／`browse_screenshot` 開網頁、填表單、截圖，你看得到它在做什麼（macOS、Linux 都可以）；網頁打不開時會回報錯誤。
+- **多帳號**：設定 →「帳號」管理 Claude／Codex 的多個登入（每個帳號一個設定資料夾，設定、skills 等連回原本的 `~/.claude`／`~/.codex`），也可以直接加入這台電腦 CLI 原本的登入；顯示 email、方案、5 小時／7 天用量；加 agent 時選帳號；登入過期時聊天裡出現「重新登入」卡片。
+- **第一次使用的引導**：檢查 Claude Code／Codex 有沒有裝，沒裝的話用官方安裝程式幫你裝（在 app 裡的終端看得到進度），然後加入帳號。
+- **自動更新**（macOS）：新版發佈在 [recursion-releases](https://github.com/AndyWeiBoan/recursion-releases)，右下角會通知，在「設定 → 軟體資訊」更新，完成後自動重開。發版用 `scripts/release.sh`（在 Mac 上打包、簽章、上傳）。
+- **Session／群聊設定**：session 的資料夾和新 agent 的預設（種類、模型、權限）；群聊的名稱、給所有 agent 的規則、花費上限。
 - **模型選單**直接問 CLI（Claude 的 initialize、Codex 的 `model/list`），跟它們自己的 `/model` 一致。
 - **畫圖**：agent 用 `diagram_write` 交出 JSON（架構圖、流程圖、時序圖），daemon 自己排版、拉線、畫成 SVG，有排不好的地方會告訴 agent 讓它改；圖在旁邊的 panel 打開，可以縮放、切深淺色、匯出 PNG／SVG，點方塊會標出跟它有關的線，也列在「📎 產出 → 圖」。想法和輸入格式參考 [Archify](https://github.com/tt-a1i/archify)（MIT），程式是我們自己的。
 - **多語系**：設定 →「一般」→「語言」切換（繁體中文、English，或跟隨系統），馬上生效。要加一種語言：複製 `locales/en.json` 成 `locales/<代碼>.json`（例如 `ja.json`），改 `_name` 和裡面的字，重新編譯就會出現在選單裡；少翻的句子會顯示英文。`cargo test` 會檢查內建語言的 key 和 `{參數}` 都對得上。
