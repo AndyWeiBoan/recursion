@@ -122,6 +122,8 @@ enum In {
     FileOpen { panel: String, path: String },
     /// Files the human picked from their computer: this chat may use them.
     FilesGrant { panel: String, paths: Vec<String> },
+    /// A picture pasted into the composer (base64): kept, granted to the chat, path sent back.
+    ImagePaste { panel: String, data: String, mime: String },
     WsPerm { request_id: String, decision: String },
     WsStop { panel: String },
     /// Start a poll; `vote` is the human's own pick (option index), if any.
@@ -209,6 +211,18 @@ impl App {
             self.terms.kill(p);
             self.hub.close_panel(p, true).await;
         }
+    }
+
+    /// A file `panel` may show: what its own chat may use, or, for a viewer panel, what any chat
+    /// of the same session may use (a file picked from the computer is granted to the chat).
+    fn usable_file(&self, panel: &str, path: &str) -> Option<std::path::PathBuf> {
+        let (cwd, chats) = {
+            let st = self.state.lock().unwrap();
+            let s = st.session_of_panel(panel)?;
+            let chats: Vec<String> = s.windows.iter().flat_map(|w| w.panel_ids()).filter(|p| st.panels.get(p).is_some_and(|x| x.kind == model::PanelKind::Workspace)).collect();
+            (s.cwd.clone(), chats)
+        };
+        std::iter::once(panel.to_string()).chain(chats).find_map(|p| self.hub.usable_file(&p, &cwd, path))
     }
 
     /// A setup terminal (not part of any session) that runs `cmd` once the UI shows it. Returns
@@ -557,8 +571,7 @@ impl App {
                 changed = false;
             }
             FileGet { panel, path } => {
-                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                reply = Some(serde_json::json!({ "t": "file", "panel": panel, "path": path, "file": files::read(self.hub.usable_file(&panel, &cwd, &path)) }).to_string());
+                reply = Some(serde_json::json!({ "t": "file", "panel": panel, "path": path, "file": files::read(self.usable_file(&panel, &path)) }).to_string());
                 changed = false;
             }
             FilesGrant { panel, paths } => {
@@ -566,9 +579,30 @@ impl App {
                 reply = Some(serde_json::json!({ "t": "files_granted", "panel": panel, "paths": self.hub.grant(&panel, &cwd, &paths) }).to_string());
                 changed = false;
             }
-            FileOpen { panel, path } => {
+            ImagePaste { panel, data, mime } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.usable_file(&panel, &cwd, &path).ok_or_else(|| i18n::t("file.err.outside"))?;
+                let ext = match mime.as_str() {
+                    "image/png" => "png",
+                    "image/jpeg" => "jpg",
+                    "image/gif" => "gif",
+                    "image/webp" => "webp",
+                    _ => return Err(i18n::t("image.err.type")),
+                };
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| e.to_string())?;
+                if bytes.len() > 20 * 1024 * 1024 {
+                    return Err(i18n::t("image.err.big"));
+                }
+                let dir = home().join("images");
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let path = dir.join(format!("{}.{ext}", model::new_id()));
+                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                let paths = self.hub.grant(&panel, &cwd, &[path.to_string_lossy().to_string()]);
+                reply = Some(serde_json::json!({ "t": "files_granted", "panel": panel, "paths": paths }).to_string());
+                changed = false;
+            }
+            FileOpen { panel, path } => {
+                self.usable_file(&panel, &path).ok_or_else(|| i18n::t("file.err.outside"))?;
                 self.state.lock().unwrap().open_file(&panel, &path, true).map_err(e)?;
             }
             WsPerm { request_id, decision } => {

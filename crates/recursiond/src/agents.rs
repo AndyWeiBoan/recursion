@@ -1086,10 +1086,15 @@ impl Hub {
 
     /// Send an agent everything it hasn't seen yet (other people's text), as one user turn.
     async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
-        let (batch, upto) = self.with_ws(panel, |ws| {
+        /// At most this many attached pictures per delivery, each at most this big (what the models take).
+        const MAX_IMAGES: usize = 5;
+        const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+        let (batch, upto, images) = self.with_ws(panel, |ws| {
             let names = ws.names();
             let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && (x.from != m.id || x.from_thread.is_some())).collect();
             let upto = ws.next_seq;
+            // Pictures the human attached go to the agent as images, not just paths.
+            let images: Vec<String> = unseen.iter().filter(|x| x.from == "you").flat_map(|x| x.files.iter().filter(|f| crate::files::is_image(f)).cloned()).collect();
             // What a message answers, for its header: `, replying to @x's message: "…"`.
             let re = |x: &Message| {
                 x.reply_to.as_ref().map(|r| {
@@ -1103,11 +1108,14 @@ impl Hub {
                 .filter_map(|x| match &x.body {
                     Body::Text { text } if x.from == "you" => {
                         let to = if x.to.is_empty() { "everyone".to_string() } else { x.to.iter().map(|t| format!("@{}", names.get(t).cloned().unwrap_or_default())).collect::<Vec<_>>().join(" ") };
-                        let files = if x.files.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n(attached files, read them yourself: {})", x.files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", "))
-                        };
+                        let (pics, other): (Vec<&String>, Vec<&String>) = x.files.iter().partition(|f| crate::files::is_image(f));
+                        let mut files = String::new();
+                        if !other.is_empty() {
+                            files.push_str(&format!("\n(attached files, read them yourself: {})", other.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
+                        }
+                        if !pics.is_empty() {
+                            files.push_str(&format!("\n(attached images, included with this message: {})", pics.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
+                        }
                         Some(format!("[#{} human → {to}{}]: {text}{files}", x.seq, re(x)))
                     }
                     Body::Text { text } if x.from_thread.is_some() => Some(format!(
@@ -1127,8 +1135,19 @@ impl Hub {
                     _ => None,
                 })
                 .collect();
-            (lines, upto)
+            (lines, upto, images)
         });
+        // The latest few, each small enough for the model to take.
+        let images: Vec<std::path::PathBuf> = images
+            .iter()
+            .filter_map(|f| self.usable_file(panel, cwd, f))
+            .filter(|p| std::fs::metadata(p).is_ok_and(|md| md.len() <= MAX_IMAGE_BYTES))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .take(MAX_IMAGES)
+            .rev()
+            .collect();
         // Trim very long history (e.g. an agent joining late).
         let mut batch = batch;
         let mut omitted = 0;
@@ -1195,11 +1214,18 @@ impl Hub {
         let sent = if m.kind == AgentKind::Codex {
             let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone());
             match rpc {
-                Some(rpc) => rpc.start_turn(self, panel, &m.id, &text).await,
+                Some(rpc) => rpc.start_turn(self, panel, &m.id, &text, &images).await,
                 None => Err("Codex is not running".into()),
             }
         } else {
-            self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
+            let mut content = vec![json!({ "type": "text", "text": text })];
+            for p in &images {
+                if let (Ok(bytes), Some(mime)) = (std::fs::read(p), crate::files::image_type(p)) {
+                    use base64::Engine;
+                    content.push(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes) } }));
+                }
+            }
+            self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": content } })).await
         };
         if sent.is_err() {
             // Not delivered: these messages go again next time too.

@@ -18,7 +18,7 @@ import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -1269,6 +1269,13 @@ function Composer({
           setMenuOff(false);
         }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+        onPaste={(e) => {
+          // Pictures on the clipboard (a screenshot, an image copied from a page) are attached.
+          const pics = [...e.clipboardData.files].filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
+          if (!pics.length || disabled) return;
+          if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+          for (const f of pics) void pasteImage(panel, f).then((p) => p && setFiles((x) => (x.includes(p) ? x : [...x, p])));
+        }}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing || e.keyCode === 229) return; // IME (注音、拼音) still composing
           if (showMenu) {

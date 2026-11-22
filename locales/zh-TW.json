@@ -481,5 +481,12 @@
   "acct.addOne": "新增帳號",
   "setup.start": "開始使用",
   "setup.lookingForLogins": "正在找這台電腦已經登入的帳號…",
-  "setup.loginHintClaude": "照著下面的指示登入，會打開瀏覽器。瀏覽器會用你目前在 claude.ai 登入的帳號；如果不是你要的那個（例如出現要你升級方案或輸入 API key 的頁面），先在網頁上登出、換成正確的帳號再試。"
+  "setup.loginHintClaude": "照著下面的指示登入，會打開瀏覽器。瀏覽器會用你目前在 claude.ai 登入的帳號；如果不是你要的那個（例如出現要你升級方案或輸入 API key 的頁面），先在網頁上登出、換成正確的帳號再試。",
+  "image.err.type": "只能貼 PNG、JPEG、GIF、WebP 圖片",
+  "image.err.big": "圖片太大了（上限 20 MB）",
+  "outputs.images": "圖片",
+  "outputs.emptyImages": "還沒有圖片。在輸入框直接貼上圖片，就會出現在這裡。",
+  "outputs.openImage": "在旁邊打開這張圖",
+  "outputs.findMessage": "跳到附上這張圖的訊息",
+  "outputs.moreTabs": "更多分類"
 }

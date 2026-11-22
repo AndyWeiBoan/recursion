@@ -120,6 +120,7 @@ export type Cmd =
   | { t: "file_get"; panel: string; path: string }
   | { t: "file_open"; panel: string; path: string }
   | { t: "files_grant"; panel: string; paths: string[] }
+  | { t: "image_paste"; panel: string; data: string; mime: string }
   | { t: "ws_stop_agent"; panel: string; member: string }
   | { t: "poll_create"; panel: string; question: string; description: string; options: string[]; vote?: number | null }
   | { t: "poll_vote"; panel: string; poll: string; option: number }

@@ -75,7 +75,12 @@ pub struct Content {
     pub size: u64,
 }
 
-fn image_type(path: &Path) -> Option<&'static str> {
+/// A picture the models can look at (what an attached image may be).
+pub fn is_image(path: &str) -> bool {
+    matches!(image_type(Path::new(path)), Some("image/png" | "image/jpeg" | "image/gif" | "image/webp"))
+}
+
+pub fn image_type(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),

@@ -95,12 +95,22 @@ export function FilePicker({ panel, onPick, onClose }: { panel: string; onPick: 
 }
 
 /** A referenced file: click opens it next to the chat; `onRemove` adds a ✕ (in the chat box). */
+/** A picture the agents can look at (what can be attached as an image). */
+export const isImagePath = (path: string) => /\.(png|jpe?g|gif|webp)$/i.test(path);
+
+/** A small preview of an attached picture. */
+export function ImageThumb({ panel, path, size }: { panel: string; path: string; size: number }) {
+  const file = useProjectFile(panel, path, 0);
+  return file?.image ? <img className="img-thumb" src={file.image} alt="" style={{ maxHeight: size, maxWidth: size * 1.6 }} /> : <Icon name="file" size={13} />;
+}
+
 export function FileChip({ panel, path, onRemove }: { panel: string; path: string; onRemove?: () => void }) {
+  const image = isImagePath(path);
   return (
-    <span className="file-chip">
-      <button className={`file-chip-open${path.startsWith("/") ? " outside" : ""}`} onClick={() => send({ t: "file_open", panel, path })} title={t("file.open", { path }) + (path.startsWith("/") ? `\n${t("file.outside")}` : "")}>
-        <Icon name="file" size={13} />
-        {base(path)}
+    <span className={`file-chip${image ? " image" : ""}`}>
+      <button className={`file-chip-open${path.startsWith("/") ? " outside" : ""}`} onClick={() => send({ t: "file_open", panel, path })} title={t("file.open", { path }) + (path.startsWith("/") && !image ? `\n${t("file.outside")}` : "")}>
+        {image ? <ImageThumb panel={panel} path={path} size={44} /> : <Icon name="file" size={13} />}
+        {!image && base(path)}
       </button>
       {onRemove && (
         <button className="file-chip-x" onClick={onRemove} aria-label={t("file.remove", { name: base(path) })}>

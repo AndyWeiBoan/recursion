@@ -52,11 +52,12 @@ impl Rpc {
         }
     }
 
-    pub async fn start_turn(&self, hub: &Arc<Hub>, panel: &str, member: &str, text: &str) -> Result<(), String> {
+    /// `images`: pictures the human attached, shown to Codex with the text.
+    pub async fn start_turn(&self, hub: &Arc<Hub>, panel: &str, member: &str, text: &str, images: &[std::path::PathBuf]) -> Result<(), String> {
         let thread = self.thread_id.lock().unwrap().clone().ok_or("Codex thread not started yet")?;
-        let r = self
-            .call(hub, panel, member, "turn/start", json!({ "threadId": thread, "input": [{ "type": "text", "text": text, "text_elements": [] }] }))
-            .await?;
+        let mut input = vec![json!({ "type": "text", "text": text, "text_elements": [] })];
+        input.extend(images.iter().map(|p| json!({ "type": "localImage", "path": p })));
+        let r = self.call(hub, panel, member, "turn/start", json!({ "threadId": thread, "input": input })).await?;
         *self.turn_id.lock().unwrap() = r["turn"]["id"].as_str().map(|s| s.to_string());
         Ok(())
     }

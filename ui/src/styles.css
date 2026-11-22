@@ -887,3 +887,19 @@ body.dragging.dragging-col { cursor: row-resize; }
 .setup-xterm .xterm-host { width: 100%; height: 100%; }
 button.link { padding: 0; border: 0; background: none; color: var(--or); text-decoration: underline; font: inherit; cursor: pointer; }
 .setup .primary, .setup-term .primary, .update-bar .primary { margin-top: 0; }
+/* pasted pictures: thumbnail chips */
+.file-chip.image .file-chip-open { padding: 2px; }
+.file-chip.image .file-chip-open.outside::after { display: none; }
+.img-thumb { display: block; border-radius: 5px; object-fit: cover; }
+/* 產出: kind tabs that don't fit go in a ⋯ menu; picture rows */
+.td-tabs-wrap { position: relative; display: flex; align-items: center; margin: 10px 12px 0; gap: 2px; }
+.td-tabs-wrap .td-tabs { flex: 1; min-width: 0; margin: 0; overflow: hidden; }
+.td-more { flex: none; position: relative; }
+.td-more > button { white-space: nowrap; padding: 3px 8px; border-radius: 6px; font-size: 12.5px; color: var(--dim); }
+.td-more > button:hover, .td-more > button[aria-expanded="true"] { background: var(--hover); color: var(--fg); }
+.td-more > button.on { background: var(--sel); color: var(--fg); }
+.td-more-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 140px; display: grid; padding: 4px; background: #26272c; border: 1px solid #3a3b42; border-radius: 9px; box-shadow: 0 12px 30px -10px #000c; }
+.td-more-menu button { text-align: left; padding: 6px 10px; border-radius: 6px; font-size: 12.5px; color: var(--fg); white-space: nowrap; }
+.td-more-menu button:hover { background: var(--hover); }
+.td-more-menu button.on { background: var(--sel); }
+.td-open.td-image { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }

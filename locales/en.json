@@ -496,5 +496,12 @@
   "acct.addOne": "Add one",
   "setup.start": "Start",
   "setup.lookingForLogins": "Looking for logins on this computer…",
-  "setup.loginHintClaude": "Follow the steps below; it opens your browser and uses the account you are logged in to on claude.ai. If that is not the one you want (say, a page asks you to upgrade or enter an API key), log out on the web, switch accounts and try again."
+  "setup.loginHintClaude": "Follow the steps below; it opens your browser and uses the account you are logged in to on claude.ai. If that is not the one you want (say, a page asks you to upgrade or enter an API key), log out on the web, switch accounts and try again.",
+  "image.err.type": "Only PNG, JPEG, GIF and WebP pictures can be pasted",
+  "image.err.big": "The picture is too big (20 MB at most)",
+  "outputs.images": "Pictures",
+  "outputs.emptyImages": "No pictures yet. Paste a picture into the message box and it shows up here.",
+  "outputs.openImage": "Open this picture beside the chat",
+  "outputs.findMessage": "Go to the message it was attached to",
+  "outputs.moreTabs": "More kinds"
 }

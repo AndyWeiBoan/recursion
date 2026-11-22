@@ -392,6 +392,20 @@ export async function pickComputerFiles(panel: string): Promise<string[]> {
   });
 }
 
+/** A picture pasted into the composer: the daemon keeps it and lets this chat use it. Resolves to its path. */
+export async function pasteImage(panel: string, blob: Blob): Promise<string | null> {
+  const data = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] ?? "");
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+  return new Promise((resolve) => {
+    grantWaiters.set(panel, (paths) => resolve(paths[0] ?? null));
+    send({ t: "image_paste", panel, data, mime: blob.type });
+  });
+}
+
 /** The project's files for a chat panel, asked for when `active` turns on; undefined while loading. */
 export function useProjectFiles(panel: string, active: boolean): string[] | undefined {
   useEffect(() => {

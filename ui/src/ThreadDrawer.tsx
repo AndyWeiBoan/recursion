@@ -7,6 +7,7 @@ import { send } from "./client";
 import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
 import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
+import { ImageThumb, isImagePath } from "./Files";
 import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
 
 const STATUS: Record<Thread["status"], string> = {
@@ -93,6 +94,7 @@ const KINDS: { id: ArtifactFilter; label: string }[] = [
   { id: "diagram", get label() { return tr("outputs.diagrams"); } },
   { id: "page", get label() { return tr("outputs.pages"); } },
   { id: "poll", get label() { return tr("outputs.polls"); } },
+  { id: "image", get label() { return tr("outputs.images"); } },
 ];
 const ICON = { thread: "💬", doc: "📄", diagram: "📐", page: "🌐" };
 const KIND_WORD = {
@@ -122,7 +124,7 @@ function host(url: string) {
   }
 }
 
-type Item = { kind: "thread"; at: number; t: Thread } | { kind: Artifact["kind"]; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll };
+type Item = { kind: "thread"; at: number; t: Thread } | { kind: Artifact["kind"]; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll } | { kind: "image"; at: number; path: string; msg: string };
 
 /** `#n` → poll number, `@x` → nobody (polls have no author), else fuzzy over 投票, question, options. */
 function pollMatches(p: Poll, query: string) {
@@ -143,11 +145,21 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
   const threads = useMemo(() => (ws.threads ?? []).filter((t) => !t.removed), [ws.threads]);
   const artifacts = useMemo(() => (ws.artifacts ?? []).filter((a) => !a.removed), [ws.artifacts]);
   const polls = useMemo(() => (ws.polls ?? []).filter((p) => !p.removed), [ws.polls]);
+  // Pictures the human attached to messages in this chat.
+  const images = useMemo(() => ws.messages.flatMap((m) => (m.from === "you" ? (m.files ?? []).filter(isImagePath).map((path) => ({ path, msg: m.id, at: m.ts })) : [])), [ws.messages]);
   const anchor = ui.msg ? ws.messages.find((m) => m.id === ui.msg) : undefined;
   // A message's 💬 badge asks for its threads only.
   const filter = anchor ? "thread" : ui.filter;
   const count = (k: ArtifactFilter) =>
-    k === "all" ? threads.length + artifacts.length + polls.length : k === "thread" ? threads.length : k === "poll" ? polls.length : artifacts.filter((a) => a.kind === k).length;
+    k === "all"
+      ? threads.length + artifacts.length + polls.length + images.length
+      : k === "thread"
+        ? threads.length
+        : k === "poll"
+          ? polls.length
+          : k === "image"
+            ? images.length
+            : artifacts.filter((a) => a.kind === k).length;
   const shown = useMemo(() => {
     const items: Item[] = [];
     if (filter === "all" || filter === "thread")
@@ -157,8 +169,10 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
         if ((filter === "all" || filter === a.kind) && artifactMatches(a, ui.query, byId.get(a.by)?.alias ?? "")) items.push({ kind: a.kind, at: a.updated, a });
     if (!anchor && (filter === "all" || filter === "poll"))
       for (const p of polls) if (pollMatches(p, ui.query)) items.push({ kind: "poll", at: p.closed ?? p.created, p });
+    if (!anchor && (filter === "all" || filter === "image"))
+      for (const im of images) if (imageMatches(im.path, ui.query)) items.push({ kind: "image", ...im });
     return items.sort((x, y) => y.at - x.at);
-  }, [threads, artifacts, polls, filter, anchor, ui.msg, ui.query, byId]);
+  }, [threads, artifacts, polls, images, filter, anchor, ui.msg, ui.query, byId]);
   const empty = {
     all: tr("outputs.emptyAll"),
     thread: tr("outputs.emptyThreads"),
@@ -166,6 +180,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
     diagram: tr("outputs.emptyDiagrams"),
     page: tr("outputs.emptyPages"),
     poll: tr("outputs.emptyPolls"),
+    image: tr("outputs.emptyImages"),
   }[filter];
   return (
     <>
@@ -177,14 +192,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
         </button>
       </header>
       {!anchor && (
-        <div className="td-tabs" role="tablist">
-          {KINDS.map((k) => (
-            <button key={k.id} role="tab" aria-selected={filter === k.id} className={filter === k.id ? "on" : ""} onClick={() => setThreadSearch(panel, { filter: k.id })}>
-              {k.label}
-              {k.id !== "all" && count(k.id) > 0 && <span className="dim"> {count(k.id)}</span>}
-            </button>
-          ))}
-        </div>
+        <Tabs filter={filter} count={count} pick={(id) => setThreadSearch(panel, { filter: id })} />
       )}
       <div className="td-search">
         {anchor && (
@@ -209,11 +217,13 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
             <ThreadRow key={it.t.id} panel={panel} t={it.t} who={byId.get(it.t.agent)} />
           ) : it.kind === "poll" ? (
             <PollRow key={it.p.id} panel={panel} p={it.p} />
+          ) : it.kind === "image" ? (
+            <ImageRow key={`${it.msg}/${it.path}`} panel={panel} path={it.path} msg={it.msg} at={it.at} />
           ) : (
             <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />
           ),
         )}
-        {shown.length === 0 && <div className="td-empty">{threads.length + artifacts.length + polls.length > 0 && ui.query ? tr("outputs.noMatch") : empty}</div>}
+        {shown.length === 0 && <div className="td-empty">{count("all") > 0 && ui.query ? tr("outputs.noMatch") : empty}</div>}
       </div>
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>
@@ -263,6 +273,97 @@ export function RemoveButton({ panel, id, name }: { panel: string; id: string; n
     <button className="td-goto td-remove" onClick={() => send({ t: "output_remove", panel, id })} title={tr("outputs.remove")} aria-label={tr("outputs.removeNamed", { name })}>
       ✕
     </button>
+  );
+}
+
+/** The kind tabs. Those that don't fit the drawer's width go in a ⋯ menu at the end. */
+function Tabs({ filter, count, pick }: { filter: ArtifactFilter; count: (k: ArtifactFilter) => number; pick: (k: ArtifactFilter) => void }) {
+  const row = useRef<HTMLDivElement>(null);
+  const [hidden, setHidden] = useState<ArtifactFilter[]>([]);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const el = row.current;
+    if (!el) return;
+    const measure = () => {
+      const room = el.clientWidth - 44; // the ⋯ button
+      const tabs = [...el.querySelectorAll<HTMLButtonElement>("[data-tab]")];
+      const all = tabs.every((b) => b.offsetLeft + b.offsetWidth <= el.clientWidth);
+      const out = all ? [] : tabs.filter((b) => b.offsetLeft + b.offsetWidth > room).map((b) => b.dataset.tab as ArtifactFilter);
+      setHidden((h) => (h.join() === out.join() ? h : out));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [open]);
+  const label = (k: (typeof KINDS)[number]) => (
+    <>
+      {k.label}
+      {k.id !== "all" && count(k.id) > 0 && <span className="dim"> {count(k.id)}</span>}
+    </>
+  );
+  const picked = hidden.includes(filter) ? KINDS.find((k) => k.id === filter) : undefined;
+  return (
+    <div className="td-tabs-wrap">
+      <div className="td-tabs" role="tablist" ref={row}>
+        {KINDS.map((k) => (
+          <button key={k.id} data-tab={k.id} role="tab" aria-selected={filter === k.id} className={filter === k.id ? "on" : ""} style={hidden.includes(k.id) ? { visibility: "hidden" } : undefined} tabIndex={hidden.includes(k.id) ? -1 : 0} onClick={() => pick(k.id)}>
+            {label(k)}
+          </button>
+        ))}
+      </div>
+      {hidden.length > 0 && (
+        <div className="td-more" onPointerDown={(e) => e.stopPropagation()}>
+          <button className={picked ? "on" : ""} onClick={() => setOpen((o) => !o)} title={tr("outputs.moreTabs")} aria-label={tr("outputs.moreTabs")} aria-expanded={open}>
+            {picked ? picked.label : "⋯"} ▾
+          </button>
+          {open && (
+            <div className="td-more-menu" role="menu">
+              {KINDS.filter((k) => hidden.includes(k.id)).map((k) => (
+                <button key={k.id} role="menuitem" className={filter === k.id ? "on" : ""} onClick={() => (pick(k.id), setOpen(false))}>
+                  {label(k)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Fuzzy over 圖片 and the file name. */
+function imageMatches(path: string, query: string) {
+  const hay = `${tr("outputs.images")} ${path.split("/").pop()}`.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((tok) => !tok.startsWith("@") && !/^#\d+$/.test(tok) && fuzzy(tok, hay));
+}
+
+function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: string; at: number }) {
+  return (
+    <div className="td-row">
+      <button className="td-open td-image" onClick={() => (send({ t: "file_open", panel, path }), unzoom())} title={tr("outputs.openImage")}>
+        <ImageThumb panel={panel} path={path} size={56} />
+        <span className="td-main">
+          <span className="td-quote">{path.split("/").pop()}</span>
+          <span className="td-meta">
+            {tr("common.you")} · {time(at)}
+          </span>
+        </span>
+      </button>
+      <button className="td-goto" onClick={() => showInChat(msg)} title={tr("outputs.findMessage")} aria-label={tr("outputs.findMessage")}>
+        ↗
+      </button>
+    </div>
   );
 }
 

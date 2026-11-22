@@ -15,7 +15,7 @@ export interface ThreadsUI {
   filter: ArtifactFilter;
 }
 
-export type ArtifactFilter = "all" | "thread" | "doc" | "diagram" | "page" | "poll";
+export type ArtifactFilter = "all" | "thread" | "doc" | "diagram" | "page" | "poll" | "image";
 
 const CLOSED: ThreadsUI = { open: false, view: { kind: "list" }, query: "", msg: null, filter: "all" };
 let state: Record<string, ThreadsUI> = {};
