@@ -1301,6 +1301,10 @@ function Composer({
           }
           const collapsed = el.selectionStart === el.selectionEnd;
           const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
+          // Backspace at the very start takes off the last attachment (a pasted picture, say).
+          if (plain && collapsed && e.key === "Backspace" && el.selectionStart === 0 && files.length) {
+            return e.preventDefault(), setFiles((x) => x.slice(0, -1));
+          }
           if (plain && collapsed && e.key === "ArrowUp" && sent.length && (hist !== null || !el.value)) {
             // From an empty box, or while already walking back; a draft never gets replaced.
             const next = hist === null ? sent.length - 1 : Math.max(0, hist - 1);
