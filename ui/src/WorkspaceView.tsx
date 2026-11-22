@@ -7,7 +7,7 @@ import { useDragWidth } from "./Layout";
 import { Icon } from "./icons";
 import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
 import { t as tr } from "./i18n";
-import { copyText } from "./clipboard";
+import { copyText, readClipboardImage } from "./clipboard";
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
 import { Marked } from "marked";
@@ -1271,10 +1271,19 @@ function Composer({
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
         onPaste={(e) => {
           // Pictures on the clipboard (a screenshot, an image copied from a page) are attached.
-          const pics = [...e.clipboardData.files].filter((f) => /^image\/(png|jpeg|gif|webp)$/.test(f.type));
-          if (!pics.length || disabled) return;
-          if (!e.clipboardData.getData("text/plain")) e.preventDefault();
-          for (const f of pics) void pasteImage(panel, f).then((p) => p && setFiles((x) => (x.includes(p) ? x : [...x, p])));
+          if (disabled) return;
+          const attach = (f: File) => void pasteImage(panel, f).then((p) => p && setFiles((x) => (x.includes(p) ? x : [...x, p])));
+          const ok = (f: File | null): f is File => !!f && /^image\/(png|jpeg|gif|webp)$/.test(f.type);
+          const pics = [...e.clipboardData.files, ...[...e.clipboardData.items].filter((i) => i.kind === "file").map((i) => i.getAsFile())].filter(ok);
+          const text = e.clipboardData.getData("text/plain");
+          if (pics.length) {
+            if (!text) e.preventDefault();
+            new Set(pics).forEach(attach);
+          } else if (!text) {
+            // The webview left the picture out (⌘V of a screenshot on macOS): read it ourselves.
+            e.preventDefault();
+            void readClipboardImage().then((f) => f && attach(f));
+          }
         }}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing || e.keyCode === 229) return; // IME (注音、拼音) still composing

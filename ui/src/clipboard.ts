@@ -1,7 +1,7 @@
 // The system clipboard. In the app it goes through Tauri: WebKitGTK's own clipboard reads
 // are unreliable. In a plain browser (tests) it falls back to navigator.clipboard.
 import { t } from "./i18n";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readImage, readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -24,6 +24,35 @@ export async function pasteText(): Promise<string> {
     console.warn("paste failed", e);
     return "";
   }
+}
+
+/**
+ * A picture on the system clipboard, as a PNG file; null when there is none. The webviews often
+ * leave pictures out of a paste event (WKWebView with a screenshot), so the app reads it itself.
+ */
+export async function readClipboardImage(): Promise<File | null> {
+  if (!isTauri) return null;
+  try {
+    const img = await readImage();
+    const { width, height } = await img.size();
+    const rgba = await img.rgba();
+    if (!width || !height) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, "image/png"));
+    return blob ? new File([blob], "pasted.png", { type: "image/png" }) : null;
+  } catch {
+    return null; // nothing that is a picture
+  }
+}
+
+/** Hands a picture to the focused field as a paste event, the way a native paste would. */
+function pastePicture(el: Element, file: File) {
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
 }
 
 const editable = (el: Element | null): el is HTMLInputElement | HTMLTextAreaElement =>
@@ -66,7 +95,12 @@ export function installClipboardKeys() {
         if (!editable(el)) return;
         e.preventDefault();
         // insertText goes through the field's own editing, so React sees it and Ctrl+Z undoes it.
-        void pasteText().then((t) => t && document.execCommand("insertText", false, t));
+        // No text: maybe a picture (a screenshot), for fields that take one (the message box).
+        void pasteText().then(async (t) => {
+          if (t) return void document.execCommand("insertText", false, t);
+          const pic = await readClipboardImage();
+          if (pic) pastePicture(el, pic);
+        });
         return;
       }
       const text = selected(el);
