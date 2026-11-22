@@ -1165,21 +1165,52 @@ impl Hub {
 
         self.rt(panel, |r| r.turn_first.remove(&m.id));
         let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
+        // Not delivered after all: the member list and the rules go again next time.
+        let undo_seen = || {
+            self.rt(panel, |r| {
+                match seen_ver {
+                    Some(v) => r.roster_seen.insert(m.id.clone(), v),
+                    None => r.roster_seen.remove(&m.id),
+                };
+                match rseen {
+                    Some(v) => r.rules_seen.insert(m.id.clone(), v),
+                    None => r.rules_seen.remove(&m.id),
+                };
+            })
+        };
         if !running {
-            match m.kind {
-                AgentKind::Claude => self.spawn(panel, m, cwd).await?,
-                AgentKind::Codex => self.spawn_codex(panel, m, cwd).await?,
+            let started = match m.kind {
+                AgentKind::Claude => self.spawn(panel, m, cwd).await,
+                AgentKind::Codex => self.spawn_codex(panel, m, cwd).await,
+            };
+            if let Err(e) = started {
+                undo_seen();
+                return Err(e);
             }
         }
         self.update_member(panel, &m.id, |x| {
             x.status = MemberStatus::Thinking;
             x.seen = upto;
         });
-        if m.kind == AgentKind::Codex {
-            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).ok_or("Codex is not running")?;
-            return rpc.start_turn(self, panel, &m.id, &text).await;
+        let sent = if m.kind == AgentKind::Codex {
+            let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone());
+            match rpc {
+                Some(rpc) => rpc.start_turn(self, panel, &m.id, &text).await,
+                None => Err("Codex is not running".into()),
+            }
+        } else {
+            self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
+        };
+        if sent.is_err() {
+            // Not delivered: these messages go again next time too.
+            self.update_member(panel, &m.id, |x| {
+                if x.seen == upto {
+                    x.seen = m.seen;
+                }
+            });
+            undo_seen();
         }
-        self.write(panel, &m.id, json!({ "type": "user", "message": { "role": "user", "content": [{ "type": "text", "text": text }] } })).await
+        sent
     }
 
     async fn spawn(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {

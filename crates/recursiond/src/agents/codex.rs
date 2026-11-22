@@ -372,10 +372,13 @@ impl Reader {
                         let r = &item["result"];
                         let text = if r["content"].is_array() { tool_result_text(&r["content"]) } else if r.is_null() { item["error"]["message"].as_str().unwrap_or("").to_string() } else { r.to_string() };
                         let text: String = text.chars().take(2000).collect();
+                        // Failed: the call itself (status / error) or the tool's own answer (isError).
+                        let failed = matches!(item["status"].as_str(), Some("failed" | "declined")) || !item["error"].is_null() || r["isError"].as_bool().unwrap_or(false);
                         hub.update_msg(&panel, &id, |m| {
                             m.streaming = false;
-                            if let Body::Tool { result, .. } = &mut m.body {
+                            if let Body::Tool { result, is_error, .. } = &mut m.body {
                                 *result = Some(text);
+                                *is_error = failed;
                             }
                         });
                     }
@@ -463,4 +466,63 @@ impl Reader {
 /// Kept as a plain fn so the reader's future type doesn't recurse into `turn_ended` → `deliver` → `spawn_codex`.
 fn spawn_turn_ended(hub: Arc<Hub>, panel: String, member: String, text: String, ids: Vec<String>, cwd: String) {
     tokio::spawn(async move { hub.turn_ended(panel, member, text, ids, cwd).await });
+}
+
+// From issues #6 and #7 (fault injection, no CLI or account needed).
+#[cfg(test)]
+mod issue_regressions {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejected_turn_does_not_consume_unseen_messages() {
+        let hub = Hub::new();
+        let panel = crate::model::new_id();
+        let member: Member = serde_json::from_value(json!({"id":"audit","alias":"audit","kind":"codex"})).unwrap();
+        hub.with_ws(&panel, |ws| ws.members.push(member.clone()));
+        hub.push_msg(&panel, msg("you", Body::Text { text: "Remember the audit marker 7429".into() }, false));
+        let mut child = Command::new("/bin/cat").stdin(Stdio::piped()).stdout(Stdio::null()).kill_on_drop(true).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let child = Arc::new(tokio::sync::Mutex::new(child));
+        let rpc = Arc::new(Rpc::new());
+        *rpc.thread_id.lock().unwrap() = Some("test-thread".into());
+        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()) });
+        let responder = tokio::spawn(async move {
+            loop {
+                let id = rpc.pending.lock().unwrap().keys().next().copied();
+                if let Some(id) = id {
+                    rpc.resolve(id, json!({"id": id, "error": {"code": -32000, "message": "test: turn rejected"}}));
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let result = hub.deliver(&panel, &member, "/tmp").await;
+        responder.await.unwrap();
+        child.lock().await.kill().await.unwrap();
+        assert!(result.unwrap_err().contains("turn rejected"));
+        let seen = hub.with_ws(&panel, |ws| ws.members[0].seen);
+        assert_eq!(seen, 0, "a rejected turn must leave the human's message to be delivered again");
+    }
+
+    async fn check_mcp_failure(result: Value, error: Value) {
+        let hub = Hub::new();
+        let panel = crate::model::new_id();
+        let mut reader = Reader::new(hub.clone(), panel.clone(), "audit".into(), "/tmp".into(), Arc::new(Rpc::new()));
+        reader.handle(json!({"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"tool1","server":"recursion","tool":"doc_read","arguments":{"id":"missing"}}}})).await;
+        reader.handle(json!({"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"tool1","status":"failed","result":result,"error":error}}})).await;
+        let state = hub.snapshot(&panel);
+        let row = state["ws"]["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(row["streaming"], false);
+        assert_eq!(row["is_error"], true, "failed MCP row: {row}");
+    }
+
+    #[tokio::test]
+    async fn mcp_transport_failure_is_marked_error() {
+        check_mcp_failure(Value::Null, json!({"message":"test transport failure"})).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_result_error_is_marked_error() {
+        check_mcp_failure(json!({"content":[{"type":"text","text":"document not found"}],"isError":true}), Value::Null).await;
+    }
 }
