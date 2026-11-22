@@ -96,7 +96,7 @@ else
     [ "$try" = 5 ] && die "could not sync to $MAC"
     sleep 5
   done
-  ssh "$MAC" zsh -lc "'cd ~/src/recursion && CI=true TAURI_SIGNING_PRIVATE_KEY=\$(cat $KEY) TAURI_SIGNING_PRIVATE_KEY_PASSWORD= cargo tauri build --bundles app,dmg --config '\''$CONFIG'\'''"
+  ssh "$MAC" zsh -lc "'cd ~/src/recursion && CI=true TAURI_SIGNING_PRIVATE_KEY=\$(cat ~/.tauri/recursion-updater.key) TAURI_SIGNING_PRIVATE_KEY_PASSWORD= cargo tauri build --bundles app,dmg --config '\''$CONFIG'\'''"
   B=src/recursion/target/release/bundle
   # rsync resumes; the link to the Mac sometimes stalls mid-copy.
   for f in "${FILES[@]}"; do
