@@ -1097,6 +1097,23 @@ function Composer({
   const [files, setFiles] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
   const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
+  // ↑ / ↓ in an empty box walk through what the human sent in this chat, newest first.
+  const sent = useMemo(() => {
+    const out: string[] = [];
+    for (const m of messages) if (m.from === "you" && m.kind === "text" && m.text.trim() && out[out.length - 1] !== m.text) out.push(m.text);
+    return out;
+  }, [messages]);
+  const [hist, setHist] = useState<number | null>(null);
+  const recall = (i: number | null) => {
+    setHist(i);
+    const t = i === null ? "" : sent[i];
+    setText(t);
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (el) el.selectionStart = el.selectionEnd = t.length;
+      setCaret(t.length);
+    });
+  };
   useEffect(() => {
     if ((focused || replyId) && !disabled) ref.current?.focus();
   }, [focused, disabled, replyId]);
@@ -1155,6 +1172,7 @@ function Composer({
     send({ t: "ws_send", panel, text, reply_to: reply?.id, files });
     setReplying(panel, null);
     setText("");
+    setHist(null);
     setFiles([]);
     setCaret(0);
   };
@@ -1244,6 +1262,7 @@ function Composer({
         disabled={disabled}
         placeholder={disabled ? tr("composer.addAgentFirst") : tr("composer.placeholder")}
         onChange={(e) => {
+          setHist(null);
           setText(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);
           setSel(0);
@@ -1265,6 +1284,15 @@ function Composer({
             if (tool) return e.preventDefault(), fmt(tool.make);
           }
           const collapsed = el.selectionStart === el.selectionEnd;
+          const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
+          if (plain && collapsed && e.key === "ArrowUp" && sent.length && (hist !== null || !el.value)) {
+            // From an empty box, or while already walking back; a draft never gets replaced.
+            const next = hist === null ? sent.length - 1 : Math.max(0, hist - 1);
+            if (hist === null || !el.value.slice(0, el.selectionStart).includes("\n")) return e.preventDefault(), recall(next);
+          }
+          if (plain && collapsed && e.key === "ArrowDown" && hist !== null && !el.value.slice(el.selectionStart).includes("\n")) {
+            return e.preventDefault(), recall(hist + 1 < sent.length ? hist + 1 : null);
+          }
           // Inside a ``` block, Enter and Tab write code instead of sending / leaving the box.
           if (collapsed && inCodeBlock(el.value, el.selectionStart)) {
             if (e.key === "Tab" && !e.shiftKey) return e.preventDefault(), fmt((_, a, b) => ({ from: a, to: b, insert: "  ", selStart: a + 2, selEnd: a + 2 }));
