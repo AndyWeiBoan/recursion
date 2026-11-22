@@ -25,7 +25,11 @@ done
 cargo metadata --format-version 1 >/dev/null # refresh Cargo.lock
 
 npx vite build
-rsync -a --delete --exclude target --exclude node_modules --exclude .git --exclude src-tauri/binaries ./ "$MAC:src/recursion/"
+for try in 1 2 3 4 5; do
+  timeout 300 rsync -a --delete --timeout=30 --exclude target --exclude node_modules --exclude .git --exclude src-tauri/binaries ./ "$MAC:src/recursion/" && break
+  [ "$try" = 5 ] && { echo "could not reach $MAC" >&2; exit 1; }
+  sleep 5
+done
 ssh "$MAC" zsh -lc "'cd ~/src/recursion && CI=true TAURI_SIGNING_PRIVATE_KEY=\$(cat ~/.tauri/recursion-updater.key) TAURI_SIGNING_PRIVATE_KEY_PASSWORD= \
   cargo tauri build --bundles app,dmg --config '\''{\"build\":{\"beforeBuildCommand\":\"bash scripts/sidecar.sh release\"},\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}'\'''"
 
