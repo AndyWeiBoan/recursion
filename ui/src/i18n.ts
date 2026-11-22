@@ -64,8 +64,11 @@ export function useLang() {
 export function t(key: string, vars?: Record<string, string | number>): string {
   const own = tables[lang] ?? {};
   const en = tables[FALLBACK] ?? {};
-  const k = vars?.n === 1 && (own[`${key}_one`] ?? en[`${key}_one`]) !== undefined ? `${key}_one` : key;
-  let s = own[k] ?? en[k] ?? key;
+  // The singular ("1 vote") only where the language that has the text has one: Chinese has none,
+  // and must not borrow English's.
+  const table = own[key] !== undefined ? own : en;
+  const k = vars?.n === 1 && table[`${key}_one`] !== undefined ? `${key}_one` : key;
+  let s = table[k] ?? key;
   if (vars) for (const [name, v] of Object.entries(vars)) s = s.split(`{${name}}`).join(String(v));
   return s;
 }

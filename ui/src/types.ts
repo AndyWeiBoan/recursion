@@ -35,6 +35,8 @@ export interface Doc {
   id: string;
   title: string;
   kind?: "html" | "diagram";
+  /** The chat panel that wrote it. */
+  chat?: string;
   author: string;
   rev: number;
   updated: number;

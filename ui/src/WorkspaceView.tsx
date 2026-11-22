@@ -1087,7 +1087,6 @@ function Composer({
     { key: "fmt.codeBlock", make: codeBlock },
     { key: "fmt.bullets", make: (t, a, b) => prefix(t, a, b, "bullet") },
     { key: "fmt.numbers", make: (t, a, b) => prefix(t, a, b, "number") },
-    { key: "fmt.quote", make: (t, a, b) => prefix(t, a, b, "quote") },
   ];
   const submit = () => {
     if ((!text.trim() && !files.length) || disabled) return;

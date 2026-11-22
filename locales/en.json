@@ -409,7 +409,6 @@
   "fmt.codeBlock": "Code block",
   "fmt.bullets": "Bulleted list",
   "fmt.numbers": "Numbered list",
-  "fmt.quote": "Quote",
   "composer.resize": "Drag to resize the message box (double-click to reset)",
   "file.err.outside": "That file isn't in the project folder, or no longer exists",
   "file.err.tooBig": "The file is too big to show here",
@@ -426,5 +425,6 @@
   "file.fromComputer": "From computer…",
   "file.fromComputerHint": "Pick a file outside the workspace: picking it lets this chat's agents read it; nothing is copied",
   "file.fromComputerPrompt": "Full path of the file",
-  "file.outside": "Outside the workspace (you opened it to this chat)"
+  "file.outside": "Outside the workspace (you opened it to this chat)",
+  "outputs.backHint": "Open this chat's outputs list"
 }

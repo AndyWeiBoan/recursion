@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { openThreads } from "./threadsUI";
 import { FileBody } from "./Files";
 import { DiagramView } from "./Diagram";
 import { t } from "./i18n";
 import { copyText, saveDownload } from "./clipboard";
-import { send } from "./client";
+import { send, useSnapshot } from "./client";
 import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
 import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
@@ -173,6 +174,15 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   };
   const docId = panel.kind === "browser" && panel.url?.startsWith("doc:") ? panel.url.slice(4) : null;
   const doc = docId ? ctx.docs.find((d) => d.id === docId) : undefined;
+  // A document, diagram or file shown here came from a chat: a way back to that chat's 產出.
+  const { state } = useSnapshot();
+  const viewer = panel.kind === "browser" && (docId || panel.url?.startsWith("file:"));
+  const sourceChat = useMemo(() => {
+    if (!viewer || !state) return null;
+    if (doc?.chat && state.panels[doc.chat]) return doc.chat;
+    const win = state.sessions.flatMap((s) => s.windows).find((w) => leaves(w.root).includes(panel.id));
+    return win ? leaves(win.root).find((p) => state.panels[p]?.kind === "workspace") ?? null : null;
+  }, [viewer, state, doc?.chat, panel.id]);
   const title =
     panel.kind === "terminal"
       ? info?.fg ?? "shell"
@@ -193,6 +203,18 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
           {KIND_LABEL[panel.kind]} ▾
         </button>
         {panel.kind === "workspace" ? <ChatHead panel={panel.id} /> : <span className="title">{title}</span>}
+        {sourceChat && (
+          <button
+            className="chat-outputs"
+            onClick={() => {
+              send({ t: "panel_focus", panel: sourceChat });
+              openThreads(sourceChat, { view: { kind: "list" }, msg: null });
+            }}
+            title={t("outputs.backHint")}
+          >
+            📎 {t("outputs.title")}
+          </button>
+        )}
         <span className="tools">
           <button
             title={t("panel.splitRight") + "（⌘D）"}
