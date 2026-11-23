@@ -43,7 +43,7 @@ export function getTerminal(id: string): Entry {
   const el = document.createElement("div");
   el.className = "xterm-host";
   const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "SF Mono", Menlo, "Noto Sans Mono CJK TC", monospace',
+    fontFamily: '"JetBrains Mono", "SF Mono", Menlo, "Symbols Nerd Font Mono", "JetBrainsMono Nerd Font Mono", "Hack Nerd Font Mono", "MesloLGS Nerd Font Mono", "FiraCode Nerd Font Mono", "Noto Sans Mono CJK TC", monospace',
     fontSize: 13,
     lineHeight: 1.15,
     cursorBlink: true,
