@@ -914,3 +914,36 @@ button.link { padding: 0; border: 0; background: none; color: var(--or); text-de
 .closed-main .dim { font-size: 11.5px; }
 .menu .closed-del { flex: none; color: var(--dim); padding: 6px 8px; }
 .menu .closed-del.danger { color: var(--pk); }
+
+.mcp-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b6d76; flex: none; }
+.mcp-dot.ok { background: #6fcf97; }
+.mcp-dot.bad { background: #f28b82; }
+.mcp-dot.busy { background: #f6c177; animation: pulse 1s ease-in-out infinite alternate; }
+.mcp-row { align-items: start; }
+.mcp-row .mcp-dot { margin-top: 6px; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.mcp-status { font-size: 12px; color: var(--dim); display: flex; gap: 8px; align-items: center; }
+.mcp-status.ok { color: #6fcf97; }
+.mcp-status.failed { color: #f28b82; }
+.mcp-more { font-size: 11.5px; color: var(--dim); text-decoration: underline; }
+.mcp-error { margin: 4px 0 0; padding: 8px 10px; background: #1b1c20; border: 1px solid var(--line); border-radius: 7px; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; color: #f2c0bc; }
+.mcp-none { margin: 0; font-size: 12.5px; }
+.mcp-form { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #232428; }
+.mcp-form input, .mcp-form textarea { background: #1b1c20; border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; font: inherit; font-size: 12.5px; color: var(--fg); outline: none; }
+.mcp-form textarea { font-family: var(--mono); resize: vertical; }
+.mcp-form input:focus, .mcp-form textarea:focus { border-color: var(--or); }
+.mode-seg.two { grid-template-columns: repeat(2, 1fr); }
+.mcp-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; }
+.mcp-pair button { color: var(--dim); padding: 0 6px; }
+.mcp-pair button:hover { color: var(--fg); }
+.mcp-form-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.mcp-form-foot button { border: 1px solid #44464f; border-radius: 7px; padding: 5px 12px; font-size: 12.5px; }
+.mcp-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.mcp-check .dim { margin-left: auto; font-size: 11.5px; }
+.mcp-checks { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid #3a3b42; border-radius: 10px; background: #1d1e22; }
+.mcp-import { display: grid; gap: 6px; }
+.mcp-found { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: #232428; cursor: pointer; }
+.acct-tag.same { color: #6fcf97; }
+.acct-tag.changed { color: #f6c177; }
+.mcp-import-btn { justify-self: start; border-radius: 7px; padding: 5px 12px; font-size: 12.5px; }
+.poll-form .mcp-check input, .mcp-found input { height: auto; padding: 0; }

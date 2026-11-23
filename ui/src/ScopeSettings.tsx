@@ -1,10 +1,12 @@
-// Settings for one session (its folder, defaults for new agents) and for one chat (its name,
+// Settings for one session (its folder, defaults for new agents, its MCP servers) and for one chat (its name,
 // standing rules for the agents, and a spending limit).
 import { useState, useSyncExternalStore } from "react";
 import { pickFolder, send, useModels, useSnapshot, useWorkspace } from "./client";
 import { t } from "./i18n";
 import { PERM_MODES, type AgentDefaults, type AgentKind, type ChatSettings, type PermMode } from "./types";
 import { Modal } from "./WorkspaceView";
+import { McpChecks } from "./Mcp";
+import { openSettings } from "./Settings";
 
 // Which session's settings are open; outside React so the sidebar menu can open them.
 let openId: string | null = null;
@@ -24,7 +26,7 @@ export function SessionSettingsModal() {
   if (!s) return null;
   return (
     <Modal title={t("scope.session")} onClose={() => openSessionSettings(null)}>
-      <SessionForm key={s.id} id={s.id} name={s.name} cwd={s.cwd} defaults={s.defaults ?? {}} onDone={() => openSessionSettings(null)} />
+      <SessionForm key={s.id} id={s.id} name={s.name} cwd={s.cwd} defaults={s.defaults ?? {}} mcp={s.mcp ?? []} onDone={() => openSessionSettings(null)} />
     </Modal>
   );
 }
@@ -50,8 +52,9 @@ function ModelSelect({ kind, value, onChange }: { kind: AgentKind; value: string
   );
 }
 
-function SessionForm({ id, name, cwd: initialCwd, defaults, onDone }: { id: string; name: string; cwd: string; defaults: AgentDefaults; onDone: () => void }) {
+function SessionForm({ id, name, cwd: initialCwd, defaults, mcp: initialMcp, onDone }: { id: string; name: string; cwd: string; defaults: AgentDefaults; mcp: string[]; onDone: () => void }) {
   const [cwd, setCwd] = useState(initialCwd);
+  const [mcp, setMcp] = useState(initialMcp);
   const [kind, setKind] = useState<AgentKind | "">(defaults.kind ?? "");
   const [claudeModel, setClaudeModel] = useState(defaults.claude_model ?? "");
   const [codexModel, setCodexModel] = useState(defaults.codex_model ?? "");
@@ -62,7 +65,7 @@ function SessionForm({ id, name, cwd: initialCwd, defaults, onDone }: { id: stri
     if (claudeModel) d.claude_model = claudeModel;
     if (codexModel) d.codex_model = codexModel;
     if (mode) d.mode = mode;
-    send({ t: "session_settings", session: id, cwd: cwd.trim(), defaults: d });
+    send({ t: "session_settings", session: id, cwd: cwd.trim(), defaults: d, mcp });
     onDone();
   };
   return (
@@ -107,6 +110,7 @@ function SessionForm({ id, name, cwd: initialCwd, defaults, onDone }: { id: stri
           </div>
         </div>
       </div>
+      <McpChecks value={mcp} onChange={setMcp} onManage={() => (onDone(), openSettings("mcp"))} />
       <button className="add-submit" type="submit" disabled={!cwd.trim()}>
         {t("scope.save")}
       </button>

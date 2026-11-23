@@ -66,6 +66,9 @@ pub struct Session {
     /// What the add-agent form starts from in this session.
     #[serde(default)]
     pub defaults: AgentDefaults,
+    /// The human's MCP servers (by name, from `mcp.json`) this session's agents get.
+    #[serde(default)]
+    pub mcp: Vec<String>,
 }
 
 /// Starting values for agents added in a session; empty fields keep the form's own defaults.
@@ -319,6 +322,7 @@ impl State {
             windows: vec![window],
             docs: vec![],
             defaults: AgentDefaults::default(),
+            mcp: vec![],
         };
         self.sessions.push(session);
         self.active_session = Some(id.clone());
@@ -381,7 +385,7 @@ impl State {
                     Some(s) => s.id.clone(),
                     None => {
                         let id = new_id();
-                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default() });
+                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default(), mcp: vec![] });
                         id
                     }
                 };

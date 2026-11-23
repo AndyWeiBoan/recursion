@@ -6,7 +6,7 @@
 
 use crate::i18n::tr;
 use super::{group_prompt, msg, Hub, PendingPerm, Proc};
-use crate::workspace::{display_tool_name, summarize_tool, tool_result_text, Body, Member, MemberStatus, PermState, TurnUsage};
+use crate::workspace::{display_tool_name, AgentKind, summarize_tool, tool_result_text, Body, Member, MemberStatus, PermState, TurnUsage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -102,6 +102,7 @@ impl Hub {
         let env = self.env().await;
         let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
+        let enabled = self.session_mcp(panel);
         let mut cmd = Command::new(bin);
         cmd.arg("app-server").current_dir(&dir).env("PATH", &env.path);
         self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
@@ -116,7 +117,7 @@ impl Hub {
         let rpc = Arc::new(Rpc::new());
         self.procs.lock().unwrap().insert(
             (panel.to_string(), m.id.clone()),
-            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()) },
+            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()), mcp: enabled.clone() },
         );
 
         let err_buf = Arc::new(Mutex::new(String::new()));
@@ -168,12 +169,15 @@ impl Hub {
             .await?;
         self.write(panel, &m.id, json!({ "jsonrpc": "2.0", "method": "initialized" })).await?;
         let (approval, sandbox) = m.mode.codex();
+        // Recursion's own server and the ones the session turned on; Codex's own others are switched off.
+        let mut mcp = self.mcps.codex_config(&enabled, crate::accounts::dir(&self.accounts.resolve(AgentKind::Codex, m.account.as_deref())));
+        mcp.insert("recursion".into(), json!({ "url": self.mcp_url(panel, &m.id) }));
         let mut params = json!({
             "cwd": dir,
             "approvalPolicy": approval,
             "sandbox": sandbox,
             "developerInstructions": group_prompt(&m.alias),
-            "config": { "mcp_servers": { "recursion": { "url": self.mcp_url(panel, &m.id) } } },
+            "config": { "mcp_servers": mcp },
         });
         if let Some(model) = &m.model {
             params["model"] = json!(model);
@@ -271,8 +275,8 @@ impl Reader {
                     hub.update_member(&panel, &member, |m| m.status = MemberStatus::WaitingPermission);
                 }
                 // Codex asks before each MCP tool call. Our own server only touches this session's
-                // documents, so say yes; other servers' prompts still fall through to a decline.
-                "mcpServer/elicitation/request" if params["serverName"] == "recursion" => {
+                // documents, and the others are the ones the human turned on for it: say yes.
+                "mcpServer/elicitation/request" => {
                     let _ = hub.write(&panel, &member, json!({ "jsonrpc": "2.0", "id": rpc_id, "result": { "action": "accept", "content": {} } })).await;
                 }
                 _ => {
@@ -486,7 +490,7 @@ mod issue_regressions {
         let child = Arc::new(tokio::sync::Mutex::new(child));
         let rpc = Arc::new(Rpc::new());
         *rpc.thread_id.lock().unwrap() = Some("test-thread".into());
-        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()) });
+        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()), mcp: vec![] });
         let responder = tokio::spawn(async move {
             loop {
                 let id = rpc.pending.lock().unwrap().keys().next().copied();

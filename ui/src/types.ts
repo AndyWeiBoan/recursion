@@ -46,6 +46,8 @@ export interface Session {
   active_window: string | null;
   docs?: Doc[];
   defaults?: AgentDefaults;
+  /** The human's MCP servers this session's agents get. */
+  mcp?: string[];
 }
 
 /** An HTML document an agent wrote for the session; browser panels show it at `doc:<id>`. */
@@ -84,6 +86,11 @@ export type Cmd =
   | { t: "session_create"; name: string; cwd: string; kind?: PanelKind }
   | { t: "session_close"; session: string }
   | { t: "closed_reopen"; id: string }
+  | { t: "mcp_list" }
+  | { t: "mcp_save"; name: string; old?: string; server: { command?: string; args?: string[]; env?: Record<string, string | null>; url?: string; headers?: Record<string, string | null>; sse?: boolean } }
+  | { t: "mcp_remove"; name: string }
+  | { t: "mcp_import"; picks: [string, string][] }
+  | { t: "mcp_test"; name: string }
   | { t: "closed_delete"; id: string }
   | { t: "session_rename"; session: string; name: string }
   | { t: "session_group"; session: string; group: string }
@@ -106,7 +113,7 @@ export type Cmd =
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
   | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
   | { t: "set_lang"; lang: string | null }
-  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults }
+  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults; mcp?: string[] }
   | { t: "ws_settings"; panel: string; settings: ChatSettings }
   | { t: "ws_compact"; panel: string; member: string }
   | { t: "accounts_list" }

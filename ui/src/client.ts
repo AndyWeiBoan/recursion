@@ -123,6 +123,9 @@ export async function connect() {
           accountsLoaded = true;
           accountSubs.forEach((f) => f());
           break;
+        case "mcp_state":
+          setMcp(m);
+          break;
         case "cli_status":
           setSetup({ cli: { claude: m.claude ?? null, codex: m.codex ?? null } });
           break;
@@ -491,6 +494,49 @@ export function requestAddAgent(panel: string) {
 }
 
 // ---------- accounts ----------
+/** The human's MCP servers (keys hidden), their last connection test, and what the CLIs have. */
+export interface McpServer {
+  command?: string | null;
+  args?: string[];
+  /** Values are never sent here: `null` means "set, unchanged". */
+  env?: Record<string, string | null>;
+  url?: string | null;
+  headers?: Record<string, string | null>;
+  sse?: boolean;
+  from?: string | null;
+}
+export interface McpStatus {
+  state: "testing" | "ok" | "failed";
+  tools?: number;
+  error?: string;
+  at: number;
+}
+export interface McpFound {
+  name: string;
+  from: string;
+  server: McpServer;
+  state: "new" | "same" | "changed";
+}
+export interface McpState {
+  servers: Record<string, McpServer>;
+  status: Record<string, McpStatus>;
+  found: McpFound[];
+}
+let mcp: McpState | null = null;
+const mcpSubs = new Set<() => void>();
+function setMcp(m: McpState) {
+  mcp = { servers: m.servers, status: m.status, found: m.found };
+  mcpSubs.forEach((f) => f());
+}
+/** The MCP list, asked for once when first used. */
+export function useMcp(): McpState | null {
+  useEffect(() => send({ t: "mcp_list" }), []);
+  return useSyncExternalStore(
+    (f) => (mcpSubs.add(f), () => mcpSubs.delete(f)),
+    () => mcp,
+  );
+}
+
 let accounts: Account[] = [];
 let accountsLoaded = false;
 const accountSubs = new Set<() => void>();

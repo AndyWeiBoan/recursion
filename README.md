@@ -20,6 +20,8 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **回覆**：在任何訊息上按右鍵 →「回覆」，送出的訊息會帶著被回覆的那段，點一下跳回原訊息；agent 也會知道你在回哪一則。
 - **agent 的瀏覽器**：每個 agent 在群聊旁有自己的瀏覽器 panel，用 `browse_open`／`browse_read`／`browse_click`／`browse_fill`／`browse_screenshot` 開網頁、填表單、截圖，你看得到它在做什麼（macOS、Linux 都可以）；網頁打不開時會回報錯誤。
 - **多帳號**：設定 →「帳號」管理 Claude／Codex 的多個登入（每個帳號一個設定資料夾，設定、skills 等連回原本的 `~/.claude`／`~/.codex`），也可以直接加入這台電腦 CLI 原本的登入；顯示 email、方案、5 小時／7 天用量；加 agent 時選帳號；登入過期時聊天裡出現「重新登入」卡片。
+- **MCP**：設定 →「MCP」是 Recursion 自己的一份 MCP 清單（`~/.recursion/mcp.json`，權限 0600），可以從 Claude／Codex 的設定勾選導入，或自己新增；每個都會實際連線測試，失敗看得到原因、可以重試。每個 session 在它的設定裡勾要用哪些（新 session 沿用上一次的勾選），agent 只拿到勾的那些、不用每次允許；CLI 自己設定的 MCP 不會給 agent。
+- **最近關閉**：關掉 session 或群聊不會刪掉，側邊欄「最近關閉」可以打開回來，或在那裡永久刪除。同一個資料夾只會有一個 session。
 - **第一次使用的引導**：檢查 Claude Code／Codex 有沒有裝，沒裝的話用官方安裝程式幫你裝（在 app 裡的終端看得到進度），然後加入帳號。
 - **自動更新**（macOS）：新版發佈在 [recursion-releases](https://github.com/AndyWeiBoan/recursion-releases)，右下角會通知，在「設定 → 軟體資訊」更新，完成後自動重開。發版用 `scripts/release.sh`（在 Mac 上打包、簽章、上傳）。
 - **Session／群聊設定**：session 的資料夾和新 agent 的預設（種類、模型、權限）；群聊的名稱、給所有 agent 的規則、花費上限。

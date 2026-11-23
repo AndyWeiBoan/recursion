@@ -17,6 +17,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 rand = "0.8"
 libc = "0.2"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

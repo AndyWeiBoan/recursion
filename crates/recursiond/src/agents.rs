@@ -75,6 +75,8 @@ struct Proc {
     generation: u64,
     /// JSON-RPC state when the agent is Codex (app-server).
     codex: Option<Arc<codex::Rpc>>,
+    /// The session's MCP servers it was started with: when they change, it starts again.
+    mcp: Vec<String>,
 }
 
 struct PendingPerm {
@@ -144,6 +146,9 @@ pub struct Hub {
     /// MCP key → (panel, member): each agent gets its own URL, so tool calls know who is calling.
     mcp: Mutex<HashMap<String, (String, String)>>,
     pub accounts: crate::accounts::Accounts,
+    pub mcps: crate::mcp::Mcps,
+    /// A chat's session → the MCP servers it turned on (set by the app, which has the sessions).
+    mcp_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
 }
 
 fn mid() -> String {
@@ -171,6 +176,8 @@ impl Hub {
             port: Default::default(),
             mcp: Default::default(),
             accounts: crate::accounts::Accounts::load(),
+            mcps: crate::mcp::Mcps::load(),
+            mcp_lookup: Default::default(),
         })
     }
 
@@ -390,7 +397,7 @@ impl Hub {
         self.push_msg(panel, msg(member, Body::Doc { doc: doc.id.clone(), title: doc.title.clone(), updated }, false));
     }
 
-    async fn env(&self) -> AgentEnv {
+    pub(crate) async fn env(&self) -> AgentEnv {
         // A CLI installed after the daemon started must still be found: while one is missing,
         // look again, at most every 10 seconds (each look starts a login shell).
         if let Some((e, at)) = self.env.read().await.clone() {
@@ -416,6 +423,15 @@ impl Hub {
         let mut map = self.workspaces.lock().unwrap();
         let ws = map.entry(panel.to_string()).or_insert_with(|| Workspace::load(panel));
         f(ws)
+    }
+
+    pub fn set_mcp_lookup(&self, f: impl Fn(&str) -> Vec<String> + Send + Sync + 'static) {
+        let _ = self.mcp_lookup.set(Box::new(f));
+    }
+
+    /// The MCP servers (of the human's) a chat's agents get: what its session turned on.
+    pub(crate) fn session_mcp(&self, panel: &str) -> Vec<String> {
+        self.mcp_lookup.get().map(|f| f(panel)).unwrap_or_default()
     }
 
     /// A chat nobody has written in or joined: closing it keeps nothing.
@@ -1188,6 +1204,11 @@ impl Hub {
         text.push_str(&batch.join("\n\n"));
 
         self.rt(panel, |r| r.turn_first.remove(&m.id));
+        // The session's MCP servers changed since it started: start it again (its conversation resumes).
+        let stale = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).is_some_and(|p| p.mcp != self.session_mcp(panel));
+        if stale {
+            self.kill(panel, &m.id).await;
+        }
         let running = self.procs.lock().unwrap().contains_key(&(panel.to_string(), m.id.clone()));
         // Not delivered after all: the member list and the rules go again next time.
         let undo_seen = || {
@@ -1252,8 +1273,14 @@ impl Hub {
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
             .args(["--permission-prompt-tool", "stdio", "--permission-mode", m.mode.claude()])
             .args(["--append-system-prompt", &prompt]);
-        let mcp = json!({ "mcpServers": { "recursion": { "type": "http", "url": self.mcp_url(panel, &m.id) } } });
-        cmd.args(["--mcp-config", &mcp.to_string(), "--allowedTools", "mcp__recursion"]);
+        // Recursion's own server and the ones the session turned on, nothing else the CLI has set
+        // up. In a file only the human can read: the servers' keys must not show up in `ps`.
+        let enabled = self.session_mcp(panel);
+        let mut servers = self.mcps.claude_config(&enabled);
+        servers.insert("recursion".into(), json!({ "type": "http", "url": self.mcp_url(panel, &m.id) }));
+        let config = crate::mcp::write_run_config(&format!("{panel}-{}", m.id), &json!({ "mcpServers": servers }))?;
+        cmd.args(["--mcp-config", &config, "--strict-mcp-config", "--allowedTools"]);
+        cmd.args(servers.keys().map(|n| format!("mcp__{n}")));
         if let Some(model) = &m.model {
             cmd.args(["--model", model]);
         }
@@ -1271,7 +1298,7 @@ impl Hub {
         let stderr = child.stderr.take().unwrap();
         let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let child = Arc::new(tokio::sync::Mutex::new(child));
-        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None });
+        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None, mcp: enabled });
 
         let base_cost = m.cost_usd;
         let (hub, panel_s, member_s, cwd_s) = (self.clone(), panel.to_string(), m.id.clone(), dir.clone());

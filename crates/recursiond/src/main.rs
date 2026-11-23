@@ -10,6 +10,7 @@ mod diagram;
 mod docs;
 mod files;
 mod i18n;
+mod mcp;
 mod model;
 mod pty;
 mod workspace;
@@ -91,7 +92,16 @@ enum In {
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
     /// A session's project folder and the defaults for agents added to it.
-    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults },
+    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults, #[serde(default)] mcp: Option<Vec<String>> },
+    /// The MCP settings page: our servers, their last test, what the CLIs have.
+    McpList,
+    /// Add or change a server (`old`: its name before, when editing).
+    McpSave { name: String, #[serde(default)] old: Option<String>, server: mcp::Edit },
+    McpRemove { name: String },
+    /// Copy servers from Claude's or Codex's settings: (name, where from).
+    McpImport { picks: Vec<(String, String)> },
+    /// Connect to a server and list its tools.
+    McpTest { name: String },
     /// A chat's name, rules and budget.
     WsSettings { panel: String, settings: workspace::ChatSettings },
     SessionSelect { session: String },
@@ -211,6 +221,27 @@ impl App {
         }
     }
 
+    /// Test a server in the background; the settings page sees "testing", then the result.
+    fn mcp_test(&self, name: String) {
+        let Some(server) = self.hub.mcps.get(&name) else { return };
+        let hub = self.hub.clone();
+        let status = |state, tools, error| mcp::Status { state, tools, error, at: workspace::now_ms() };
+        hub.mcps.set_status(&name, status("testing", None, None));
+        hub.broadcast(hub.mcps.view());
+        tokio::spawn(async move {
+            let path = hub.env().await.path;
+            let s = match mcp::test(&server, &path).await {
+                Ok(n) => status("ok", Some(n), None),
+                Err(e) => status("failed", None, Some(e)),
+            };
+            // Changed or removed meanwhile: that result is stale.
+            if hub.mcps.get(&name).as_ref() == Some(&server) {
+                hub.mcps.set_status(&name, s);
+                hub.broadcast(hub.mcps.view());
+            }
+        });
+    }
+
     /// Stop what runs in these panels (terminals, agents), keeping chats' files.
     async fn stop_panels(&self, panels: &[String]) {
         for p in panels {
@@ -313,7 +344,15 @@ impl App {
         let mut reply = None;
         match msg {
             SessionCreate { name, cwd, kind } => {
-                self.state.lock().unwrap().create_session(name, cwd, kind.unwrap_or(model::PanelKind::Terminal));
+                let mut st = self.state.lock().unwrap();
+                let before = st.sessions.len();
+                let id = st.create_session(name, cwd, kind.unwrap_or(model::PanelKind::Terminal));
+                // A new one starts with the MCP servers the last session saved turned on.
+                if st.sessions.len() > before {
+                    if let Some(s) = st.sessions.iter_mut().find(|s| s.id == id) {
+                        s.mcp = self.hub.mcps.last();
+                    }
+                }
             }
             SessionClose { session } => {
                 let removed = self.state.lock().unwrap().close_session(&session, workspace::now_ms()).map_err(e)?;
@@ -339,7 +378,7 @@ impl App {
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
-            SessionSettings { session, cwd, defaults } => {
+            SessionSettings { session, cwd, defaults, mcp } => {
                 let cwd = cwd.trim().to_string();
                 if !std::path::Path::new(&cwd).is_dir() {
                     return Err(i18n::tr!("session.err.noFolder", path = cwd));
@@ -349,6 +388,12 @@ impl App {
                     return Err(i18n::tr!("session.err.folderOpen", name = other.name));
                 }
                 st.set_session_settings(&session, cwd, defaults).map_err(e)?;
+                if let Some(names) = mcp {
+                    let known = self.hub.mcps.names();
+                    let names: Vec<String> = names.into_iter().filter(|n| known.contains(n)).collect();
+                    self.hub.mcps.set_last(&names);
+                    st.sessions.iter_mut().filter(|s| s.id == session).for_each(|s| s.mcp = names.clone());
+                }
             }
             WsSettings { panel, settings } => {
                 self.state.lock().unwrap().set_panel_title(&panel, settings.name.trim().to_string()).map_err(e)?;
@@ -549,6 +594,37 @@ impl App {
             }
             LoginsDetect => {
                 reply = Some(self.hub.detect_logins().await.to_string());
+                changed = false;
+            }
+            McpList => {
+                reply = Some(self.hub.mcps.view().to_string());
+                // First look since the daemon started: see whether they connect.
+                for name in self.hub.mcps.untested() {
+                    self.mcp_test(name);
+                }
+                changed = false;
+            }
+            McpSave { name, old, server } => {
+                let name = name.trim().to_string();
+                self.hub.mcps.save_server(&name, old.as_deref(), server)?;
+                if let Some(o) = old.filter(|o| *o != name) {
+                    self.state.lock().unwrap().sessions.iter_mut().flat_map(|s| s.mcp.iter_mut()).filter(|n| **n == o).for_each(|n| *n = name.clone());
+                }
+                self.mcp_test(name);
+            }
+            McpRemove { name } => {
+                self.hub.mcps.remove(&name);
+                self.state.lock().unwrap().sessions.iter_mut().for_each(|s| s.mcp.retain(|n| *n != name));
+                self.hub.broadcast(self.hub.mcps.view());
+            }
+            McpImport { picks } => {
+                for name in self.hub.mcps.import(&picks) {
+                    self.mcp_test(name);
+                }
+                changed = false;
+            }
+            McpTest { name } => {
+                self.mcp_test(name);
                 changed = false;
             }
             CliStatus { fresh } => {
@@ -907,6 +983,12 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!(port, "recursiond listening");
     app.hub.set_port(port);
+    {
+        let app = Arc::downgrade(&app);
+        app.upgrade().unwrap().hub.set_mcp_lookup(move |panel| {
+            app.upgrade().and_then(|a| a.state.lock().unwrap().session_of_panel(panel).map(|s| s.mcp.clone())).unwrap_or_default()
+        });
+    }
 
     let router = Router::new().route("/health", get(health)).route("/ws", get(ws))
         .route("/mcp/{key}", post(docs::mcp).get(docs::mcp_get)).with_state(app.clone());

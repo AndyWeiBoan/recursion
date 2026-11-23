@@ -5,11 +5,13 @@ import { isMac, send, useDaemonInfo, useSnapshot } from "./client";
 import { languages, pick, t } from "./i18n";
 import { Modal } from "./WorkspaceView";
 import { UpdateSection, useAppVersion } from "./Update";
+import { McpPane } from "./Mcp";
 
-export type SettingsPage = "general" | "accounts" | "keys" | "about";
+export type SettingsPage = "general" | "accounts" | "mcp" | "keys" | "about";
 const PAGES: { id: SettingsPage; label: string; icon: string }[] = [
   { id: "general", get label() { return t("settings.general"); }, icon: "⚙" },
   { id: "accounts", get label() { return t("settings.accounts"); }, icon: "👤" },
+  { id: "mcp", get label() { return t("settings.mcp"); }, icon: "🔌" },
   { id: "keys", get label() { return t("settings.keys"); }, icon: "⌨" },
   { id: "about", get label() { return t("settings.about"); }, icon: "ⓘ" },
 ];
@@ -197,6 +199,7 @@ export function SettingsModal() {
           <h2>{title}</h2>
           {page === "general" && <General />}
           {page === "accounts" && <AccountsPane />}
+          {page === "mcp" && <McpPane />}
           {page === "keys" && <Keys />}
           {page === "about" && <About />}
         </div>
