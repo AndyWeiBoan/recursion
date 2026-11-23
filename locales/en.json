@@ -413,6 +413,8 @@
   "file.err.tooBig": "The file is too big to show here",
   "file.err.binary": "This isn't a text file, so it can't be shown here",
   "file.attach": "Reference a file",
+  "drop.attach": "Drop to attach",
+  "drop.paste": "Drop to paste the paths",
   "file.search": "Search the project's files…",
   "file.none": "No matching files",
   "file.loading": "Listing files…",
@@ -562,5 +564,7 @@
   "mcp.err.spawn": "Couldn't start {command}: {error}",
   "mcp.err.exited": "The program ended without answering",
   "mcp.err.auth": "(needs authorization: check the key or headers)",
-  "mcp.err.noReply": "The server didn't answer the MCP message"
+  "mcp.err.noReply": "The server didn't answer the MCP message",
+  "zoom.level": "Zoom {pct}%",
+  "keys.zoom": "Zoom in, out, back to 100%"
 }

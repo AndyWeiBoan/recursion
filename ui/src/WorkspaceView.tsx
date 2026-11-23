@@ -18,7 +18,8 @@ import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { takeDrops } from "./drop";
 import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -1096,6 +1097,14 @@ function Composer({
   // Project files this message references (📎), and whether the picker is open.
   const [files, setFiles] = useState<string[]>([]);
   const [picking, setPicking] = useState(false);
+  // Files dragged in from the file manager are attached like ones picked from the computer.
+  useEffect(() => {
+    if (disabled) return;
+    return takeDrops(panel, (paths) => {
+      void grantComputerFiles(panel, paths).then((ok) => setFiles((f) => [...f, ...ok.filter((p) => !f.includes(p))]));
+      ref.current?.focus();
+    });
+  }, [panel, disabled]);
   const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
   // ↑ / ↓ in an empty box walk through what the human sent in this chat, newest first.
   const sent = useMemo(() => {

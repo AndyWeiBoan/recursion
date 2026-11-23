@@ -5,6 +5,8 @@ import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView, useDragWidth } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
+import { restoreZoom, zoom } from "./zoom";
+import { listenForDrops } from "./drop";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
 import { ago, openSettings, SettingsModal } from "./Settings";
@@ -82,6 +84,14 @@ function useShortcuts(toggleSidebar: () => void) {
         focusNeighbor(k as "h" | "j" | "k" | "l");
         return;
       }
+      // ⌘= ⌘- ⌘0 / Ctrl+= Ctrl+- Ctrl+0: zoom the whole app, like a browser (and ghostty on Linux).
+      // By the character as well as the key's place: other layouts (and typed-in keys) have other codes.
+      const zoomStep = ["=", "+"].includes(e.key) || ["Equal", "NumpadAdd"].includes(e.code) ? 1 : ["-", "_"].includes(e.key) || ["Minus", "NumpadSubtract"].includes(e.code) ? -1 : e.key === "0" || e.code === "Digit0" || e.code === "Numpad0" ? 0 : null;
+      if ((isMac ? e.metaKey : e.ctrlKey) && !e.altKey && zoomStep !== null) {
+        stop();
+        zoom(zoomStep as -1 | 0 | 1);
+        return;
+      }
       // ⌘, / Ctrl+,: settings (no Shift on Linux, like most apps).
       if (e.code === "Comma" && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey && !e.shiftKey) {
         stop();
@@ -138,6 +148,8 @@ export default function App() {
   const [sidebar, setSidebar] = useState(true);
   const [pick, setPick] = useState<PickRequest | null>(null);
   useEffect(() => registerPicker(setPick), []);
+  useEffect(restoreZoom, []);
+  useEffect(() => void listenForDrops(), []);
   const toggleSidebar = useMemo(() => () => setSidebar((v) => !v), []);
   useShortcuts(toggleSidebar);
   const side = useSidebarWidth();

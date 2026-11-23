@@ -399,6 +399,8 @@
   "file.err.tooBig": "檔案太大，沒辦法在這裡顯示",
   "file.err.binary": "這不是文字檔，沒辦法在這裡顯示",
   "file.attach": "引用檔案",
+  "drop.attach": "放開來附加檔案",
+  "drop.paste": "放開來貼上檔案路徑",
   "file.search": "搜尋專案裡的檔案…",
   "file.none": "沒有符合的檔案",
   "file.loading": "正在列出檔案…",
@@ -547,5 +549,7 @@
   "mcp.err.spawn": "無法啟動 {command}：{error}",
   "mcp.err.exited": "程式結束了，沒有回應",
   "mcp.err.auth": "（需要授權：檢查 key 或標頭）",
-  "mcp.err.noReply": "伺服器沒有回應 MCP 訊息"
+  "mcp.err.noReply": "伺服器沒有回應 MCP 訊息",
+  "zoom.level": "縮放 {pct}%",
+  "keys.zoom": "放大、縮小、回到 100%"
 }

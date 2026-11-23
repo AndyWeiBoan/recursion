@@ -388,7 +388,12 @@ export async function pickComputerFiles(panel: string): Promise<string[]> {
     const p = window.prompt(t("file.fromComputerPrompt"), "");
     paths = p ? [p] : [];
   }
-  if (!paths.length) return [];
+  return grantComputerFiles(panel, paths);
+}
+
+/** Let this chat use files from anywhere on the computer (picked, or dragged in). Resolves to the accepted paths. */
+export function grantComputerFiles(panel: string, paths: string[]): Promise<string[]> {
+  if (!paths.length) return Promise.resolve([]);
   return new Promise((resolve) => {
     grantWaiters.set(panel, resolve);
     send({ t: "files_grant", panel, paths });

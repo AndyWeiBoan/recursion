@@ -9,7 +9,8 @@ import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
 import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
 import { useDocHtml } from "./client";
-import { focusTerminal, fitTerminal, mountTerminal, restartTerminal } from "./terminals";
+import { focusTerminal, fitTerminal, mountTerminal, restartTerminal, typePaths } from "./terminals";
+import { takeDrops, useDropOver } from "./drop";
 import { useZoomed } from "./threadsUI";
 import { KIND_LABEL, leaves, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
@@ -166,6 +167,7 @@ function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx:
 
 function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const focused = ctx.window.focus === panel.id;
+  const dropOver = useDropOver();
   const info = ctx.terms[panel.id];
   const [menu, setMenu] = useState(false);
   useEffect(() => (menu ? overlay() : undefined), [menu]);
@@ -248,6 +250,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         )}
       </header>
       <div className="panel-body">
+        {dropOver === panel.id && <div className="drop-over">{t(panel.kind === "terminal" ? "drop.paste" : "drop.attach")}</div>}
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
         {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
         {panel.kind === "browser" && panel.url?.startsWith("file:") ? (
@@ -271,7 +274,9 @@ function TerminalBody({ id, focused }: { id: string; focused: boolean }) {
     e.onExitChange = setExited;
     const ro = new ResizeObserver(() => fitTerminal(id));
     ro.observe(host.current!);
+    const undrop = takeDrops(id, (paths) => typePaths(id, paths));
     return () => {
+      undrop();
       ro.disconnect();
       e.onExitChange = undefined;
       e.el.remove();

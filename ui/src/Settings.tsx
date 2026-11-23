@@ -51,6 +51,7 @@ const KEYS: { group: string; rows: [string, string][] }[] = [
       ["Ctrl+H/J/K/L", "keys.movePanels"],
       [isMac ? "⌘C  ⌘V" : "Ctrl+Shift+C  Ctrl+Shift+V", "keys.termCopyPaste"],
       [isMac ? "⌘," : "Ctrl+,", "settings.title"],
+      [isMac ? "⌘=  ⌘-  ⌘0" : "Ctrl+=  Ctrl+-  Ctrl+0", "keys.zoom"],
     ],
   },
   {

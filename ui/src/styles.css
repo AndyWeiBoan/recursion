@@ -169,6 +169,7 @@ body.dragging.dragging-col { cursor: row-resize; }
 .tools button:hover { background: var(--hover); color: var(--fg); }
 .panel-head .menu { left: 4px; font-family: var(--sans); font-size: 13px; }
 .panel-body { min-height: 0; min-width: 0; display: flex; }
+.drop-over { position: absolute; inset: 4px; z-index: 30; display: grid; place-items: center; border: 2px dashed var(--or); border-radius: 8px; background: color-mix(in srgb, var(--bg) 78%, transparent); color: var(--fg); font-size: 15px; pointer-events: none; }
 
 /* terminal */
 .term-wrap { flex: 1; position: relative; min-width: 0; min-height: 0; }

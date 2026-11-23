@@ -109,12 +109,33 @@ export function mountTerminal(id: string, host: HTMLElement) {
   return e;
 }
 
+const fitTimers = new Map<string, number>();
+
+/** Fit once the size has settled: during the sidebar's slide (or a drag) every frame is a new
+ * size, and each fit makes the program inside (nvim…) redraw its whole screen. */
 export function fitTerminal(id: string) {
+  clearTimeout(fitTimers.get(id));
+  fitTimers.set(
+    id,
+    window.setTimeout(() => {
+      fitTimers.delete(id);
+      const e = entries.get(id);
+      if (!e || !e.el.isConnected) return;
+      try {
+        e.fit.fit();
+      } catch {}
+    }, 100),
+  );
+}
+
+/** Dropped files: their paths pasted in, quoted for the shell where needed, like other terminals
+ * do. Pasted, not typed: nvim in normal mode would run typed text as commands. */
+export function typePaths(id: string, paths: string[]) {
   const e = entries.get(id);
-  if (!e || !e.el.isConnected) return;
-  try {
-    e.fit.fit();
-  } catch {}
+  if (!e) return;
+  const quote = (p: string) => (/^[\w@%+=:,./~-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`);
+  e.term.paste(paths.map(quote).join(" ") + " ");
+  e.term.focus();
 }
 
 export function focusTerminal(id: string) {
