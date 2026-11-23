@@ -418,6 +418,11 @@ impl Hub {
         f(ws)
     }
 
+    /// A chat nobody has written in or joined: closing it keeps nothing.
+    pub fn chat_is_empty(&self, panel: &str) -> bool {
+        self.with_ws(panel, |ws| ws.members.is_empty() && ws.messages.is_empty() && ws.former.is_empty())
+    }
+
     fn mark_dirty(&self, panel: &str) {
         self.dirty.lock().unwrap().insert(panel.to_string());
         self.save_notify.notify_one();

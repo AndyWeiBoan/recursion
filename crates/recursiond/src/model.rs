@@ -121,6 +121,40 @@ pub struct State {
     /// The human's language (a `locales/` code); `None` follows the system.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    /// Sessions and chats the human closed, newest last: they can be opened again until deleted.
+    #[serde(default)]
+    pub closed: Vec<Closed>,
+}
+
+/// Something closed, kept (with its chats' files and its docs) until it is deleted from the list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Closed {
+    pub id: String,
+    /// When it was closed (ms since epoch).
+    pub at: u64,
+    #[serde(flatten)]
+    pub what: ClosedWhat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ClosedWhat {
+    /// A whole session, with the panels of its windows.
+    Session { session: Session, panels: Vec<Panel> },
+    /// A chat closed on its own, and the session it was in (which may be gone by now).
+    Chat { panel: Panel, session: String, session_name: String, cwd: String },
+}
+
+/// Where opening a closed session put its docs, when they have to move: they live in a folder
+/// named after the session, and a session already open on that folder takes them in.
+pub struct Reopened {
+    pub docs_from: Option<(String, String)>,
+}
+
+/// Two paths name the same folder (symlinks and a trailing `/` aside).
+pub fn same_dir(a: &str, b: &str) -> bool {
+    let norm = |p: &str| std::fs::canonicalize(p).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| p.trim_end_matches('/').to_string());
+    norm(a) == norm(b)
 }
 
 #[derive(Debug)]
@@ -263,7 +297,17 @@ impl State {
         Window { id: new_id(), name, root: Node::Leaf { panel: panel.clone() }, focus: panel }
     }
 
+    /// The open session on this folder, if there is one.
+    pub fn session_at(&self, cwd: &str) -> Option<&Session> {
+        self.sessions.iter().find(|s| same_dir(&s.cwd, cwd))
+    }
+
+    /// One session per folder: opening a folder that already has one goes to it.
     pub fn create_session(&mut self, name: String, cwd: String, kind: PanelKind) -> String {
+        if let Some(id) = self.session_at(&cwd).map(|s| s.id.clone()) {
+            self.active_session = Some(id.clone());
+            return id;
+        }
         let window = self.new_window(kind, String::new());
         let id = new_id();
         let session = Session {
@@ -281,18 +325,82 @@ impl State {
         id
     }
 
-    /// Returns the ids of panels that were removed (so the caller can kill their processes).
-    pub fn delete_session(&mut self, id: &str) -> Res<Vec<String>> {
+    /// Close a session into the closed list. Returns its panels' ids (so the caller can stop
+    /// their processes).
+    pub fn close_session(&mut self, id: &str, now: u64) -> Res<Vec<String>> {
         let idx = self.sessions.iter().position(|s| s.id == id).ok_or(ModelError::NotFound("session"))?;
         let s = self.sessions.remove(idx);
         let removed: Vec<String> = s.windows.iter().flat_map(|w| w.panel_ids()).collect();
-        removed.iter().for_each(|p| {
-            self.panels.remove(p);
-        });
+        let panels = removed.iter().filter_map(|p| self.panels.remove(p)).collect();
         if self.active_session.as_deref() == Some(id) {
             self.active_session = self.sessions.first().map(|s| s.id.clone());
         }
+        self.closed.push(Closed { id: new_id(), at: now, what: ClosedWhat::Session { session: s, panels } });
         Ok(removed)
+    }
+
+    /// The chats among `panels`, as closed-list entries (taken before they are closed).
+    pub fn closing_chats(&self, panels: &[String], now: u64) -> Vec<Closed> {
+        panels
+            .iter()
+            .filter_map(|p| {
+                let panel = self.panels.get(p).filter(|x| x.kind == PanelKind::Workspace)?.clone();
+                let s = self.session_of_panel(p)?;
+                Some(Closed { id: new_id(), at: now, what: ClosedWhat::Chat { panel, session: s.id.clone(), session_name: s.name.clone(), cwd: s.cwd.clone() } })
+            })
+            .collect()
+    }
+
+    /// Open a closed session or chat again and make it the active one.
+    pub fn reopen(&mut self, id: &str) -> Res<Reopened> {
+        let idx = self.closed.iter().position(|c| c.id == id).ok_or(ModelError::NotFound("closed"))?;
+        let c = self.closed.remove(idx);
+        let mut docs_from = None;
+        match c.what {
+            ClosedWhat::Session { mut session, panels } => {
+                panels.into_iter().for_each(|p| {
+                    self.panels.insert(p.id.clone(), p);
+                });
+                // Its folder was opened again meanwhile: bring the windows and docs over to that session.
+                if let Some(i) = self.sessions.iter().position(|s| same_dir(&s.cwd, &session.cwd)) {
+                    let into = &mut self.sessions[i];
+                    into.active_window = session.windows.first().map(|w| w.id.clone()).or(into.active_window.take());
+                    into.windows.append(&mut session.windows);
+                    if !session.docs.is_empty() {
+                        into.docs.append(&mut session.docs);
+                        docs_from = Some((session.id.clone(), into.id.clone()));
+                    }
+                    self.active_session = Some(into.id.clone());
+                } else {
+                    self.active_session = Some(session.id.clone());
+                    self.sessions.push(session);
+                }
+            }
+            ClosedWhat::Chat { panel, session, session_name, cwd } => {
+                let sid = match self.sessions.iter().find(|s| s.id == session).or_else(|| self.session_at(&cwd)) {
+                    Some(s) => s.id.clone(),
+                    None => {
+                        let id = new_id();
+                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default() });
+                        id
+                    }
+                };
+                let pid = panel.id.clone();
+                self.panels.insert(pid.clone(), panel);
+                let w = Window { id: new_id(), name: String::new(), root: Node::Leaf { panel: pid.clone() }, focus: pid };
+                let s = self.session_mut(&sid)?;
+                s.active_window = Some(w.id.clone());
+                s.windows.push(w);
+                self.active_session = Some(sid);
+            }
+        }
+        Ok(Reopened { docs_from })
+    }
+
+    /// Take an entry off the closed list for good (the caller deletes its files).
+    pub fn forget(&mut self, id: &str) -> Res<Closed> {
+        let idx = self.closed.iter().position(|c| c.id == id).ok_or(ModelError::NotFound("closed"))?;
+        Ok(self.closed.remove(idx))
     }
 
     pub fn rename_session(&mut self, id: &str, name: String) -> Res<()> {
@@ -629,17 +737,64 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_returns_panels() {
+    fn close_session_returns_panels_and_keeps_them() {
         let (mut st, sid) = one_session();
         let a = first_panel(&st);
         let b = st.split_panel(&a, Dir::Column, PanelKind::Terminal).unwrap();
-        let mut removed = st.delete_session(&sid).unwrap();
+        let mut removed = st.close_session(&sid, 1).unwrap();
         removed.sort();
-        let mut want = vec![a, b];
+        let mut want = vec![a.clone(), b];
         want.sort();
         assert_eq!(removed, want);
         assert!(st.panels.is_empty());
         assert!(st.active_session.is_none());
+        let cid = st.closed[0].id.clone();
+        st.reopen(&cid).unwrap();
+        assert!(st.closed.is_empty());
+        assert_eq!(st.active_session.as_deref(), Some(sid.as_str()));
+        assert_eq!(st.panels.len(), 2);
+        assert_eq!(first_panel(&st), a);
+    }
+
+    #[test]
+    fn one_session_per_folder() {
+        let (mut st, sid) = one_session();
+        let again = st.create_session("x".into(), "/tmp/proj/".into(), PanelKind::Workspace);
+        assert_eq!(again, sid);
+        assert_eq!(st.sessions.len(), 1);
+    }
+
+    #[test]
+    fn closed_chat_reopens_in_its_session_or_a_new_one() {
+        let (mut st, sid) = one_session();
+        let a = first_panel(&st);
+        let chat = st.split_panel(&a, Dir::Row, PanelKind::Workspace).unwrap();
+        let ids = vec![chat.clone()];
+        let closing = st.closing_chats(&ids, 1);
+        assert_eq!(closing.len(), 1);
+        assert!(st.closing_chats(&[a.clone()], 1).is_empty(), "terminals are not kept");
+        st.close_panel(&chat).unwrap();
+        st.closed.extend(closing);
+        let cid = st.closed[0].id.clone();
+        st.reopen(&cid).unwrap();
+        assert_eq!(st.session_of_panel(&chat).unwrap().id, sid);
+        assert_eq!(st.sessions[0].windows.len(), 2);
+
+        // Its session closed meanwhile: it comes back in a new session on the same folder.
+        let closing = st.closing_chats(&[chat.clone()], 2);
+        st.close_panel(&chat).unwrap();
+        st.closed.extend(closing);
+        st.close_session(&sid, 3).unwrap();
+        let cid = st.closed[0].id.clone();
+        st.reopen(&cid).unwrap();
+        let s = st.session_of_panel(&chat).unwrap();
+        assert_ne!(s.id, sid);
+        assert_eq!(s.cwd, "/tmp/proj");
+        // Then the closed session comes back into that one instead of opening the folder twice.
+        let cid = st.closed[0].id.clone();
+        st.reopen(&cid).unwrap();
+        assert_eq!(st.sessions.len(), 1);
+        assert_eq!(st.sessions[0].windows.len(), 2);
     }
 
     #[test]

@@ -44,6 +44,16 @@ pub fn delete_session(session: &str) {
     let _ = std::fs::remove_dir_all(dir(session));
 }
 
+/// A session's docs join another session's (a closed session reopened into one on its folder).
+pub fn move_session(from: &str, to: &str) {
+    let Ok(files) = std::fs::read_dir(dir(from)) else { return };
+    let _ = std::fs::create_dir_all(dir(to));
+    for f in files.flatten() {
+        let _ = std::fs::rename(f.path(), dir(to).join(f.file_name()));
+    }
+    let _ = std::fs::remove_dir(dir(from));
+}
+
 fn tools() -> Value {
     let mut all = doc_tools();
     all.as_array_mut().unwrap().extend(crate::browse::tools());

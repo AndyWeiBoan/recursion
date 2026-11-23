@@ -7,13 +7,13 @@ import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { overlay, pruneBrowsers } from "./browsers";
 import { SessionTree } from "./SessionTree";
-import { openSettings, SettingsModal } from "./Settings";
+import { ago, openSettings, SettingsModal } from "./Settings";
 import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
 import { UsagePanel } from "./Usage";
 import { UpdateNotice } from "./Update";
 import { Onboarding, SetupTerminal } from "./Setup";
 import { closeThreads, useZoomed } from "./threadsUI";
-import { chatsOf, leaves, type Session, type State, type TermInfo } from "./types";
+import { chatsOf, leaves, type Closed, type Session, type State, type TermInfo } from "./types";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
 
@@ -26,6 +26,10 @@ function activeOf(state: State | null) {
 async function newSession() {
   const cwd = await pickFolder();
   if (!cwd) return;
+  // One session per folder: go to the one already open there.
+  const trim = (p: string) => p.replace(/\/+$/, "");
+  const open = getSnapshot().state?.sessions.find((s) => trim(s.cwd) === trim(cwd));
+  if (open) return send({ t: "session_select", session: open.id });
   const name = cwd.replace(/\/+$/, "").split("/").pop() || cwd;
   requestKind(t("session.openIn", { name }), null, (kind) => send({ t: "session_create", name, cwd, kind }));
 }
@@ -209,7 +213,6 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
   }, [state]);
   const [editing, setEditing] = useState<{ id: string; field: "name" | "group" } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -282,8 +285,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                       className="sess-more"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setConfirmDelete(null);
-                          setMenu(menu === s.id ? null : s.id);
+                        setMenu(menu === s.id ? null : s.id);
                       }}
                       aria-label={t("common.more")}
                     >
@@ -306,15 +308,9 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>{t("common.rename")}</button>
                         <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>{t("session.moveGroup")}</button>
                         <button onClick={() => (setMenu(null), openSessionSettings(s.id))}>{t("scope.sessionMenu")}</button>
-                        {confirmDelete === s.id ? (
-                          <button className="danger" onClick={() => (setMenu(null), send({ t: "session_delete", session: s.id }))}>
-                            {t("session.confirmDelete")}
-                          </button>
-                        ) : (
-                          <button className="danger" onClick={() => setConfirmDelete(s.id)}>
-                            {t("common.delete")}
-                          </button>
-                        )}
+                        <button onClick={() => (setMenu(null), send({ t: "session_close", session: s.id }))} title={t("session.closeHint")}>
+                          {t("session.close")}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -326,6 +322,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
         ))}
       </nav>
       <div className="side-foot">
+        <ClosedList closed={state?.closed ?? []} />
         <UsagePanel />
         <button className="side-accounts" onClick={() => openSettings()} title={`${t("settings.title")}（${isMac ? "⌘," : "Ctrl+,"}）`}>
           <span aria-hidden="true">⚙</span> {t("settings.title")}
@@ -335,6 +332,52 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
       <SettingsModal />
       <SessionSettingsModal />
     </aside>
+  );
+}
+
+/** What was closed, to open again or delete for good. */
+function ClosedList({ closed }: { closed: Closed[] }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState<string | null>(null);
+  if (!closed.length) return null;
+  return (
+    <div className="closed">
+      <button className="side-accounts" onClick={() => (setOpen(!open), setConfirm(null))} aria-expanded={open}>
+        <span aria-hidden="true">↺</span> {t("closed.title")}
+        <span className="dim">{closed.length}</span>
+      </button>
+      {open && (
+        <div className="menu closed-menu" onMouseLeave={() => (setOpen(false), setConfirm(null))}>
+          <div className="menu-label">{t("closed.hint")}</div>
+          {[...closed].reverse().map((c) => {
+            const name = c.kind === "session" ? c.session.name : c.panel.title || t("kind.workspace");
+            const where = c.kind === "session" ? c.session.cwd.replace(/^\/(Users|home)\/[^/]+/, "~") : c.session_name;
+            return (
+              <div key={c.id} className="closed-row">
+                <button className="closed-open" onClick={() => (setOpen(false), send({ t: "closed_reopen", id: c.id }))} title={t("closed.reopen")}>
+                  <span className="closed-ic">{c.kind === "session" ? "✳" : "💬"}</span>
+                  <span className="closed-main">
+                    <b>{name}</b>
+                    <span className="dim">
+                      {where} · {ago(c.at)}
+                    </span>
+                  </span>
+                </button>
+                {confirm === c.id ? (
+                  <button className="danger closed-del" onClick={() => (setConfirm(null), send({ t: "closed_delete", id: c.id }))}>
+                    {t("closed.confirmDelete")}
+                  </button>
+                ) : (
+                  <button className="closed-del" onClick={() => setConfirm(c.id)} title={t("closed.delete")} aria-label={t("closed.delete")}>
+                    ✕
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -95,7 +95,6 @@
   "common.collapse": "Collapse",
   "common.more": "More",
   "session.moveGroup": "Move to another group",
-  "session.confirmDelete": "Really delete? Its terminals will close",
   "settings.title": "Settings",
   "acct.loggedOutCount": "{n} accounts not logged in",
   "acct.loggedOutCount_one": "1 account not logged in",
@@ -503,5 +502,13 @@
   "outputs.emptyImages": "No pictures yet. Paste a picture into the message box and it shows up here.",
   "outputs.openImage": "Open this picture beside the chat",
   "outputs.findMessage": "Go to the message it was attached to",
-  "outputs.moreTabs": "More kinds"
+  "outputs.moreTabs": "More kinds",
+  "session.close": "Close",
+  "session.closeHint": "Close this session; you can open it again from Recently closed",
+  "closed.title": "Recently closed",
+  "closed.hint": "Click one to open it again",
+  "closed.reopen": "Open again",
+  "closed.delete": "Delete for good",
+  "closed.confirmDelete": "Delete for good?",
+  "session.err.folderOpen": "“{name}” already has this folder open"
 }

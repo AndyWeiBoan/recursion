@@ -92,7 +92,6 @@
   "common.collapse": "收合",
   "common.more": "更多",
   "session.moveGroup": "移到其他分組",
-  "session.confirmDelete": "確定刪除？終端會被關閉",
   "settings.title": "設定",
   "acct.loggedOutCount": "{n} 個帳號還沒登入",
   "footer.keys": "{m}D 分割 · {m}T 新 window · {m}W 關閉 · Ctrl+HJKL 移動",
@@ -488,5 +487,13 @@
   "outputs.emptyImages": "還沒有圖片。在輸入框直接貼上圖片，就會出現在這裡。",
   "outputs.openImage": "在旁邊打開這張圖",
   "outputs.findMessage": "跳到附上這張圖的訊息",
-  "outputs.moreTabs": "更多分類"
+  "outputs.moreTabs": "更多分類",
+  "session.close": "關閉",
+  "session.closeHint": "關掉這個 session；之後可以從「最近關閉」打開回來",
+  "closed.title": "最近關閉",
+  "closed.hint": "點一下打開回來",
+  "closed.reopen": "打開回來",
+  "closed.delete": "永久刪除",
+  "closed.confirmDelete": "確定永久刪除？",
+  "session.err.folderOpen": "「{name}」已經開著這個資料夾"
 }

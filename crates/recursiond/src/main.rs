@@ -82,7 +82,12 @@ struct App {
 #[serde(tag = "t", rename_all = "snake_case")]
 enum In {
     SessionCreate { name: String, cwd: String, kind: Option<PanelKind> },
-    SessionDelete { session: String },
+    /// Close a session into the closed list.
+    SessionClose { session: String },
+    /// Open a closed session or chat again.
+    ClosedReopen { id: String },
+    /// Delete a closed session or chat for good, with its chats' files and docs.
+    ClosedDelete { id: String },
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
     /// A session's project folder and the defaults for agents added to it.
@@ -206,10 +211,24 @@ impl App {
         }
     }
 
-    async fn kill_panels(&self, panels: &[String]) {
+    /// Stop what runs in these panels (terminals, agents), keeping chats' files.
+    async fn stop_panels(&self, panels: &[String]) {
         for p in panels {
             self.terms.kill(p);
-            self.hub.close_panel(p, true).await;
+            self.hub.close_panel(p, false).await;
+        }
+    }
+
+    /// Closed panels: chats with something in them go to the closed list, empty ones are deleted.
+    async fn close_panels(&self, panels: &[String], chats: Vec<model::Closed>) {
+        self.stop_panels(panels).await;
+        for c in chats {
+            let model::ClosedWhat::Chat { panel, .. } = &c.what else { continue };
+            if self.hub.chat_is_empty(&panel.id) {
+                self.hub.close_panel(&panel.id, true).await;
+            } else {
+                self.state.lock().unwrap().closed.push(c);
+            }
         }
     }
 
@@ -296,10 +315,27 @@ impl App {
             SessionCreate { name, cwd, kind } => {
                 self.state.lock().unwrap().create_session(name, cwd, kind.unwrap_or(model::PanelKind::Terminal));
             }
-            SessionDelete { session } => {
-                let removed = self.state.lock().unwrap().delete_session(&session).map_err(e)?;
-                self.kill_panels(&removed).await;
-                docs::delete_session(&session);
+            SessionClose { session } => {
+                let removed = self.state.lock().unwrap().close_session(&session, workspace::now_ms()).map_err(e)?;
+                self.stop_panels(&removed).await;
+            }
+            ClosedReopen { id } => {
+                let r = self.state.lock().unwrap().reopen(&id).map_err(e)?;
+                if let Some((from, to)) = r.docs_from {
+                    docs::move_session(&from, &to);
+                }
+            }
+            ClosedDelete { id } => {
+                let c = self.state.lock().unwrap().forget(&id).map_err(e)?;
+                match c.what {
+                    model::ClosedWhat::Session { session, panels } => {
+                        for p in panels.iter().filter(|p| p.kind == model::PanelKind::Workspace) {
+                            self.hub.close_panel(&p.id, true).await;
+                        }
+                        docs::delete_session(&session.id);
+                    }
+                    model::ClosedWhat::Chat { panel, .. } => self.hub.close_panel(&panel.id, true).await,
+                }
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
@@ -308,7 +344,11 @@ impl App {
                 if !std::path::Path::new(&cwd).is_dir() {
                     return Err(i18n::tr!("session.err.noFolder", path = cwd));
                 }
-                self.state.lock().unwrap().set_session_settings(&session, cwd, defaults).map_err(e)?;
+                let mut st = self.state.lock().unwrap();
+                if let Some(other) = st.sessions.iter().find(|s| s.id != session && model::same_dir(&s.cwd, &cwd)) {
+                    return Err(i18n::tr!("session.err.folderOpen", name = other.name));
+                }
+                st.set_session_settings(&session, cwd, defaults).map_err(e)?;
             }
             WsSettings { panel, settings } => {
                 self.state.lock().unwrap().set_panel_title(&panel, settings.name.trim().to_string()).map_err(e)?;
@@ -323,15 +363,24 @@ impl App {
                 self.state.lock().unwrap().rename_window(&session, &window, name).map_err(e)?
             }
             WindowClose { session, window } => {
-                let removed = self.state.lock().unwrap().close_window(&session, &window).map_err(e)?;
-                self.kill_panels(&removed).await;
+                let (removed, chats) = {
+                    let mut st = self.state.lock().unwrap();
+                    let ids = st.sessions.iter().find(|s| s.id == session).and_then(|s| s.windows.iter().find(|w| w.id == window)).map(|w| w.panel_ids()).unwrap_or_default();
+                    let chats = st.closing_chats(&ids, workspace::now_ms());
+                    (st.close_window(&session, &window).map_err(e)?, chats)
+                };
+                self.close_panels(&removed, chats).await;
             }
             PanelSplit { panel, dir, kind } => {
                 self.state.lock().unwrap().split_panel(&panel, dir, kind.unwrap_or(model::PanelKind::Terminal)).map_err(e)?;
             }
             PanelClose { panel } => {
-                let removed = self.state.lock().unwrap().close_panel(&panel).map_err(e)?;
-                self.kill_panels(&removed).await;
+                let (removed, chats) = {
+                    let mut st = self.state.lock().unwrap();
+                    let chats = st.closing_chats(std::slice::from_ref(&panel), workspace::now_ms());
+                    (st.close_panel(&panel).map_err(e)?, chats)
+                };
+                self.close_panels(&removed, chats).await;
             }
             PanelFocus { panel } => self.state.lock().unwrap().focus_panel(&panel).map_err(e)?,
             PanelKind { panel, kind } => {

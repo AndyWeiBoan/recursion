@@ -66,7 +66,14 @@ export interface State {
   active_session: string | null;
   /** The human's language; absent follows the system. */
   lang?: string | null;
+  /** Sessions and chats the human closed, newest last; they can be opened again. */
+  closed?: Closed[];
 }
+
+export type Closed = { id: string; at: number } & (
+  | { kind: "session"; session: Session; panels: Panel[] }
+  | { kind: "chat"; panel: Panel; session: string; session_name: string; cwd: string }
+);
 
 export interface TermInfo {
   alive: boolean;
@@ -75,7 +82,9 @@ export interface TermInfo {
 
 export type Cmd =
   | { t: "session_create"; name: string; cwd: string; kind?: PanelKind }
-  | { t: "session_delete"; session: string }
+  | { t: "session_close"; session: string }
+  | { t: "closed_reopen"; id: string }
+  | { t: "closed_delete"; id: string }
   | { t: "session_rename"; session: string; name: string }
   | { t: "session_group"; session: string; group: string }
   | { t: "session_select"; session: string }

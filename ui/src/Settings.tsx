@@ -98,7 +98,7 @@ function Keys() {
   );
 }
 
-function ago(ms: number) {
+export function ago(ms: number) {
   const m = Math.floor((Date.now() - ms) / 60000);
   if (m < 1) return t("time.justNow");
   if (m < 60) return t("time.minAgo", { n: m });

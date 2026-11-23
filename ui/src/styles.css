@@ -903,3 +903,14 @@ button.link { padding: 0; border: 0; background: none; color: var(--or); text-de
 .td-more-menu button:hover { background: var(--hover); }
 .td-more-menu button.on { background: var(--sel); }
 .td-open.td-image { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+
+.closed { position: relative; }
+.closed-menu { top: auto; bottom: 100%; left: 0; right: 0; margin-bottom: 4px; max-height: 60vh; overflow: auto; }
+.closed-row { display: flex; align-items: center; gap: 2px; }
+.menu .closed-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.closed-ic { flex: none; width: 16px; text-align: center; }
+.closed-main { display: grid; min-width: 0; }
+.closed-main b, .closed-main .dim { overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.closed-main .dim { font-size: 11.5px; }
+.menu .closed-del { flex: none; color: var(--dim); padding: 6px 8px; }
+.menu .closed-del.danger { color: var(--pk); }
