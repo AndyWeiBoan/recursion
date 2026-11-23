@@ -8,6 +8,28 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - 規格：[SPEC.md](SPEC.md)
 - v1 開發文件：[docs/v1-design.html](docs/v1-design.html)
 
+## 安裝
+到 [recursion-releases](https://github.com/AndyWeiBoan/recursion-releases/releases/latest) 下載最新版。目前只有 Apple Silicon（macOS）和 ARM64（Linux，例如 Asahi）。
+
+**macOS**：下載 `Recursion_<版本>_aarch64.dmg`，打開後把 Recursion 拖到「應用程式」。這個 app 沒有經過 Apple 公證，第一次打不開的話，在終端機跑：
+```bash
+xattr -dr com.apple.quarantine /Applications/Recursion.app
+```
+
+**Linux**（三選一）：
+- **AppImage**（會自己更新）：下載 `Recursion_<版本>_aarch64.AppImage`，然後
+  ```bash
+  chmod +x Recursion_*_aarch64.AppImage
+  ./Recursion_*_aarch64.AppImage
+  ```
+  打不開的話，先裝 FUSE（Fedora：`sudo dnf install fuse`）。
+- **Fedora**：`sudo dnf install ./Recursion-<版本>-1.aarch64.rpm`，之後從應用程式選單打開。
+- **Debian／Ubuntu**：`sudo apt install ./Recursion_<版本>_arm64.deb`。
+
+rpm／deb 也會跳更新通知，但安裝新版要輸入管理員密碼。Linux 需要 WebKitGTK 4.1 和 GTK 3（rpm／deb 會自己裝）。
+
+第一次打開時，app 會檢查 Claude Code／Codex 有沒有裝，沒裝會幫你裝。
+
 ## 狀態
 - **M0 骨架 + 終端**：session、window、可拖曳的分割 panel、多個終端；關掉 app 終端在背景繼續跑，重開版面還在。
 - **M1 群聊接上 Claude**：在群聊 panel 加入 Claude（可選模型），串流回覆、Markdown、工具呼叫摘要、核准卡片（允許／以後都允許／拒絕）、停止、用量與花費；對話存檔，重開後接續。
@@ -23,7 +45,9 @@ agent 的回覆可以是可互動的 HTML；版面像 tmux：Session → Window 
 - **MCP**：設定 →「MCP」是 Recursion 自己的一份 MCP 清單（`~/.recursion/mcp.json`，權限 0600），可以從 Claude／Codex 的設定勾選導入，或自己新增；每個都會實際連線測試，失敗看得到原因、可以重試。每個 session 在它的設定裡勾要用哪些（新 session 沿用上一次的勾選），agent 只拿到勾的那些、不用每次允許；CLI 自己設定的 MCP 不會給 agent。
 - **最近關閉**：關掉 session 或群聊不會刪掉，側邊欄「最近關閉」可以打開回來，或在那裡永久刪除。同一個資料夾只會有一個 session。
 - **第一次使用的引導**：檢查 Claude Code／Codex 有沒有裝，沒裝的話用官方安裝程式幫你裝（在 app 裡的終端看得到進度），然後加入帳號。
-- **自動更新**（macOS）：新版發佈在 [recursion-releases](https://github.com/AndyWeiBoan/recursion-releases)，右下角會通知，在「設定 → 軟體資訊」更新，完成後自動重開。發版用 `scripts/release.sh`（在 Mac 上打包、簽章、上傳）。
+- **自動更新**（macOS、Linux）：新版發佈在 [recursion-releases](https://github.com/AndyWeiBoan/recursion-releases)，右下角會通知，在「設定 → 軟體資訊」更新，完成後自動重開。發版用 `scripts/release.sh`：在 Linux 上跑會在這台打 Linux 包（AppImage、rpm、deb），再到 Mac mini 打 macOS 包，一起簽章、上傳。
+- **拖曳檔案**：從檔案管理員把檔案（可以多個）拖到群聊就變成附件，agent 讀得到；拖到終端機會貼上路徑。
+- **縮放**：`⌘=`／`⌘-`／`⌘0`（Linux 用 Ctrl）放大、縮小、回到 100%，重開後記得。
 - **Session／群聊設定**：session 的資料夾和新 agent 的預設（種類、模型、權限）；群聊的名稱、給所有 agent 的規則、花費上限。
 - **模型選單**直接問 CLI（Claude 的 initialize、Codex 的 `model/list`），跟它們自己的 `/model` 一致。
 - **畫圖**：agent 用 `diagram_write` 交出 JSON（架構圖、流程圖、時序圖），daemon 自己排版、拉線、畫成 SVG，有排不好的地方會告訴 agent 讓它改；圖在旁邊的 panel 打開，可以縮放、切深淺色、匯出 PNG／SVG，點方塊會標出跟它有關的線，也列在「📎 產出 → 圖」。想法和輸入格式參考 [Archify](https://github.com/tt-a1i/archify)（MIT），程式是我們自己的。

@@ -67,10 +67,33 @@ fn daemon_binary() -> PathBuf {
     if let Some(dir) = exe_dir {
         let p = dir.join("recursiond");
         if p.exists() {
+            if std::env::var_os("APPIMAGE").is_some() {
+                return out_of_appimage(&p).unwrap_or(p);
+            }
             return p;
         }
     }
     PathBuf::from("recursiond")
+}
+
+/// An AppImage's files go away when the app quits (it is mounted only while running), and the
+/// daemon must outlive the app: run a copy in ~/.recursion/bin instead. The copy keeps the
+/// original's time, so `current` still sees an upgrade.
+fn out_of_appimage(inside: &std::path::Path) -> std::io::Result<PathBuf> {
+    let meta = std::fs::metadata(inside)?;
+    let copy = home().join("bin").join("recursiond");
+    if let Ok(m) = std::fs::metadata(&copy) {
+        if m.len() == meta.len() && m.modified().ok() == meta.modified().ok() {
+            return Ok(copy);
+        }
+    }
+    std::fs::create_dir_all(copy.parent().unwrap())?;
+    // Beside it, then renamed over it: the running daemon's binary can't be written to.
+    let tmp = copy.with_extension("new");
+    std::fs::copy(inside, &tmp)?;
+    std::fs::File::options().write(true).open(&tmp)?.set_modified(meta.modified()?)?;
+    std::fs::rename(&tmp, &copy)?;
+    Ok(copy)
 }
 
 fn spawn_daemon() -> std::io::Result<()> {
@@ -78,6 +101,9 @@ fn spawn_daemon() -> std::io::Result<()> {
     let log = std::fs::OpenOptions::new().create(true).append(true).open(home().join("daemon.log"))?;
     let mut cmd = std::process::Command::new(daemon_binary());
     cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    if let Some(appdir) = std::env::var_os("APPDIR") {
+        undo_appimage_env(&mut cmd, &appdir.to_string_lossy());
+    }
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -88,6 +114,40 @@ fn spawn_daemon() -> std::io::Result<()> {
         });
     }
     cmd.spawn().map(|_| ())
+}
+
+/// An AppImage starts us with its own PATH, LD_LIBRARY_PATH, PYTHONHOME… pointing inside it,
+/// and in a folder inside it. The daemon's terminals and agents must get the person's own
+/// environment (and not keep the AppImage mounted): drop what points inside, start from home.
+fn undo_appimage_env(cmd: &mut std::process::Command, appdir: &str) {
+    for key in ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "GTK_THEME", "QT_QUICK_FLICKABLE_WHEEL_DECELERATION", "PYTHONDONTWRITEBYTECODE"] {
+        cmd.env_remove(key);
+    }
+    for (key, value) in std::env::vars_os() {
+        let value = value.to_string_lossy();
+        if !value.contains(appdir) {
+            continue;
+        }
+        let kept: Vec<&str> = value.split(':').filter(|p| !p.is_empty() && !p.contains(appdir)).collect();
+        if kept.is_empty() {
+            cmd.env_remove(&key);
+        } else {
+            cmd.env(&key, kept.join(":"));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        cmd.current_dir(home);
+    }
+    // The AppImage runtime also hands us a handle on its mount and a pipe it watches: while
+    // anyone holds them it stays mounted. The daemon needs nothing of ours but stdio.
+    #[cfg(target_os = "linux")]
+    for fd in std::fs::read_dir("/proc/self/fd").into_iter().flatten().flatten() {
+        if let Ok(n @ 3..) = fd.file_name().to_string_lossy().parse::<i32>() {
+            unsafe {
+                libc::fcntl(n, libc::F_SETFD, libc::fcntl(n, libc::F_GETFD) | libc::FD_CLOEXEC);
+            }
+        }
+    }
 }
 
 /// The daemon to talk to, started (or replaced when outdated) if need be. Runs on a worker
