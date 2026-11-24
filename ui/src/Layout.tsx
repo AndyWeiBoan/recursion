@@ -12,6 +12,7 @@ import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal, typePaths } from "./terminals";
 import { takeDrops, useDropOver } from "./drop";
 import { useZoomed } from "./threadsUI";
+import { PanelDragLayer, startPanelDrag, useDraggedPanel } from "./panelDrag";
 import { KIND_LABEL, leaves, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
 interface Ctx {
@@ -28,7 +29,12 @@ export function LayoutView({ ctx }: { ctx: Ctx }) {
   // hidden (terminals keep running) and come back exactly as they were when the drawer closes.
   const zoomed = useZoomed();
   const zoom = zoomed && leaves(ctx.window.root).includes(zoomed) ? ctx.panels[zoomed] : undefined;
-  return <div className="layout">{zoom ? <PanelView panel={zoom} ctx={ctx} /> : <NodeView node={ctx.window.root} ctx={ctx} />}</div>;
+  return (
+    <div className="layout">
+      {zoom ? <PanelView panel={zoom} ctx={ctx} /> : <NodeView node={ctx.window.root} ctx={ctx} />}
+      <PanelDragLayer root={ctx.window.root} />
+    </div>
+  );
 }
 
 function NodeView({ node, ctx }: { node: Node; ctx: Ctx }) {
@@ -168,6 +174,9 @@ function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx:
 function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const focused = ctx.window.focus === panel.id;
   const dropOver = useDropOver();
+  // Only a panel with others beside it can be moved (not one filling the window for its drawer).
+  const alone = !!useZoomed() || leaves(ctx.window.root).length < 2;
+  const lifted = useDraggedPanel() === panel.id;
   const info = ctx.terms[panel.id];
   const [menu, setMenu] = useState(false);
   useEffect(() => (menu ? overlay() : undefined), [menu]);
@@ -199,8 +208,13 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
           : "";
 
   return (
-    <section className={`panel${focused ? " focused" : ""}`} data-panel={panel.id} onMouseDown={focus}>
-      <header className="panel-head">
+    <section className={`panel${focused ? " focused" : ""}${alone ? "" : " movable"}${lifted ? " lifted" : ""}`} data-panel={panel.id} onMouseDown={focus}>
+      <header
+        className="panel-head"
+        onPointerDown={(e) =>
+          startPanelDrag(e, panel.id, alone)
+        }
+      >
         <button className="kind" onClick={() => setMenu((v) => !v)} title={t("panel.switchKind")}>
           {(panel.kind === "workspace" && panel.title) || KIND_LABEL[panel.kind]} ▾
         </button>

@@ -18,6 +18,8 @@ mod codex;
 mod models;
 mod polls;
 mod threads;
+mod todos;
+pub use todos::tools as todo_tools;
 pub use polls::tools as poll_tools;
 
 pub use models::ModelOption;
@@ -122,6 +124,8 @@ struct Runtime {
     /// Bumped when the chat's rules change; each member gets them again once (see `deliver`).
     rules_version: u64,
     rules_seen: HashMap<String, u64>,
+    /// The todo list as each member last read it; it gets the list again when it changed.
+    todos_seen: HashMap<String, String>,
     /// Members compacting their conversation → the chat's folder, to deliver what waited meanwhile.
     compacting: HashMap<String, String>,
     /// Compacting members a round skipped: they get their own round once the compact is done.
@@ -746,6 +750,7 @@ impl Hub {
     /// any queued messages start the next one, as when an agent finishes.
     pub async fn remove_agent(self: &Arc<Self>, panel: &str, member: &str, cwd: Option<String>) {
         self.kill(panel, member).await;
+        self.todo_release_all(panel, member);
         let alias = self.with_ws(panel, |ws| {
             let gone = ws.members.iter().find(|m| m.id == member).cloned();
             ws.members.retain(|m| m.id != member);
@@ -1198,6 +1203,19 @@ impl Hub {
             }
             self.rt(panel, |r| r.rules_seen.insert(m.id.clone(), rver));
         }
+        let todos = self.todo_text(panel);
+        let tseen = self.rt(panel, |r| r.todos_seen.get(&m.id).cloned());
+        if tseen.as_ref() != Some(&todos) && !(todos.is_empty() && tseen.is_none()) {
+            if todos.is_empty() {
+                text.push_str("[Recursion] This chat has no todo lists now.\n");
+            } else {
+                text.push_str(&format!(
+                    "[Recursion] This chat's todo lists ([ ] todo, [~] being done, [x] done). Before working on an item, take it with todo_claim \
+(it fails if someone else has it); finish with todo_done. Add items with todo_add:\n{todos}\n"
+                ));
+            }
+            self.rt(panel, |r| r.todos_seen.insert(m.id.clone(), todos.clone()));
+        }
         if omitted > 0 {
             text.push_str(&format!("[Recursion] ({omitted} earlier messages omitted)\n"));
         }
@@ -1220,6 +1238,10 @@ impl Hub {
                 match rseen {
                     Some(v) => r.rules_seen.insert(m.id.clone(), v),
                     None => r.rules_seen.remove(&m.id),
+                };
+                match &tseen {
+                    Some(v) => r.todos_seen.insert(m.id.clone(), v.clone()),
+                    None => r.todos_seen.remove(&m.id),
                 };
             })
         };
@@ -1329,6 +1351,7 @@ impl Hub {
             let current = hub.procs.lock().unwrap().get(&(panel_s.clone(), member_s.clone())).map(|p| p.generation);
             if current == Some(generation) {
                 hub.procs.lock().unwrap().remove(&(panel_s.clone(), member_s.clone()));
+                hub.todo_release_all(&panel_s, &member_s);
                 let was_busy = hub.with_ws(&panel_s, |ws| ws.members.iter().any(|m| m.id == member_s && m.status != MemberStatus::Idle));
                 if was_busy {
                     let err = err_buf.lock().unwrap().trim().to_string();

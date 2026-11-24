@@ -151,6 +151,7 @@ impl Hub {
                 let current = hub.procs.lock().unwrap().get(&(panel_s.clone(), member_s.clone())).map(|p| p.generation);
                 if current == Some(generation) {
                     hub.procs.lock().unwrap().remove(&(panel_s.clone(), member_s.clone()));
+                    hub.todo_release_all(&panel_s, &member_s);
                     let busy = hub.with_ws(&panel_s, |ws| ws.members.iter().any(|m| m.id == member_s && m.status != MemberStatus::Idle));
                     if busy {
                         let err = err_buf.lock().unwrap().trim().to_string();

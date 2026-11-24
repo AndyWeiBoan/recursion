@@ -23,6 +23,17 @@ pub enum Dir {
     Column,
 }
 
+/// Where a dragged panel goes, relative to the one it is dropped on.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Side {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    Center,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Node {
@@ -196,13 +207,19 @@ impl Node {
     /// Split the leaf holding `target`, putting `new_panel` after it in direction `dir`.
     /// Returns true if the target was found.
     fn split(&mut self, target: &str, dir: Dir, new_panel: &str) -> bool {
+        self.insert(target, dir, new_panel, false)
+    }
+
+    /// Like `split`, with `new_panel` before the target (left of it, or above) when `before`.
+    fn insert(&mut self, target: &str, dir: Dir, new_panel: &str, before: bool) -> bool {
         match self {
             Node::Leaf { panel } if panel == target => {
                 let old = Node::Leaf { panel: panel.clone() };
+                let new = Node::Leaf { panel: new_panel.to_string() };
                 *self = Node::Split {
                     id: new_id(),
                     dir,
-                    children: vec![old, Node::Leaf { panel: new_panel.to_string() }],
+                    children: if before { vec![new, old] } else { vec![old, new] },
                     sizes: vec![0.5, 0.5],
                 };
                 true
@@ -216,13 +233,14 @@ impl Node {
                         .position(|c| matches!(c, Node::Leaf { panel } if panel == target))
                     {
                         let half = sizes[i] / 2.0;
+                        let at = if before { i } else { i + 1 };
                         sizes[i] = half;
-                        sizes.insert(i + 1, half);
-                        children.insert(i + 1, Node::Leaf { panel: new_panel.to_string() });
+                        sizes.insert(at, half);
+                        children.insert(at, Node::Leaf { panel: new_panel.to_string() });
                         return true;
                     }
                 }
-                children.iter_mut().any(|c| c.split(target, dir, new_panel))
+                children.iter_mut().any(|c| c.insert(target, dir, new_panel, before))
             }
         }
     }
@@ -255,6 +273,16 @@ impl Node {
                 }
                 None
             }
+        }
+    }
+
+    /// Exchange the places of two leaves.
+    fn swap(&mut self, a: &str, b: &str) {
+        match self {
+            Node::Leaf { panel } if panel == a => *panel = b.to_string(),
+            Node::Leaf { panel } if panel == b => *panel = a.to_string(),
+            Node::Leaf { .. } => {}
+            Node::Split { children, .. } => children.iter_mut().for_each(|c| c.swap(a, b)),
         }
     }
 
@@ -496,6 +524,25 @@ impl State {
         Ok(new_panel)
     }
 
+    /// Move a panel next to another one in the same window (`side` of it), or swap the two (`Center`).
+    pub fn move_panel(&mut self, panel: &str, target: &str, side: Side) -> Res<()> {
+        let (si, wi) = self.locate_panel(panel)?;
+        let w = &mut self.sessions[si].windows[wi];
+        if panel == target || !w.panel_ids().iter().any(|p| p == target) {
+            return Err(ModelError::NotFound("panel"));
+        }
+        match side {
+            Side::Center => w.root.swap(panel, target),
+            _ => {
+                w.root.remove(panel);
+                let dir = if matches!(side, Side::Left | Side::Right) { Dir::Row } else { Dir::Column };
+                w.root.insert(target, dir, panel, matches!(side, Side::Left | Side::Top));
+            }
+        }
+        w.focus = panel.into();
+        Ok(())
+    }
+
     /// Close a panel. If it was the last one in its window, the window closes too.
     pub fn close_panel(&mut self, panel: &str) -> Res<Vec<String>> {
         let (si, wi) = self.locate_panel(panel)?;
@@ -721,6 +768,34 @@ mod tests {
         st.close_panel(&a).unwrap();
         assert_eq!(st.sessions[0].windows.len(), 1);
         assert_eq!(st.sessions[0].windows[0].id, w2);
+    }
+
+    #[test]
+    fn moving_panels() {
+        let (mut st, _) = one_session();
+        let a = first_panel(&st);
+        let b = st.split_panel(&a, Dir::Row, PanelKind::Terminal).unwrap();
+        let c = st.split_panel(&b, Dir::Row, PanelKind::Terminal).unwrap();
+        let ids = |st: &State| st.sessions[0].windows[0].panel_ids();
+        // [a b c] → c to the left of a → [c a b]
+        st.move_panel(&c, &a, Side::Left).unwrap();
+        assert_eq!(ids(&st), vec![c.clone(), a.clone(), b.clone()]);
+        // swap c and b → [b a c]
+        st.move_panel(&c, &b, Side::Center).unwrap();
+        assert_eq!(ids(&st), vec![b.clone(), a.clone(), c.clone()]);
+        // b below c → [a [c / b]]
+        st.move_panel(&b, &c, Side::Bottom).unwrap();
+        match &st.sessions[0].windows[0].root {
+            Node::Split { children, sizes, .. } => {
+                assert_eq!(children.len(), 2);
+                assert!((sizes.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+                assert!(matches!(&children[1], Node::Split { dir: Dir::Column, children, .. } if children.len() == 2));
+            }
+            _ => panic!(),
+        }
+        assert_eq!(ids(&st), vec![a.clone(), c.clone(), b.clone()]);
+        assert_eq!(st.sessions[0].windows[0].focus, b);
+        assert!(st.move_panel(&a, &a, Side::Left).is_err());
     }
 
     #[test]

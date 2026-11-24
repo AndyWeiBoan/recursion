@@ -100,6 +100,7 @@ export type Cmd =
   | { t: "window_rename"; session: string; window: string; name: string }
   | { t: "window_close"; session: string; window: string }
   | { t: "panel_split"; panel: string; dir: Dir; kind?: PanelKind }
+  | { t: "panel_move"; panel: string; target: string; side: "left" | "right" | "top" | "bottom" | "center" }
   | { t: "panel_close"; panel: string }
   | { t: "panel_focus"; panel: string }
   | { t: "panel_kind"; panel: string; kind: PanelKind }
@@ -141,6 +142,13 @@ export type Cmd =
   | { t: "poll_create"; panel: string; question: string; description: string; options: string[]; vote?: number | null }
   | { t: "poll_vote"; panel: string; poll: string; option: number }
   | { t: "poll_close"; panel: string; poll: string }
+  | { t: "todo_list_create"; panel: string; name: string }
+  | { t: "todo_list_rename"; panel: string; list: string; name: string }
+  | { t: "todo_list_remove"; panel: string; list: string }
+  | { t: "todo_add"; panel: string; list: string; text: string }
+  | { t: "todo_update"; panel: string; list: string; id: string; text?: string; state?: TodoState }
+  | { t: "todo_move"; panel: string; list: string; id: string; index: number; archived: boolean }
+  | { t: "todo_remove"; panel: string; list: string; id: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
@@ -244,6 +252,33 @@ export interface Vote {
   ts: number;
 }
 
+export type TodoState = "todo" | "doing" | "done";
+
+/** One item of a todo list. */
+export interface Todo {
+  id: string;
+  num: number;
+  text: string;
+  state: TodoState;
+  /** Who is on it while it's being done: "you" or a member id. */
+  worker?: string;
+  /** "you" or a member id. */
+  by: string;
+  done_by?: string;
+  /** Put away in the list's 完成區. */
+  archived: boolean;
+  created: number;
+}
+
+/** A named todo list of a chat; items in the human's order. */
+export interface TodoList {
+  id: string;
+  num: number;
+  name: string;
+  items: Todo[];
+  created: number;
+}
+
 export interface Poll {
   id: string;
   num: number;
@@ -294,6 +329,7 @@ export interface Workspace {
   messages: Msg[];
   threads?: Thread[];
   polls?: Poll[];
+  todo_lists?: TodoList[];
   /** Documents and pages the agents made for this chat. */
   artifacts?: Artifact[];
   round?: { active: boolean; queued: number };

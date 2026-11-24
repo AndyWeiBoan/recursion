@@ -2,7 +2,7 @@
 import { ChatSettingsForm } from "./ScopeSettings";
 import { openSettings } from "./Settings";
 import { accountLabel } from "./Setup";
-import { FileChip, FilePicker } from "./Files";
+import { FileChip, FilePicker, isImagePath } from "./Files";
 import { useDragWidth } from "./Layout";
 import { Icon } from "./icons";
 import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
@@ -257,7 +257,9 @@ export function ChatHead({ panel }: { panel: string }) {
   // including when every agent was removed from a chat that has history.
   if (!ws || (members.length === 0 && ws.messages.length === 0)) return <span className="title" />;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
-  const outputs = [ws.threads, ws.artifacts, ws.polls].reduce((n, l) => n + (l ?? []).filter((x) => !x.removed).length, 0);
+  // As the 產出 list counts them: no pages the agents opened, and the pictures the human attached.
+  const pictures = ws.messages.reduce((n, m) => n + (m.from === "you" ? (m.files ?? []).filter(isImagePath).length : 0), 0);
+  const outputs = pictures + [ws.threads, (ws.artifacts ?? []).filter((a) => a.kind !== "page"), ws.polls].reduce((n, l) => n + (l ?? []).filter((x) => !x.removed).length, 0);
   return (
     <span className="title chat-head">
       <span className="chat-faces">

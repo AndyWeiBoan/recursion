@@ -58,6 +58,7 @@ fn tools() -> Value {
     let mut all = doc_tools();
     all.as_array_mut().unwrap().extend(crate::browse::tools());
     all.as_array_mut().unwrap().extend(crate::agents::poll_tools().as_array().unwrap().clone());
+    all.as_array_mut().unwrap().extend(crate::agents::todo_tools().as_array().unwrap().clone());
     all
 }
 
@@ -124,6 +125,12 @@ impl App {
     async fn call_tool(&self, panel: &str, member: &str, alias: &str, name: &str, args: &Value) -> Value {
         if name.starts_with("browse_") {
             return self.browse(panel, member, name, args).await;
+        }
+        if name.starts_with("todo_") {
+            return match self.hub.todo_tool(panel, member, name, args) {
+                Ok(t) => text(t, false),
+                Err(e) => text(e, true),
+            };
         }
         if name.starts_with("poll_") {
             return match self.hub.poll_tool(panel, member, name, args) {

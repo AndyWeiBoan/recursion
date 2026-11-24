@@ -8,6 +8,7 @@ import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type
 import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
 import { ImageThumb, isImagePath } from "./Files";
+import { TodoPane } from "./Todos";
 import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
 
 const STATUS: Record<Thread["status"], string> = {
@@ -92,7 +93,8 @@ const KINDS: { id: ArtifactFilter; label: string }[] = [
   { id: "thread", get label() { return tr("outputs.threads"); } },
   { id: "doc", get label() { return tr("outputs.docs"); } },
   { id: "diagram", get label() { return tr("outputs.diagrams"); } },
-  { id: "page", get label() { return tr("outputs.pages"); } },
+  // The chat's todo list took the place of pages the agents opened (nearly always empty).
+  { id: "todo", get label() { return tr("todo.title"); } },
   { id: "poll", get label() { return tr("outputs.polls"); } },
   { id: "image", get label() { return tr("outputs.images"); } },
 ];
@@ -143,7 +145,7 @@ function pollMatches(p: Poll, query: string) {
 function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byId: Map<string, Member>; ui: ThreadsUI }) {
   // Things taken off the list stay in the chat, just not here.
   const threads = useMemo(() => (ws.threads ?? []).filter((t) => !t.removed), [ws.threads]);
-  const artifacts = useMemo(() => (ws.artifacts ?? []).filter((a) => !a.removed), [ws.artifacts]);
+  const artifacts = useMemo(() => (ws.artifacts ?? []).filter((a) => !a.removed && a.kind !== "page"), [ws.artifacts]);
   const polls = useMemo(() => (ws.polls ?? []).filter((p) => !p.removed), [ws.polls]);
   // Pictures the human attached to messages in this chat.
   const images = useMemo(() => ws.messages.flatMap((m) => (m.from === "you" ? (m.files ?? []).filter(isImagePath).map((path) => ({ path, msg: m.id, at: m.ts })) : [])), [ws.messages]);
@@ -159,7 +161,9 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
           ? polls.length
           : k === "image"
             ? images.length
-            : artifacts.filter((a) => a.kind === k).length;
+            : k === "todo"
+              ? (ws.todo_lists ?? []).length
+              : artifacts.filter((a) => a.kind === k).length;
   const shown = useMemo(() => {
     const items: Item[] = [];
     if (filter === "all" || filter === "thread")
@@ -178,7 +182,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
     thread: tr("outputs.emptyThreads"),
     doc: tr("outputs.emptyDocs"),
     diagram: tr("outputs.emptyDiagrams"),
-    page: tr("outputs.emptyPages"),
+    todo: tr("todo.empty"),
     poll: tr("outputs.emptyPolls"),
     image: tr("outputs.emptyImages"),
   }[filter];
@@ -194,6 +198,10 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
       {!anchor && (
         <Tabs filter={filter} count={count} pick={(id) => setThreadSearch(panel, { filter: id })} />
       )}
+      {filter === "todo" ? (
+        <TodoPane panel={panel} />
+      ) : (
+      <>
       <div className="td-search">
         {anchor && (
           <span className="td-chip" title={tr("outputs.anchorHint")}>
@@ -225,6 +233,8 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
         )}
         {shown.length === 0 && <div className="td-empty">{count("all") > 0 && ui.query ? tr("outputs.noMatch") : empty}</div>}
       </div>
+      </>
+      )}
       {anchor && (
         <button className="td-new" onClick={() => setThreadView(panel, { kind: "new", msg: anchor.id, quote: "" })}>
           {tr("thread.newForReply")}

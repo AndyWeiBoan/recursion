@@ -111,6 +111,7 @@ enum In {
     WindowClose { session: String, window: String },
     PanelSplit { panel: String, dir: Dir, kind: Option<PanelKind> },
     PanelClose { panel: String },
+    PanelMove { panel: String, target: String, side: model::Side },
     PanelFocus { panel: String },
     PanelKind { panel: String, kind: PanelKind },
     PanelUrl { panel: String, url: String },
@@ -145,6 +146,16 @@ enum In {
     PollCreate { panel: String, question: String, #[serde(default)] description: String, options: Vec<String>, #[serde(default)] vote: Option<usize> },
     PollVote { panel: String, poll: String, option: usize },
     PollClose { panel: String, poll: String },
+    /// The chat's todo lists, from the human. Lists and items by id.
+    TodoListCreate { panel: String, name: String },
+    TodoListRename { panel: String, list: String, name: String },
+    TodoListRemove { panel: String, list: String },
+    TodoAdd { panel: String, list: String, text: String },
+    /// Only what's given changes.
+    TodoUpdate { panel: String, list: String, id: String, #[serde(default)] text: Option<String>, #[serde(default)] state: Option<workspace::TodoState> },
+    /// Dragged to `index` among the list's items, into the 完成區 or out of it.
+    TodoMove { panel: String, list: String, id: String, index: usize, archived: bool },
+    TodoRemove { panel: String, list: String, id: String },
     /// Stop one agent's reply; the rest of the round goes on.
     WsStopAgent { panel: String, member: String },
     WsSendNow { panel: String },
@@ -427,6 +438,7 @@ impl App {
                 };
                 self.close_panels(&removed, chats).await;
             }
+            PanelMove { panel, target, side } => self.state.lock().unwrap().move_panel(&panel, &target, side).map_err(e)?,
             PanelFocus { panel } => self.state.lock().unwrap().focus_panel(&panel).map_err(e)?,
             PanelKind { panel, kind } => {
                 self.state.lock().unwrap().set_panel_kind(&panel, kind).map_err(e)?;
@@ -749,6 +761,34 @@ impl App {
             }
             PollClose { panel, poll } => {
                 self.hub.poll_close(&panel, &poll);
+                changed = false;
+            }
+            TodoListCreate { panel, name } => {
+                self.hub.todo_list_create(&panel, &name)?;
+                changed = false;
+            }
+            TodoListRename { panel, list, name } => {
+                self.hub.todo_list_rename(&panel, &list, &name)?;
+                changed = false;
+            }
+            TodoListRemove { panel, list } => {
+                self.hub.todo_list_remove(&panel, &list);
+                changed = false;
+            }
+            TodoAdd { panel, list, text } => {
+                self.hub.todo_add(&panel, &list, "you", &text)?;
+                changed = false;
+            }
+            TodoUpdate { panel, list, id, text, state } => {
+                self.hub.todo_update(&panel, &list, &id, text, state)?;
+                changed = false;
+            }
+            TodoMove { panel, list, id, index, archived } => {
+                self.hub.todo_move(&panel, &list, &id, index, archived)?;
+                changed = false;
+            }
+            TodoRemove { panel, list, id } => {
+                self.hub.todo_remove(&panel, &list, &id)?;
                 changed = false;
             }
             WsStopAgent { panel, member } => {

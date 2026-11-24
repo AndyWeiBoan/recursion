@@ -107,6 +107,9 @@ export async function connect() {
             return { ...w, polls: i >= 0 ? list.map((x, k) => (k === i ? m.poll : x)) : [...list, m.poll] };
           });
           break;
+        case "ws_todos":
+          wsUpdate(m.panel, (w) => ({ ...w, todo_lists: m.lists }));
+          break;
         case "ws_artifact":
           wsUpdate(m.panel, (w) => {
             const list = w.artifacts ?? [];

@@ -218,6 +218,14 @@ pub struct Workspace {
     pub grants: Vec<String>,
     #[serde(default)]
     pub next_poll: u64,
+    /// The chat's todo lists, kept by the human and the agents alike.
+    #[serde(default)]
+    pub todo_lists: Vec<TodoList>,
+    #[serde(default)]
+    pub next_list: u64,
+    /// Before named lists there was one list: read only, to move it into `todo_lists`.
+    #[serde(default, skip_serializing)]
+    todos: Vec<Todo>,
     #[serde(default)]
     pub settings: ChatSettings,
     /// Agents that left, by member id: their messages, votes and threads keep their names.
@@ -237,6 +245,53 @@ pub struct ChatSettings {
     /// Stop taking messages once the agents' known spend reaches this (USD).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoState {
+    #[default]
+    Todo,
+    Doing,
+    Done,
+}
+
+/// One item of a todo list, in the order the human arranged them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Todo {
+    pub id: String,
+    /// Shown as #n, per list.
+    pub num: u64,
+    pub text: String,
+    #[serde(default)]
+    pub state: TodoState,
+    /// Who is on it while it's being done ("you" or a member id). An agent holds it until it
+    /// finishes, lets go, or disconnects, so two agents never take the same item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
+    /// "you" or a member id.
+    pub by: String,
+    /// Who ticked it ("you" or a member id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_by: Option<String>,
+    /// Put away in the list's 完成區, ticked or not (not ticked: it won't be done).
+    #[serde(default)]
+    pub archived: bool,
+    pub created: u64,
+}
+
+/// A named todo list of a chat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoList {
+    pub id: String,
+    /// Shown as #n, per chat.
+    pub num: u64,
+    pub name: String,
+    #[serde(default)]
+    pub items: Vec<Todo>,
+    #[serde(default)]
+    pub next_item: u64,
+    pub created: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -494,6 +549,19 @@ impl Workspace {
                 }
                 // Nothing is running right after a load.
                 w.members.iter_mut().for_each(|m| m.status = MemberStatus::Idle);
+                // The single list from before named lists.
+                if !w.todos.is_empty() && w.todo_lists.is_empty() {
+                    let items = std::mem::take(&mut w.todos);
+                    w.next_list = 1;
+                    w.todo_lists.push(TodoList { id: crate::model::new_id(), num: 1, name: tr!("todo.defaultList"), next_item: items.iter().map(|t| t.num).max().unwrap_or(0), items, created: now_ms() });
+                }
+                // No agent is connected yet: what they were on is free again.
+                for t in w.todo_lists.iter_mut().flat_map(|l| l.items.iter_mut()) {
+                    if t.state == TodoState::Doing && t.worker.as_deref() != Some("you") {
+                        t.state = TodoState::Todo;
+                        t.worker = None;
+                    }
+                }
                 // A thread reply in flight died with the daemon.
                 w.threads.iter_mut().filter(|t| t.status == ThreadStatus::Replying).for_each(|t| t.status = ThreadStatus::Waiting);
                 // Threads saved before `whole` existed: a quote equal to its message meant the whole message.
@@ -566,6 +634,11 @@ pub fn display_tool_name(name: &str) -> String {
         Some("poll_vote") => format!("📊 {}", tr!("tool.pollVote")),
         Some("poll_list") => format!("📊 {}", tr!("tool.pollList")),
         Some("poll_read") => format!("📊 {}", tr!("tool.pollRead")),
+        Some("todo_lists") | Some("todo_read") => format!("☑ {}", tr!("tool.todoList")),
+        Some("todo_add") => format!("☑ {}", tr!("tool.todoAdd")),
+        Some("todo_claim") => format!("☑ {}", tr!("tool.todoClaim")),
+        Some("todo_done") => format!("☑ {}", tr!("tool.todoDone")),
+        Some("todo_release") => format!("☑ {}", tr!("tool.todoRelease")),
         _ => name.to_string(),
     }
 }
@@ -595,6 +668,8 @@ pub fn summarize_tool(name: &str, input: &serde_json::Value, cwd: &str) -> (Stri
             format!("#{} ← {}", input.get("ref").map(|v| v.to_string()).unwrap_or_default(), s("value").chars().take(60).collect::<String>())
         }
         _ if recursion_tool(name).is_some_and(|t| t.starts_with("browse_")) => String::new(),
+        _ if recursion_tool(name) == Some("todo_add") => format!("{} · {}", s("list"), s("text")),
+        _ if recursion_tool(name).is_some_and(|t| t.starts_with("todo_")) => [s("list"), s("todo")].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" "),
         // What it voted shows on the poll card when the poll closes, not in the tool line before.
         _ if recursion_tool(name).is_some_and(|t| t.starts_with("poll_")) => input.get("poll").and_then(|v| v.as_str()).map(|p| if p.starts_with('#') { p.to_string() } else { String::new() }).unwrap_or_default(),
         _ => {
