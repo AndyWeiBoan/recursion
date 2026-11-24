@@ -193,7 +193,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
             <AddAgent panel={panel} big />
           </div>
         ) : (
-          <Transcript panel={panel} messages={ws.messages} byId={byId} busy={busy} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} />
+          <Transcript panel={panel} messages={ws.messages} byId={byId} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} />
         )}
         <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} working={busy} focused={focused && !ui.open} round={ws.round} />
       </div>
@@ -562,7 +562,6 @@ function Transcript({
   panel,
   messages,
   byId,
-  busy,
   threadCounts,
   threads,
   polls,
@@ -570,22 +569,40 @@ function Transcript({
   panel: string;
   messages: Msg[];
   byId: Map<string, Member>;
-  busy: Member[];
   threadCounts: Map<string, number>;
   threads: Thread[];
   polls: Poll[];
 }) {
   const pollById = useMemo(() => new Map(polls.map((p) => [p.id, p])), [polls]);
   const box = useRef<HTMLDivElement>(null);
+  // Following the newest message while the view is at the bottom. Scrolled up, it stays put
+  // (several agents writing at once would otherwise keep dragging it down) and a button jumps
+  // back, counting what came in meanwhile.
   const stick = useRef(true);
-  const last = messages[messages.length - 1];
-  const lastLen = last && last.kind === "text" ? last.text.length : 0;
+  const [away, setAway] = useState<number | null>(null); // messages.length when it left the bottom
+  const jumping = useRef(false);
   const aliases = useMemo(() => [...byId.values()].map((m) => m.alias), [byId]);
+  const last = messages[messages.length - 1];
 
+  // Sending something brings you to it.
+  const sent = useRef(messages.length);
+  if (messages.length !== sent.current) {
+    if (messages.length > sent.current && last?.from === "you") stick.current = true;
+    sent.current = messages.length;
+  }
+  // Any change (also a reply still being written further up) keeps the bottom in view.
   useLayoutEffect(() => {
     const el = box.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [messages.length, lastLen, busy.length]);
+    if (stick.current && away !== null) setAway(null);
+  });
+  const toLatest = () => {
+    const el = box.current;
+    if (!el) return;
+    stick.current = jumping.current = true;
+    setAway(null);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   // One block per agent turn, even when other agents' messages land in between: its words in
@@ -608,6 +625,8 @@ function Transcript({
     }
     return { turns, inTurn };
   }, [messages]);
+  // New messages since leaving the bottom, as the log shows them (an agent's turn is one).
+  const unseen = away === null ? 0 : messages.slice(away).filter((m) => m.from !== "you" && !inTurn.has(m.id)).length;
   // Text selected inside one agent reply → a "discuss this" button next to it.
   const [pick, setPick] = useState<{ x: number; y: number; msg: string; quote: string } | null>(null);
   const readSelection = (at?: { x: number; y: number }) => {
@@ -636,6 +655,7 @@ function Transcript({
   }, []);
 
   return (
+    <div className="ws-log-wrap">
     <div
       className="ws-log"
       ref={box}
@@ -658,7 +678,14 @@ function Transcript({
       }}
       onScroll={(e) => {
         const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        if (jumping.current) {
+          if (bottom) jumping.current = false;
+        } else {
+          stick.current = bottom;
+          if (bottom) setAway(null);
+          else if (away === null) setAway(messages.length);
+        }
         setPick(null);
         setMenu(null);
       }}
@@ -717,6 +744,12 @@ function Transcript({
           document.body,
         )}
       {menu && <MessageMenu panel={panel} menu={menu} threads={threads} onClose={() => setMenu(null)} />}
+    </div>
+      {away !== null && (
+        <button className="to-latest" onClick={toLatest}>
+          ↓ {unseen ? tr("chat.newMessages", { n: unseen }) : tr("chat.toLatest")}
+        </button>
+      )}
     </div>
   );
 }

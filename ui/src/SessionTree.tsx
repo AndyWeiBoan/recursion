@@ -176,11 +176,6 @@ function PanelRow({
   docs,
   terms,
   members,
-  onClick,
-  prefix,
-  name,
-  rename,
-  closeWindow,
   folded,
   onFold,
 }: {
@@ -188,34 +183,19 @@ function PanelRow({
   docs: Doc[];
   terms: Record<string, TermInfo>;
   members: Member[];
-  onClick: () => void;
-  prefix?: React.ReactNode;
-  /** The window's own name, shown instead of the kind when set. */
-  name?: string;
-  /** Present when this row stands for a whole window, which can then be renamed or closed. */
-  rename?: (v: string) => void;
-  closeWindow?: () => void;
   folded: boolean;
   onFold: () => void;
 }) {
   const d = describe(p, docs, terms);
-  const [editing, setEditing] = useState(false);
   return (
     <>
-      <div
-        className="tree-row tree-row-menu"
-        onClick={onClick}
-        onDoubleClick={rename && (() => setEditing(true))}
-        title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}${rename ? t("window.renameHint") : ""}`}
-      >
-        {prefix}
+      <div className="tree-row" onClick={() => send({ t: "panel_focus", panel: p.id })} title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}`}>
         {members.length > 0 ? (
           <button
             className={`sess-fold tree-fold${folded ? " closed" : ""}`}
             aria-label={folded ? t("tree.expandAgents") : t("tree.collapseAgents")}
             aria-expanded={!folded}
             onClick={(e) => (e.stopPropagation(), onFold())}
-            onDoubleClick={(e) => e.stopPropagation()}
           >
             ›
           </button>
@@ -223,20 +203,15 @@ function PanelRow({
           <span className="sess-fold-space tree-fold" />
         )}
         <span className={`tree-ic ic-${d.cls}`}>{d.icon}</span>
-        {editing && rename ? (
-          <InlineEdit value={name ?? ""} onSave={rename} onDone={() => setEditing(false)} />
-        ) : (
-          <span className="tree-label">
-            {name || d.label}
-            {(name ? d.label : d.detail) && <span className="tree-detail"> · {name ? d.label : d.detail}</span>}
-          </span>
-        )}
+        <span className="tree-label">
+          {d.label}
+          {d.detail && <span className="tree-detail"> · {d.detail}</span>}
+        </span>
         {p.kind === "workspace" && (
           <button className="tree-add" title={t("agent.add")} aria-label={t("agent.addToChat")} onClick={(e) => (e.stopPropagation(), requestAddAgent(p.id))}>
             ＋
           </button>
         )}
-        {rename && closeWindow && !editing && <WindowMenu onRename={() => setEditing(true)} onClose={closeWindow} />}
       </div>
       {members.length > 0 && !folded && (
         <div className="tree-agents">
@@ -249,36 +224,27 @@ function PanelRow({
   );
 }
 
-function SplitRow({
-  num,
-  name,
-  count,
-  onClick,
-  rename,
-  closeWindow,
-}: {
-  num: React.ReactNode;
-  name: string;
-  count: number;
-  onClick: () => void;
-  rename: (v: string) => void;
-  closeWindow: () => void;
-}) {
+/** One window (a tab): its panels side by side in the tree, its name above them if it has one,
+ * and "⋯" to rename or close it. The one on screen is lit as a whole. */
+function WindowGroup({ session, w, index, on, children }: { session: string; w: Session["windows"][number]; index: number; on: boolean; children: React.ReactNode }) {
   const [editing, setEditing] = useState(false);
+  const name = w.name && w.name !== String(index + 1) ? w.name : "";
+  const rename = (v: string) => send({ t: "window_rename", session, window: w.id, name: v });
   return (
-    <div className="tree-row tree-row-menu" onClick={onClick} onDoubleClick={() => setEditing(true)} title={t("window.doubleClickRename")}>
-      {num}
-      <span className="sess-fold-space tree-fold" />
-      <span className="tree-ic ic-split">◫</span>
+    <div className={`tree-win${on ? " on" : ""}`}>
       {editing ? (
-        <InlineEdit value={name} onSave={rename} onDone={() => setEditing(false)} />
+        <div className="tree-win-name">
+          <InlineEdit value={name} onSave={rename} onDone={() => setEditing(false)} />
+        </div>
       ) : (
-        <span className="tree-label">
-          {name || t("window.split")}
-          <span className="tree-detail"> · {t("window.cells", { n: count })}</span>
-        </span>
+        name && (
+          <div className="tree-win-name" onDoubleClick={() => setEditing(true)} title={t("window.doubleClickRename")}>
+            {name}
+          </div>
+        )
       )}
-      {!editing && <WindowMenu onRename={() => setEditing(true)} onClose={closeWindow} />}
+      {children}
+      {!editing && <WindowMenu onRename={() => setEditing(true)} onClose={() => send({ t: "window_close", session, window: w.id })} />}
     </div>
   );
 }
@@ -337,33 +303,15 @@ export function SessionTree({ session, state, terms, roster }: { session: Sessio
     });
   return (
     <div className="tree">
-      {session.windows.map((w, i) => {
-        const ids = leaves(w.root).filter((id) => state.panels[id]);
-        const on = w.id === session.active_window;
-        const select = () => send({ t: "window_select", session: session.id, window: w.id });
-        const num = <span className="tree-num">{i + 1}</span>;
-        const name = w.name && w.name !== String(i + 1) ? w.name : "";
-        const rename = (v: string) => send({ t: "window_rename", session: session.id, window: w.id, name: v });
-        const closeWindow = () => send({ t: "window_close", session: session.id, window: w.id });
-        if (ids.length === 1) {
-          const p = state.panels[ids[0]];
-          return (
-            <div key={w.id} className={`tree-win${on ? " on" : ""}`}>
-              <PanelRow p={p} docs={docs} terms={terms} members={roster[p.id] ?? []} onClick={select} prefix={num} name={name} rename={rename} closeWindow={closeWindow} folded={folded.has(p.id)} onFold={() => fold(p.id)} />
-            </div>
-          );
-        }
-        return (
-          <div key={w.id} className={`tree-win${on ? " on" : ""}`}>
-            <SplitRow num={num} name={name} count={ids.length} onClick={select} rename={rename} closeWindow={closeWindow} />
-            <div className="tree-panels">
-              {ids.map((id) => (
-                <PanelRow key={id} p={state.panels[id]} docs={docs} terms={terms} members={roster[id] ?? []} onClick={() => send({ t: "panel_focus", panel: id })} folded={folded.has(id)} onFold={() => fold(id)} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
+      {session.windows.map((w, i) => (
+        <WindowGroup key={w.id} session={session.id} w={w} index={i} on={w.id === session.active_window}>
+          {leaves(w.root)
+            .filter((id) => state.panels[id])
+            .map((id) => (
+              <PanelRow key={id} p={state.panels[id]} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
+            ))}
+        </WindowGroup>
+      ))}
     </div>
   );
 }
