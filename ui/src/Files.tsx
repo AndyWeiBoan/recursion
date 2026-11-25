@@ -82,7 +82,9 @@ export function FilePicker({ panel, onPick, onClose }: { panel: string; onPick: 
         {shown.map((f, i) => (
           <button key={f} role="option" aria-selected={i === sel} className={i === sel ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), onPick(f))} onMouseEnter={() => setSel(i)}>
             <b>{base(f)}</b>
-            <span>{f.slice(0, f.length - base(f).length).replace(/\/$/, "")}</span>
+            <span>
+              <bdi dir="ltr">{f.slice(0, f.length - base(f).length).replace(/\/$/, "")}</bdi>
+            </span>
           </button>
         ))}
       </div>
@@ -140,7 +142,8 @@ export function FileBody({ panel, path }: { panel: string; path: string }) {
       <div className="fv-bar">
         <Icon name="file" size={13} />
         <span className="fv-path" title={path}>
-          {path}
+          {/* rtl so a long path loses its start, not its name; the bdi keeps its slashes in place */}
+          <bdi dir="ltr">{path}</bdi>
         </span>
         {file?.text !== undefined && <span className="fv-meta">{t("file.lines", { n: lines })}</span>}
         <button onClick={() => setRev((r) => r + 1)} title={t("browser.reload")} aria-label={t("browser.reload")}>

@@ -1,4 +1,5 @@
 // Sidebar tree under each session: its windows, what each window holds, and the agents of each chat.
+import { viewerPath } from "./browsers";
 import { t } from "./i18n";
 import { useRef, useState } from "react";
 import { accountName, requestAddAgent, send, useAccounts } from "./client";
@@ -167,7 +168,8 @@ function describe(p: Panel, docs: Doc[], terms: Record<string, TermInfo>) {
     const d = docs.find((x) => x.id === p.url!.slice(4));
     return { icon: "▤", cls: "browser", label: t("kind.doc"), detail: d?.title ?? t("common.deleted") };
   }
-  if (p.url?.startsWith("file:")) return { icon: "▤", cls: "browser", label: t("kind.file"), detail: p.url.slice(p.url.lastIndexOf("/") + 1).replace(/^file:/, "") };
+  const file = viewerPath(p.url);
+  if (file !== null) return { icon: "▤", cls: "browser", label: t("kind.file"), detail: file.slice(file.lastIndexOf("/") + 1) };
   return { icon: ICON.browser, cls: "browser", label: t("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
 }
 

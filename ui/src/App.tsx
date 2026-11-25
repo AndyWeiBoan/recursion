@@ -7,7 +7,7 @@ import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
-import { overlay, pruneBrowsers } from "./browsers";
+import { overlay, pruneBrowsers, viewerPath } from "./browsers";
 import { SessionTree } from "./SessionTree";
 import { ago, openSettings, SettingsModal } from "./Settings";
 import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
@@ -159,7 +159,7 @@ export default function App() {
     if (!state) return;
     const alive = new Set(Object.values(state.panels).filter((p) => p.kind === "terminal").map((p) => p.id));
     pruneTerminals(alive);
-    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:") && !p.url?.startsWith("file:")).map((p) => p.id)));
+    pruneBrowsers(new Set(Object.values(state.panels).filter((p) => p.kind === "browser" && !p.url?.startsWith("doc:") && viewerPath(p.url) === null).map((p) => p.id)));
   }, [state]);
   useEffect(() => (pick ? overlay() : undefined), [pick]);
   // A drawer's chat was closed or turned into something else: drop the zoom with it.

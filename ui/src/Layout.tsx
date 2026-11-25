@@ -7,7 +7,7 @@ import { copyText, saveDownload } from "./clipboard";
 import { send, useSnapshot } from "./client";
 import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
-import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser } from "./browsers";
+import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser, viewerPath } from "./browsers";
 import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal, typePaths } from "./terminals";
 import { takeDrops, useDropOver } from "./drop";
@@ -187,7 +187,8 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const doc = docId ? ctx.docs.find((d) => d.id === docId) : undefined;
   // A document, diagram or file shown here came from a chat: a way back to that chat's 產出.
   const { state } = useSnapshot();
-  const viewer = panel.kind === "browser" && (docId || panel.url?.startsWith("file:"));
+  const file = panel.kind === "browser" ? viewerPath(panel.url) : null;
+  const viewer = panel.kind === "browser" && (docId || file !== null);
   const sourceChat = useMemo(() => {
     if (!viewer || !state) return null;
     if (doc?.chat && state.panels[doc.chat]) return doc.chat;
@@ -201,8 +202,8 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         ? doc
           ? `${doc.title} · @${doc.author}`
           : t("doc.gone")
-        : panel.kind === "browser" && panel.url?.startsWith("file:")
-          ? panel.url.slice(5)
+        : file !== null
+          ? file
           : panel.kind === "browser"
           ? panel.url || t("browser.newTab")
           : "";
@@ -267,8 +268,8 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
         {dropOver === panel.id && <div className="drop-over">{t(panel.kind === "terminal" ? "drop.paste" : "drop.attach")}</div>}
         {panel.kind === "terminal" && <TerminalBody id={panel.id} focused={focused} />}
         {panel.kind === "workspace" && <WorkspaceView panel={panel.id} focused={focused} />}
-        {panel.kind === "browser" && panel.url?.startsWith("file:") ? (
-          <FileBody panel={panel.id} path={panel.url.slice(5)} />
+        {file !== null ? (
+          <FileBody panel={panel.id} path={file} />
         ) : docId ? (
           <DocBody session={ctx.session} doc={docId} rev={doc?.rev ?? 0} diagram={doc?.kind === "diagram"} title={doc?.title ?? ""} />
         ) : (

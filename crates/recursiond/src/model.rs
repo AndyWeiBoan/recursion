@@ -645,7 +645,7 @@ impl State {
             .find(|p| self.panels.get(p).is_some_and(|x| x.url.as_deref() == Some(url.as_str())));
         // Not open yet: switch a panel that shows another document or file (this window's first),
         // so they take turns in one panel instead of piling up.
-        let is_doc = |p: &String| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.url.as_deref().is_some_and(|u| u.starts_with("doc:") || u.starts_with("file:")));
+        let is_doc = |p: &String| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Browser && x.url.as_deref().is_some_and(|u| u.starts_with("doc:") || (u.starts_with("file:") && !u.starts_with("file://"))));
         let windows = &self.sessions[si].windows;
         let reuse = existing.clone().or_else(|| {
             windows[wi].panel_ids().into_iter().find(|p| is_doc(p)).or_else(|| windows.iter().flat_map(|w| w.panel_ids()).find(|p| is_doc(p)))

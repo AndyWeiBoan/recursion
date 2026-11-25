@@ -114,6 +114,11 @@ export function overlay(): () => void {
   };
 }
 
+/** The project file a panel shows in the viewer (`file:<path>`), or null. A real `file://` URL is a web page. */
+export function viewerPath(url: string | null | undefined): string | null {
+  return url?.startsWith("file:") && !url.startsWith("file://") ? url.slice(5) : null;
+}
+
 /** What the user typed → a URL: keeps schemes, http for localhost, https for hosts, else a search. */
 export function normalizeUrl(input: string): string {
   const s = input.trim();
