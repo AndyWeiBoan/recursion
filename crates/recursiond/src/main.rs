@@ -112,6 +112,7 @@ enum In {
     PanelSplit { panel: String, dir: Dir, kind: Option<PanelKind> },
     PanelClose { panel: String },
     PanelMove { panel: String, target: String, side: model::Side },
+    PanelToWindow { panel: String, window: Option<String> },
     PanelFocus { panel: String },
     PanelKind { panel: String, kind: PanelKind },
     PanelUrl { panel: String, url: String },
@@ -129,7 +130,10 @@ enum In {
     SetLang { lang: Option<String> },
     WsRemoveAgent { panel: String, member: String },
     WsRenameAgent { panel: String, member: String, alias: String },
-    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String> },
+    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
+    /// Start the chat again from the human's message `msg`: it and everything after are deleted,
+    /// the agents' conversations go back to before it, and `text` is sent in its place.
+    WsRewind { panel: String, msg: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
     /// The project's files, for the 📎 picker.
     FilesList { panel: String },
     /// One project file's content, for the viewer.
@@ -152,7 +156,7 @@ enum In {
     TodoListRemove { panel: String, list: String },
     TodoAdd { panel: String, list: String, text: String },
     /// Only what's given changes.
-    TodoUpdate { panel: String, list: String, id: String, #[serde(default)] text: Option<String>, #[serde(default)] state: Option<workspace::TodoState> },
+    TodoUpdate { panel: String, list: String, id: String, #[serde(default)] text: Option<String>, #[serde(default)] note: Option<String>, #[serde(default)] state: Option<workspace::TodoState> },
     /// Dragged to `index` among the list's items, into the 完成區 or out of it.
     TodoMove { panel: String, list: String, id: String, index: usize, archived: bool },
     TodoRemove { panel: String, list: String, id: String },
@@ -439,6 +443,9 @@ impl App {
                 self.close_panels(&removed, chats).await;
             }
             PanelMove { panel, target, side } => self.state.lock().unwrap().move_panel(&panel, &target, side).map_err(e)?,
+            PanelToWindow { panel, window } => {
+                self.state.lock().unwrap().panel_to_window(&panel, window.as_deref()).map_err(e)?;
+            }
             PanelFocus { panel } => self.state.lock().unwrap().focus_panel(&panel).map_err(e)?,
             PanelKind { panel, kind } => {
                 self.state.lock().unwrap().set_panel_kind(&panel, kind).map_err(e)?;
@@ -697,9 +704,14 @@ impl App {
                 self.hub.remove_agent(&panel, &member, cwd).await;
                 changed = false;
             }
-            WsSend { panel, text, reply_to, files } => {
+            WsSend { panel, text, reply_to, files, refs } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.send(&panel, text, cwd, None, reply_to.as_deref(), files).await?;
+                self.hub.send(&panel, text, cwd, None, reply_to.as_deref(), files, refs).await?;
+                changed = false;
+            }
+            WsRewind { panel, msg, text, reply_to, files, refs } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.rewind(&panel, &msg, text, cwd, reply_to.as_deref(), files, refs).await?;
                 changed = false;
             }
             FilesList { panel } => {
@@ -776,11 +788,11 @@ impl App {
                 changed = false;
             }
             TodoAdd { panel, list, text } => {
-                self.hub.todo_add(&panel, &list, "you", &text)?;
+                self.hub.todo_add(&panel, &list, "you", &text, "")?;
                 changed = false;
             }
-            TodoUpdate { panel, list, id, text, state } => {
-                self.hub.todo_update(&panel, &list, &id, text, state)?;
+            TodoUpdate { panel, list, id, text, note, state } => {
+                self.hub.todo_update(&panel, &list, &id, text, note, state)?;
                 changed = false;
             }
             TodoMove { panel, list, id, index, archived } => {

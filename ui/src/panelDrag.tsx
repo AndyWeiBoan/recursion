@@ -1,7 +1,9 @@
 // Moving a panel by dragging its header, the way a tiling window manager does: the panel itself
 // shrinks and follows the pointer, the panel it is over lights up, and letting go there swaps the
 // two. Only transforms move while dragging (no layout), so terminals don't redraw at every step;
-// on the drop both panels glide into their new places.
+// on the drop both panels glide into their new places. Dropped on the window tabs instead, it
+// leaves its window: onto another tab it joins that window, onto the empty part of the tab bar it
+// becomes a window of its own.
 import { useLayoutEffect, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
@@ -11,7 +13,9 @@ import { shield } from "./Layout";
 import type { Node } from "./types";
 
 type Box = { left: number; top: number; width: number; height: number };
-type Drag = { panel: string; home: Box; target: { panel: string; box: Box } | null };
+type Target = { kind: "swap"; panel: string; box: Box } | { kind: "window"; window: string } | { kind: "new" };
+// `solo`: the only panel of its window (it can join another window, but not get a window of its own).
+type Drag = { panel: string; solo: boolean; home: Box; target: Target | null };
 
 let drag: Drag | null = null;
 // The panel lifted out of the layout: from the pickup until it has landed (after the drop, the
@@ -38,22 +42,38 @@ function release(el: HTMLElement) {
   set(drag, null);
 }
 
-function targetAt(x: number, y: number, from: string): Drag["target"] {
+const inside = (r: DOMRect, x: number, y: number) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+
+function targetAt(x: number, y: number, from: string, solo: boolean): Target | null {
+  const bar = document.querySelector<HTMLElement>(".main > .tabs");
+  if (bar && inside(bar.getBoundingClientRect(), x, y)) {
+    for (const tab of bar.querySelectorAll<HTMLElement>(".tab[data-window]:not(.on)")) {
+      if (inside(tab.getBoundingClientRect(), x, y)) return { kind: "window", window: tab.dataset.window! };
+    }
+    return solo ? null : { kind: "new" };
+  }
+  if (solo) return null;
   for (const el of document.querySelectorAll<HTMLElement>(".layout [data-panel]")) {
     if (el.dataset.panel === from) continue;
     const r = el.getBoundingClientRect();
-    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return { panel: el.dataset.panel!, box: boxOf(r) };
+    if (inside(r, x, y)) return { kind: "swap", panel: el.dataset.panel!, box: boxOf(r) };
   }
   return null;
 }
 
+/** Whether a panel can be picked up: not while it fills the window for its drawer, and not the
+ *  only panel of the only window (it would have nowhere to go). */
+export const movable = (zoomed: boolean, solo: boolean, windows: number) => !zoomed && (!solo || windows > 1);
+
 /** Pointer down on a panel's header: past a few pixels of movement it becomes a drag. */
-export function startPanelDrag(e: React.PointerEvent, panel: string, alone: boolean) {
-  if (alone || e.button !== 0 || isControl(e.target)) return;
+export function startPanelDrag(e: React.PointerEvent, panel: string, solo: boolean, can: boolean) {
+  if (!can || e.button !== 0 || isControl(e.target)) return;
   const x0 = e.clientX;
   const y0 = e.clientY;
   let el: HTMLElement | null = null;
   let undo: (() => void)[] = [];
+  let scale = 1;
+  let oy = 0;
   const move = (ev: PointerEvent) => {
     if (!el) {
       if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
@@ -62,19 +82,27 @@ export function startPanelDrag(e: React.PointerEvent, panel: string, alone: bool
       const r = el.getBoundingClientRect();
       // Shrink around the point that was grabbed, so it stays under the pointer.
       el.style.transformOrigin = `${x0 - r.left}px ${y0 - r.top}px`;
-      el.style.scale = String(Math.min(0.6, 480 / r.width, 360 / r.height));
+      scale = Math.min(0.6, 480 / r.width, 360 / r.height);
+      oy = y0 - r.top;
+      el.style.scale = String(scale);
       undo = [shield("grabbing"), overlay()];
       document.body.classList.add("panel-dragging");
-      set({ panel, home: boxOf(r), target: null }, panel);
+      set({ panel, solo, home: boxOf(r), target: null }, panel);
     }
-    el.style.translate = `${ev.clientX - x0}px ${ev.clientY - y0}px`;
-    const target = targetAt(ev.clientX, ev.clientY, panel);
-    if (target?.panel !== drag?.target?.panel) set({ ...drag!, target });
+    // Over the tabs it gets small and hangs below them, so the tab it would go to stays in sight.
+    const bar = document.querySelector<HTMLElement>(".main > .tabs")?.getBoundingClientRect();
+    const onBar = !!bar && ev.clientY <= bar.bottom;
+    const s = onBar ? Math.min(scale, 0.3) : scale;
+    el.style.scale = String(s);
+    const dy = onBar ? Math.max(ev.clientY - y0, bar!.bottom + 6 - y0 + oy * s) : ev.clientY - y0;
+    el.style.translate = `${ev.clientX - x0}px ${dy}px`;
+    const target = targetAt(ev.clientX, ev.clientY, panel, solo);
+    if (key(target) !== key(drag?.target ?? null)) set({ ...drag!, target });
   };
   const end = (drop: boolean) => {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
-    window.removeEventListener("keydown", key, true);
+    window.removeEventListener("keydown", esc, true);
     window.removeEventListener("blur", cancel);
     undo.forEach((u) => u());
     document.body.classList.remove("panel-dragging");
@@ -85,7 +113,9 @@ export function startPanelDrag(e: React.PointerEvent, panel: string, alone: bool
       const rects = new Map<string, DOMRect>();
       document.querySelectorAll<HTMLElement>(".layout [data-panel]").forEach((p) => rects.set(p.dataset.panel!, p.getBoundingClientRect()));
       before = { at: performance.now(), rects, held: el };
-      send({ t: "panel_move", panel, target: d.target.panel, side: "center" });
+      const to = d.target;
+      if (to.kind === "swap") send({ t: "panel_move", panel, target: to.panel, side: "center" });
+      else send({ t: "panel_to_window", panel, window: to.kind === "window" ? to.window : null });
       // If the new layout never comes (the daemon refused), it goes back.
       const held = el;
       setTimeout(() => {
@@ -98,7 +128,7 @@ export function startPanelDrag(e: React.PointerEvent, panel: string, alone: bool
   const up = () => end(true);
   const cancel = () => end(false);
   // Escape puts it back, and doesn't reach the terminal underneath.
-  const key = (ev: KeyboardEvent) => {
+  const esc = (ev: KeyboardEvent) => {
     if (ev.key !== "Escape" || !drag) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -106,9 +136,11 @@ export function startPanelDrag(e: React.PointerEvent, panel: string, alone: bool
   };
   window.addEventListener("pointermove", move);
   window.addEventListener("pointerup", up);
-  window.addEventListener("keydown", key, true);
+  window.addEventListener("keydown", esc, true);
   window.addEventListener("blur", cancel);
 }
+
+const key = (t: Target | null) => (!t ? "" : t.kind === "swap" ? `p:${t.panel}` : t.kind === "window" ? `w:${t.window}` : "new");
 
 function goHome(el: HTMLElement) {
   const from = el.getBoundingClientRect();
@@ -130,6 +162,10 @@ function glide(el: HTMLElement, from: DOMRect, to: DOMRect) {
 /** The panel being dragged, if any. */
 export const useDraggedPanel = () => useSyncExternalStore(subscribe, () => lifted);
 
+/** For the tab bar while a panel is dragged: whether it may become a window of its own, and
+ *  where it would go if let go now. */
+export const usePanelDrag = () => useSyncExternalStore(subscribe, () => drag);
+
 /** Where it came from and the panel it would swap with; and the glide once the layout changed. */
 export function PanelDragLayer({ root }: { root: Node }) {
   const d = useSyncExternalStore(subscribe, () => drag);
@@ -148,7 +184,7 @@ export function PanelDragLayer({ root }: { root: Node }) {
   return createPortal(
     <>
       <div className="panel-home" style={d.home} />
-      {d.target && (
+      {d.target?.kind === "swap" && (
         <div className="panel-drop-zone" style={d.target.box}>
           <span>{t("panel.swap")}</span>
         </div>

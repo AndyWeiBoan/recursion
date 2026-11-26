@@ -267,6 +267,41 @@ fn hold_key_repeats() {
     }
 }
 
+/// macOS: Zoom In / Zoom Out / Actual Size at the top of the View menu. Their shortcuts zoom the
+/// page of the browser panel being typed in, or else the app (the UI does either, see `zoom_key`).
+fn zoom_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
+        use tauri::Manager;
+        let menu = Menu::default(app)?;
+        let view = menu.items()?.into_iter().find_map(|i| match i {
+            MenuItemKind::Submenu(s) if s.text().is_ok_and(|t| t == "View") => Some(s),
+            _ => None,
+        });
+        if let Some(view) = view {
+            let zoom_in = MenuItem::with_id(app, "zoom_in", "Zoom In", true, Some("CmdOrCtrl+="))?;
+            let zoom_out = MenuItem::with_id(app, "zoom_out", "Zoom Out", true, Some("CmdOrCtrl+-"))?;
+            let reset = MenuItem::with_id(app, "zoom_reset", "Actual Size", true, Some("CmdOrCtrl+0"))?;
+            view.prepend_items(&[&zoom_in, &zoom_out, &reset, &PredefinedMenuItem::separator(app)?])?;
+        }
+        app.set_menu(menu)?;
+        app.on_menu_event(|app, ev| {
+            let step = match ev.id().as_ref() {
+                "zoom_in" => 1,
+                "zoom_out" => -1,
+                "zoom_reset" => 0,
+                _ => return,
+            };
+            let open: Vec<String> = app.webviews().keys().filter_map(|l| l.strip_prefix("browser-").map(str::to_string)).collect();
+            let panel = app.get_window("main").and_then(|w| w.ns_window().ok()).and_then(|w| browser::mac_focus::focused(w as usize, &open));
+            browser::zoom_key(app, panel, step);
+        });
+    }
+    let _ = app;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     hold_key_repeats();
@@ -289,8 +324,13 @@ pub fn run() {
             browser::browser_navigate,
             browser::browser_go,
             browser::browser_ensure,
-            browser::browser_agent
+            browser::browser_agent,
+            browser::browser_zoom
         ])
+        .setup(|app| {
+            zoom_menu(app.handle())?;
+            Ok(())
+        })
         // macOS: closing the window keeps the app in the Dock, and clicking the Dock icon brings
         // the window back. Quitting the app on close looked like "it won't open" to people.
         .on_window_event(|window, event| {

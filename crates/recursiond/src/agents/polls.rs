@@ -58,10 +58,10 @@ impl Hub {
             p.vote("you", i, "", now_ms())?;
         }
         let m = self.push_msg(panel, msg("you", Body::Poll { poll: p.id.clone() }, false));
-        p.msg = m.id;
+        p.msg = m.id.clone();
         self.with_ws(panel, |ws| ws.polls.push(p.clone()));
         self.emit_poll(panel, &p);
-        self.queue_round(panel, None, cwd);
+        self.queue_round(panel, None, cwd, Some((m.id, m.seq)));
         Ok(())
     }
 

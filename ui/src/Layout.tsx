@@ -7,12 +7,13 @@ import { copyText, saveDownload } from "./clipboard";
 import { send, useSnapshot } from "./client";
 import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
-import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser, viewerPath } from "./browsers";
+import { zoomLevel } from "./zoom";
+import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser, useBrowserZoom, viewerPath, zoomBrowser } from "./browsers";
 import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal, typePaths } from "./terminals";
 import { takeDrops, useDropOver } from "./drop";
 import { useZoomed } from "./threadsUI";
-import { PanelDragLayer, startPanelDrag, useDraggedPanel } from "./panelDrag";
+import { movable, PanelDragLayer, startPanelDrag, useDraggedPanel } from "./panelDrag";
 import { KIND_LABEL, leaves, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
 
 interface Ctx {
@@ -174,8 +175,8 @@ function SplitView({ node, ctx }: { node: Extract<Node, { type: "split" }>; ctx:
 function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const focused = ctx.window.focus === panel.id;
   const dropOver = useDropOver();
-  // Only a panel with others beside it can be moved (not one filling the window for its drawer).
-  const alone = !!useZoomed() || leaves(ctx.window.root).length < 2;
+  const zoomed = !!useZoomed();
+  const solo = leaves(ctx.window.root).length < 2;
   const lifted = useDraggedPanel() === panel.id;
   const info = ctx.terms[panel.id];
   const [menu, setMenu] = useState(false);
@@ -187,6 +188,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const doc = docId ? ctx.docs.find((d) => d.id === docId) : undefined;
   // A document, diagram or file shown here came from a chat: a way back to that chat's 產出.
   const { state } = useSnapshot();
+  const can = movable(zoomed, solo, state?.sessions.find((s) => s.id === ctx.session)?.windows.length ?? 1);
   const file = panel.kind === "browser" ? viewerPath(panel.url) : null;
   const viewer = panel.kind === "browser" && (docId || file !== null);
   const sourceChat = useMemo(() => {
@@ -209,11 +211,11 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
           : "";
 
   return (
-    <section className={`panel${focused ? " focused" : ""}${alone ? "" : " movable"}${lifted ? " lifted" : ""}`} data-panel={panel.id} onMouseDown={focus}>
+    <section className={`panel${focused ? " focused" : ""}${can ? " movable" : ""}${lifted ? " lifted" : ""}`} data-panel={panel.id} onMouseDown={focus}>
       <header
         className="panel-head"
         onPointerDown={(e) =>
-          startPanelDrag(e, panel.id, alone)
+          startPanelDrag(e, panel.id, solo, can)
         }
       >
         <button className="kind" onClick={() => setMenu((v) => !v)} title={t("panel.switchKind")}>
@@ -373,6 +375,24 @@ function DocBody({ session, doc, rev, diagram, title }: { session: string; doc: 
   return <iframe ref={frame} className="doc-frame" title={doc} srcDoc={src} sandbox="allow-scripts allow-forms allow-modals" />;
 }
 
+/** The page's own zoom, apart from the app's: − 100% ＋ (the number goes back to 100%). */
+function PageZoom({ panel }: { panel: string }) {
+  const level = useBrowserZoom(panel);
+  return (
+    <span className="br-zoom">
+      <button type="button" title={t("browser.zoomOut")} aria-label={t("browser.zoomOut")} onClick={() => zoomBrowser(panel, -1)}>
+        −
+      </button>
+      <button type="button" className="br-zoom-pct" title={t("browser.zoomReset")} onClick={() => zoomBrowser(panel, 0)}>
+        {Math.round(level * 100)}%
+      </button>
+      <button type="button" title={t("browser.zoomIn")} aria-label={t("browser.zoomIn")} onClick={() => zoomBrowser(panel, 1)}>
+        ＋
+      </button>
+    </span>
+  );
+}
+
 function BrowserBody({ panel }: { panel: Panel }) {
   const url = panel.url ?? "";
   const [input, setInput] = useState(url);
@@ -407,14 +427,16 @@ function BrowserBody({ panel }: { panel: Panel }) {
       const r = el.getBoundingClientRect();
       return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
     };
+    // The app's zoom is part of where it goes: the same box in page pixels moves when it changes.
+    const keyOf = (b: ReturnType<typeof rect>) => JSON.stringify(b) + zoomLevel();
     const show = () => {
       const b = rect();
-      last = JSON.stringify(b);
+      last = keyOf(b);
       showBrowser(panel.id, urlRef.current, b, show);
     };
     const tick = () => {
       const b = rect();
-      const key = JSON.stringify(b);
+      const key = keyOf(b);
       if (key !== last) {
         last = key;
         moveBrowser(panel.id, b);
@@ -467,6 +489,7 @@ function BrowserBody({ panel }: { panel: Panel }) {
           spellCheck={false}
           title={title}
         />
+        {nativeBrowser && url && <PageZoom panel={panel.id} />}
       </form>
       <div ref={host} className="br-view">
         {!url ? (

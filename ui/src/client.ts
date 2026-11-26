@@ -71,6 +71,7 @@ export async function connect() {
     };
     sock.onmessage = (e) => {
       const m = JSON.parse(e.data);
+      if (m.t !== "ws_delta") flushDeltas();
       switch (m.t) {
         case "state":
           set({ state: m.state, terms: m.terms ?? {} });
@@ -165,10 +166,7 @@ export async function connect() {
           });
           break;
         case "ws_delta":
-          wsUpdate(m.panel, (w) => ({
-            ...w,
-            messages: w.messages.map((x) => (x.id === m.id && x.kind === "text" ? { ...x, text: x.text + m.text } : x)),
-          }));
+          addDelta(m.panel, m.id, m.text);
           break;
         case "ws_member":
           rosterUpsert(m.panel, m.member as Member);
@@ -181,7 +179,7 @@ export async function connect() {
           });
           break;
         case "ws_round":
-          wsUpdate(m.panel, (w) => ({ ...w, round: { active: m.active, queued: m.queued } }));
+          wsUpdate(m.panel, (w) => ({ ...w, round: { active: m.active, waiting: m.waiting } }));
           break;
         case "ws_msg_removed":
           wsUpdate(m.panel, (w) => ({ ...w, messages: w.messages.filter((x) => x.id !== m.id) }));
@@ -273,6 +271,31 @@ const wsSubs = new Map<string, Set<() => void>>();
 function wsChanged(panel: string) {
   wsSubs.get(panel)?.forEach((f) => f());
 }
+// Streamed text comes a few characters at a time, dozens of times a second. Each change redraws
+// the chat, so they are gathered and applied together, at most every DELTA_MS (anything else
+// from the daemon applies them first, to keep the order).
+const DELTA_MS = 50;
+const deltas = new Map<string, Map<string, string>>();
+let deltaTimer: ReturnType<typeof setTimeout> | null = null;
+
+function addDelta(panel: string, id: string, text: string) {
+  let p = deltas.get(panel);
+  if (!p) deltas.set(panel, (p = new Map()));
+  p.set(id, (p.get(id) ?? "") + text);
+  deltaTimer ??= setTimeout(flushDeltas, DELTA_MS);
+}
+
+function flushDeltas() {
+  if (deltaTimer) clearTimeout(deltaTimer);
+  deltaTimer = null;
+  for (const [panel, texts] of deltas)
+    wsUpdate(panel, (w) => ({
+      ...w,
+      messages: w.messages.map((x) => (x.kind === "text" && texts.has(x.id) ? { ...x, text: x.text + texts.get(x.id) } : x)),
+    }));
+  deltas.clear();
+}
+
 function wsUpdate(panel: string, f: (w: Workspace) => Workspace) {
   const cur = workspaces.get(panel);
   if (!cur) return;

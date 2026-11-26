@@ -101,6 +101,7 @@ export type Cmd =
   | { t: "window_close"; session: string; window: string }
   | { t: "panel_split"; panel: string; dir: Dir; kind?: PanelKind }
   | { t: "panel_move"; panel: string; target: string; side: "left" | "right" | "top" | "bottom" | "center" }
+  | { t: "panel_to_window"; panel: string; window: string | null }
   | { t: "panel_close"; panel: string }
   | { t: "panel_focus"; panel: string }
   | { t: "panel_kind"; panel: string; kind: PanelKind }
@@ -132,7 +133,7 @@ export type Cmd =
   | { t: "account_remove"; account: string }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
-  | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[] }
+  | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[]; refs?: OutputRef[] }
   | { t: "files_list"; panel: string }
   | { t: "file_get"; panel: string; path: string }
   | { t: "file_open"; panel: string; path: string }
@@ -146,12 +147,13 @@ export type Cmd =
   | { t: "todo_list_rename"; panel: string; list: string; name: string }
   | { t: "todo_list_remove"; panel: string; list: string }
   | { t: "todo_add"; panel: string; list: string; text: string }
-  | { t: "todo_update"; panel: string; list: string; id: string; text?: string; state?: TodoState }
+  | { t: "todo_update"; panel: string; list: string; id: string; text?: string; note?: string; state?: TodoState }
   | { t: "todo_move"; panel: string; list: string; id: string; index: number; archived: boolean }
   | { t: "todo_remove"; panel: string; list: string; id: string }
   | { t: "ws_perm"; request_id: string; decision: "allow" | "always" | "deny" }
   | { t: "ws_stop"; panel: string }
   | { t: "ws_send_now"; panel: string }
+  | { t: "ws_rewind"; panel: string; msg: string; text: string; files: string[]; refs: OutputRef[] }
   | { t: "models_list"; kind: AgentKind }
   | { t: "doc_open"; panel: string; doc: string }
   | { t: "artifact_open"; panel: string; artifact: string }
@@ -225,13 +227,24 @@ export interface DocVia {
 }
 
 /** The message a human message answers, as it read when sent. `from` is "you" or a member id. */
+/** One of the chat's outputs a human message points at. */
+export interface OutputRef {
+  kind: "doc" | "diagram" | "page" | "poll" | "todo" | "thread";
+  /** The artifact's, poll's, thread's or todo list's id. */
+  id: string;
+  /** A todo item's id, when it is one item of the list. */
+  item?: string;
+  /** Its title when sent. */
+  title: string;
+}
+
 export interface ReplyRef {
   msg: string;
   from: string;
   text: string;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; files?: string[]; usage?: TurnUsage } & (
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; files?: string[]; refs?: OutputRef[]; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
@@ -259,6 +272,8 @@ export interface Todo {
   id: string;
   num: number;
   text: string;
+  /** Its card: details in Markdown. */
+  note?: string;
   state: TodoState;
   /** Who is on it while it's being done: "you" or a member id. */
   worker?: string;
@@ -324,6 +339,12 @@ export interface Thread {
   removed?: boolean;
 }
 
+/** Who is answering, and the human's messages waiting for busy agents (`on`: the agents each waits for). */
+export interface Round {
+  active: boolean;
+  waiting: { msgs: string[]; on: string[] }[];
+}
+
 export interface Workspace {
   members: Member[];
   messages: Msg[];
@@ -332,7 +353,7 @@ export interface Workspace {
   todo_lists?: TodoList[];
   /** Documents and pages the agents made for this chat. */
   artifacts?: Artifact[];
-  round?: { active: boolean; queued: number };
+  round?: Round;
   settings?: ChatSettings;
   /** Agents that left, by member id, so their messages and votes keep their names. */
   former?: Record<string, { alias: string; kind: AgentKind }>;

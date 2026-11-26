@@ -152,11 +152,52 @@ pub struct Message {
     /// Project files the human attached (paths relative to the session's folder).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
+    /// Things from the chat's 產出 the human pointed at (dragged into the box).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<OutputRef>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
     #[serde(flatten)]
     pub body: Body,
+}
+
+/// One of the chat's outputs a human message points at.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OutputRef {
+    pub kind: RefKind,
+    /// The artifact's, poll's, thread's or todo list's id.
+    pub id: String,
+    /// A todo item's id, when it is one item of the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Its title when sent, so the message still reads right once it is gone.
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    Doc,
+    Diagram,
+    Page,
+    Poll,
+    Todo,
+    Thread,
+}
+
+impl RefKind {
+    fn word(self) -> &'static str {
+        match self {
+            RefKind::Doc => "document",
+            RefKind::Diagram => "diagram",
+            RefKind::Page => "web page",
+            RefKind::Poll => "poll",
+            RefKind::Todo => "todo list",
+            RefKind::Thread => "side thread",
+        }
+    }
 }
 
 /// What a reply points at, copied when sent so it still reads right if the original changes.
@@ -231,6 +272,57 @@ pub struct Workspace {
     /// Agents that left, by member id: their messages, votes and threads keep their names.
     #[serde(default)]
     pub former: std::collections::BTreeMap<String, FormerMember>,
+    /// Each agent's turns, oldest first: what lets a rewind take its conversation back.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub turns: std::collections::BTreeMap<String, Vec<TurnMark>>,
+    /// Rewinds an agent's conversation still has to take, done when it next starts: the point
+    /// to go back to (Claude: the message to resume at; Codex: the first turn to drop).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub rewinds: std::collections::BTreeMap<String, String>,
+}
+
+/// One turn of an agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct TurnMark {
+    /// The last message seq it was shown for this turn.
+    pub upto: u64,
+    /// The last seq in the chat when the turn ended; None while it runs (or if it never ended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<u64>,
+    /// Claude: its last message in the turn (to resume at). Codex: the turn's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<String>,
+}
+
+/// Where a rewind takes an agent's conversation.
+#[derive(Debug, PartialEq)]
+pub enum Back {
+    /// It has nothing from the target on: leave it.
+    Keep,
+    /// Go back to `point` (see `Workspace::rewinds`) and keep the first `turns` marks;
+    /// it has then been shown messages up to `seen`.
+    To { point: String, turns: usize, seen: u64 },
+    /// Nothing to go back to: a new conversation, fed the chat from the start.
+    Fresh,
+}
+
+impl Back {
+    /// Taking the chat back to before message `seq`: keep the turns that ended before it was sent.
+    pub fn plan(kind: AgentKind, marks: &[TurnMark], seq: u64) -> Back {
+        let Some(cut) = marks.iter().position(|t| !t.end.is_some_and(|e| e < seq)) else { return Back::Keep };
+        match kind {
+            // Claude resumes at the last message of the last turn kept.
+            AgentKind::Claude => match marks[..cut].iter().rposition(|t| t.point.is_some()) {
+                Some(i) => Back::To { point: marks[i].point.clone().unwrap(), turns: i + 1, seen: marks[i].upto },
+                None => Back::Fresh,
+            },
+            // Codex drops the first turn not kept and everything after it.
+            AgentKind::Codex => match (&marks[cut].point, cut) {
+                (Some(turn), 1..) => Back::To { point: turn.clone(), turns: cut, seen: marks[cut - 1].upto },
+                _ => Back::Fresh,
+            },
+        }
+    }
 }
 
 /// What the human set for one chat.
@@ -263,6 +355,9 @@ pub struct Todo {
     /// Shown as #n, per list.
     pub num: u64,
     pub text: String,
+    /// The item's card: details in Markdown (steps, links), written by the human or an agent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
     #[serde(default)]
     pub state: TodoState,
     /// Who is on it while it's being done ("you" or a member id). An agent holds it until it
@@ -447,6 +542,61 @@ pub struct FormerMember {
 }
 
 impl Workspace {
+    /// A reference as sent by the UI, checked against this chat and titled from it; None if
+    /// the chat has no such thing.
+    pub fn resolve_ref(&self, r: &OutputRef) -> Option<OutputRef> {
+        let title = match r.kind {
+            RefKind::Doc | RefKind::Diagram | RefKind::Page => self.artifacts.iter().find(|a| a.id == r.id && !a.removed).map(|a| a.title.clone())?,
+            RefKind::Poll => self.polls.iter().find(|p| p.id == r.id && !p.removed).map(|p| p.question.clone())?,
+            RefKind::Thread => self.threads.iter().find(|t| t.id == r.id && !t.removed).map(|t| t.quote.clone())?,
+            RefKind::Todo => {
+                let list = self.todo_lists.iter().find(|l| l.id == r.id)?;
+                match &r.item {
+                    Some(i) => list.items.iter().find(|t| &t.id == i).map(|t| t.text.clone())?,
+                    None => list.name.clone(),
+                }
+            }
+        };
+        Some(OutputRef { title, ..r.clone() })
+    }
+
+    /// How a reference reads for the agents: what it is and how to look at it.
+    pub fn ref_line(&self, r: &OutputRef) -> String {
+        const EXCERPT: usize = 600;
+        let gone = || format!("(reference: {} \"{}\" — the human has since removed it; it is no longer available)", r.kind.word(), r.title);
+        match r.kind {
+            RefKind::Doc | RefKind::Diagram | RefKind::Page => match self.artifacts.iter().find(|a| a.id == r.id && !a.removed) {
+                Some(a) if r.kind == RefKind::Page => format!("(reference: web page \"{}\" {})", a.title, a.target),
+                Some(a) => format!("(reference: {} `{}` \"{}\" — read it with doc_read, id \"{}\")", r.kind.word(), a.target, a.title, a.target),
+                None => gone(),
+            },
+            RefKind::Poll => match self.polls.iter().find(|p| p.id == r.id && !p.removed) {
+                Some(p) => format!("(reference: poll #{} \"{}\" — read it with poll_read, poll \"#{}\")", p.num, p.question, p.num),
+                None => gone(),
+            },
+            RefKind::Todo => match self.todo_lists.iter().find(|l| l.id == r.id) {
+                Some(l) => match r.item.as_ref().map(|i| l.items.iter().find(|t| &t.id == i)) {
+                    None => format!("(reference: todo list #{} \"{}\" — read it with todo_read, list \"#{}\")", l.num, l.name, l.num),
+                    Some(Some(t)) => format!("(reference: item #{} \"{}\" of todo list #{} \"{}\" — todo_read, list \"#{}\", shows the list)", t.num, t.text, l.num, l.name, l.num),
+                    Some(None) => gone(),
+                },
+                None => gone(),
+            },
+            // Threads have no tool: what it reached comes along.
+            RefKind::Thread => match self.threads.iter().find(|t| t.id == r.id && !t.removed) {
+                Some(t) => {
+                    let last = t.messages.iter().rev().find(|m| m.from != "you" && m.from != "system").map(|m| m.text.chars().take(EXCERPT).collect::<String>());
+                    let about = if t.whole { "a whole message".to_string() } else { format!("\"{}\"", t.quote.replace('\n', " ")) };
+                    match last {
+                        Some(l) => format!("(reference: side thread #{} about {about}; where it ended up: {})", t.num, l.replace('\n', " ")),
+                        None => format!("(reference: side thread #{} about {about}; nothing said in it yet)", t.num),
+                    }
+                }
+                None => gone(),
+            },
+        }
+    }
+
     /// Member id → alias, for everyone who has been in the chat (current names win).
     pub fn names(&self) -> std::collections::HashMap<String, String> {
         let mut n: std::collections::HashMap<String, String> = self.former.iter().map(|(id, f)| (id.clone(), f.alias.clone())).collect();
@@ -637,6 +787,7 @@ pub fn display_tool_name(name: &str) -> String {
         Some("todo_lists") | Some("todo_read") => format!("☑ {}", tr!("tool.todoList")),
         Some("todo_add") => format!("☑ {}", tr!("tool.todoAdd")),
         Some("todo_claim") => format!("☑ {}", tr!("tool.todoClaim")),
+        Some("todo_note") => format!("☑ {}", tr!("tool.todoNote")),
         Some("todo_done") => format!("☑ {}", tr!("tool.todoDone")),
         Some("todo_release") => format!("☑ {}", tr!("tool.todoRelease")),
         _ => name.to_string(),
@@ -728,7 +879,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");
@@ -868,5 +1019,95 @@ mod former_tests {
         let n = ws.names();
         assert_eq!(n.get("a").map(String::as_str), Some("codex"));
         assert_eq!(n.get("b").map(String::as_str), Some("claude"));
+    }
+}
+
+#[cfg(test)]
+mod rewind_tests {
+    use super::*;
+
+    fn mark(upto: u64, end: Option<u64>, point: &str) -> TurnMark {
+        TurnMark { upto, end, point: (!point.is_empty()).then(|| point.to_string()) }
+    }
+
+    #[test]
+    fn claude_goes_back_to_the_last_turn_that_ended_before_the_target() {
+        let marks = [mark(4, Some(6), "u1"), mark(8, Some(11), "u2"), mark(12, Some(14), "u3")];
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 9), Back::To { point: "u1".into(), turns: 1, seen: 4 });
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 12), Back::To { point: "u2".into(), turns: 2, seen: 8 });
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 15), Back::Keep, "it has nothing from the target on");
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 3), Back::Fresh);
+    }
+
+    #[test]
+    fn a_turn_still_answering_when_the_target_came_is_dropped() {
+        // Shown up to 8, but its answer ran past the target (10).
+        let marks = [mark(4, Some(6), "u1"), mark(8, Some(12), "u2")];
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 10), Back::To { point: "u1".into(), turns: 1, seen: 4 });
+        let unfinished = [mark(4, Some(6), "u1"), mark(8, None, "")];
+        assert_eq!(Back::plan(AgentKind::Claude, &unfinished, 20), Back::To { point: "u1".into(), turns: 1, seen: 4 });
+    }
+
+    #[test]
+    fn claude_skips_turns_with_nothing_to_resume_at() {
+        let marks = [mark(4, Some(6), "u1"), mark(7, Some(8), ""), mark(12, Some(14), "u3")];
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 10), Back::To { point: "u1".into(), turns: 1, seen: 4 });
+    }
+
+    #[test]
+    fn codex_drops_from_the_first_turn_not_kept() {
+        let marks = [mark(4, Some(6), "t1"), mark(8, Some(11), "t2"), mark(12, Some(14), "t3")];
+        assert_eq!(Back::plan(AgentKind::Codex, &marks, 9), Back::To { point: "t2".into(), turns: 1, seen: 4 });
+        assert_eq!(Back::plan(AgentKind::Codex, &marks, 5), Back::Fresh, "no turn kept");
+        assert_eq!(Back::plan(AgentKind::Codex, &marks, 15), Back::Keep);
+    }
+
+    #[test]
+    fn an_agent_that_joined_after_the_target_starts_fresh() {
+        let marks = [mark(12, Some(14), "u3")];
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 10), Back::Fresh);
+        assert_eq!(Back::plan(AgentKind::Claude, &[], 10), Back::Keep);
+    }
+}
+
+#[cfg(test)]
+mod ref_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn ws() -> Workspace {
+        serde_json::from_value(json!({
+            "members": [], "messages": [],
+            "artifacts": [
+                { "id": "a1", "kind": "doc", "target": "d9", "title": "BBU-4398 合併審查", "by": "m", "created": 1, "updated": 1 },
+                { "id": "a2", "kind": "doc", "target": "d8", "title": "舊的", "by": "m", "created": 1, "updated": 1, "removed": true }
+            ],
+            "todo_lists": [{ "id": "l1", "num": 2, "name": "十題二分搜尋", "items": [{ "id": "i1", "num": 3, "text": "寫測試", "state": "todo", "by": "you", "created": 1 }], "next_item": 4, "created": 1 }]
+        }))
+        .unwrap()
+    }
+
+    fn r(kind: RefKind, id: &str, item: Option<&str>) -> OutputRef {
+        OutputRef { kind, id: id.into(), item: item.map(Into::into), title: String::new() }
+    }
+
+    #[test]
+    fn only_this_chats_outputs_are_taken_and_titled_from_it() {
+        let w = ws();
+        assert_eq!(w.resolve_ref(&r(RefKind::Doc, "a1", None)).unwrap().title, "BBU-4398 合併審查");
+        assert_eq!(w.resolve_ref(&r(RefKind::Todo, "l1", Some("i1"))).unwrap().title, "寫測試");
+        assert!(w.resolve_ref(&r(RefKind::Doc, "elsewhere", None)).is_none());
+        assert!(w.resolve_ref(&r(RefKind::Doc, "a2", None)).is_none(), "taken off the list");
+    }
+
+    #[test]
+    fn agents_are_told_what_it_is_and_how_to_read_it() {
+        let w = ws();
+        let line = w.ref_line(&w.resolve_ref(&r(RefKind::Doc, "a1", None)).unwrap());
+        assert!(line.contains("`d9`") && line.contains("doc_read"), "{line}");
+        let line = w.ref_line(&w.resolve_ref(&r(RefKind::Todo, "l1", Some("i1"))).unwrap());
+        assert!(line.contains("item #3") && line.contains("todo list #2"), "{line}");
+        let gone = OutputRef { title: "舊的".into(), ..r(RefKind::Doc, "a2", None) };
+        assert!(w.ref_line(&gone).contains("no longer available"));
     }
 }

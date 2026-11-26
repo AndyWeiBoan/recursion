@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 mod codex;
 mod models;
 mod polls;
+mod rewind;
 mod threads;
 mod todos;
 pub use todos::tools as todo_tools;
@@ -99,20 +100,21 @@ const MERGE_WINDOW_MS: u64 = 1500;
 
 /// Per-workspace round state (not persisted).
 ///
-/// Turn-based chat: a human message opens a round; every addressed agent answers once, in
-/// parallel; then everyone waits for the human again. Human messages sent while a round is
-/// running are queued for the next round.
+/// Each agent is a lock, held while it answers. A human message needs the locks of the agents it
+/// is for (everyone's when it names nobody) and goes out once it has all of them; until then it
+/// waits in `queue`, and no later message that needs one of the same agents passes it. So agents
+/// that are free answer right away, and each agent gets the human's messages in the order sent.
 #[derive(Default)]
 struct Runtime {
-    /// Members that still owe a reply in the current round.
-    speaking: HashSet<String>,
-    /// Targets accumulated from human messages not yet delivered (None inside = everyone).
-    queued_targets: Option<HashSet<String>>,
-    queued_all: bool,
-    /// Human messages waiting for the next round.
-    queued_count: u32,
-    /// Bumped on every human message; a delayed round start only fires if still current.
+    /// Members answering now: the locks taken.
+    busy: HashSet<String>,
+    /// Human messages not delivered yet, oldest first.
+    queue: Vec<Batch>,
+    /// Bumped on every human message; the merge window only closes if still current.
     send_gen: u64,
+    /// member → messages left out of its last delivery because their author was mid-answer;
+    /// they go with its next one.
+    held: HashMap<String, HashSet<u64>>,
     /// Members that must be re-delivered when their in-flight turn ends (round started while busy).
     pending: HashSet<String>,
     /// Project folder of this workspace (set on every human message).
@@ -130,6 +132,94 @@ struct Runtime {
     compacting: HashMap<String, String>,
     /// Compacting members a round skipped: they get their own round once the compact is done.
     missed: HashSet<String>,
+    /// A rewind is under way (see `rewind`).
+    rewinding: bool,
+}
+
+impl Runtime {
+    /// Take the locks of every waiting batch whose agents are all free and that no earlier
+    /// waiting batch needs one of. Returns the agents to deliver to.
+    fn release(&mut self, members: &[String]) -> Vec<String> {
+        // Locks held by answers, or wanted by a batch still waiting ahead.
+        let mut taken = self.busy.clone();
+        let mut go = vec![];
+        let mut i = 0;
+        while i < self.queue.len() && !self.queue[i].open {
+            let needs = self.queue[i].needs(members);
+            if needs.iter().any(|m| taken.contains(m)) {
+                taken.extend(needs);
+                i += 1;
+                continue;
+            }
+            self.queue.remove(i);
+            // A compacting agent doesn't hold anyone up; it catches up after.
+            let (compacting, needs): (Vec<String>, Vec<String>) = needs.into_iter().partition(|m| self.compacting.contains_key(m));
+            self.missed.extend(compacting);
+            taken.extend(needs.iter().cloned());
+            self.busy.extend(needs.iter().cloned());
+            go.extend(needs);
+        }
+        go
+    }
+
+    /// Everything waiting becomes one batch, and the agents it needs drop their locks for it.
+    /// Returns those agents.
+    fn force(&mut self, members: &[String]) -> Vec<String> {
+        let mut all = Batch { to: Some(HashSet::new()), msgs: vec![], open: false };
+        for b in self.queue.drain(..) {
+            all.add(b.to, b.msgs);
+        }
+        let needs = all.needs(members);
+        for m in &needs {
+            self.busy.remove(m);
+        }
+        self.queue.push(all);
+        self.send_gen += 1;
+        needs
+    }
+
+    /// The batches that wait, each with its message ids and the agents it waits for.
+    fn waiting(&self, members: &[String]) -> Vec<Value> {
+        let mut taken = self.busy.clone();
+        let mut out = vec![];
+        for b in &self.queue {
+            let needs = b.needs(members);
+            let on: Vec<&String> = needs.iter().filter(|m| taken.contains(*m)).collect();
+            if !on.is_empty() && !b.msgs.is_empty() {
+                out.push(json!({ "msgs": b.msgs.iter().map(|(id, _)| id).collect::<Vec<_>>(), "on": on }));
+            }
+            taken.extend(needs);
+        }
+        out
+    }
+}
+
+/// Human messages sent within the merge window of each other: they go out together.
+struct Batch {
+    /// The members they are for; None = everyone.
+    to: Option<HashSet<String>>,
+    /// (id, seq) of each message; none when it only catches an agent up.
+    msgs: Vec<(String, u64)>,
+    /// Still inside the merge window, taking more messages.
+    open: bool,
+}
+
+impl Batch {
+    /// The locks it needs, among the members there are now.
+    fn needs(&self, members: &[String]) -> Vec<String> {
+        members.iter().filter(|m| self.to.as_ref().is_none_or(|t| t.contains(*m))).cloned().collect()
+    }
+
+    fn add(&mut self, to: Option<HashSet<String>>, msgs: impl IntoIterator<Item = (String, u64)>) {
+        self.to = match (self.to.take(), to) {
+            (Some(mut a), Some(b)) => {
+                a.extend(b);
+                Some(a)
+            }
+            _ => None,
+        };
+        self.msgs.extend(msgs);
+    }
 }
 
 pub struct Hub {
@@ -160,7 +250,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], usage: None, body }
 }
 
 impl Hub {
@@ -460,7 +550,7 @@ impl Hub {
 
     pub fn snapshot(&self, panel: &str) -> Value {
         let round = self.round_state(panel);
-        self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws, "round": { "active": round["active"], "queued": round["queued"] } }))
+        self.with_ws(panel, |ws| json!({ "t": "ws_state", "panel": panel, "ws": ws, "round": { "active": round["active"], "waiting": round["waiting"] } }))
     }
 
     fn push_msg(&self, panel: &str, mut msg: Message) -> Message {
@@ -682,7 +772,7 @@ impl Hub {
         }
         // What it missed meanwhile comes as a round of its own, so it never held anyone else's up.
         if self.rt(panel, |r| r.missed.remove(member) | r.pending.remove(member)) {
-            self.queue_round(panel, Some(vec![member.to_string()]), cwd);
+            self.queue_round(panel, Some(vec![member.to_string()]), cwd, None);
         }
     }
 
@@ -760,38 +850,40 @@ impl Hub {
             })
         });
         self.emit(json!({ "t": "ws_member_removed", "panel": panel, "member": member }));
-        let next = self.rt(panel, |r| {
+        self.rt(panel, |r| {
             r.roster_version += 1;
             r.pending.remove(member);
-            let was = r.speaking.remove(member);
-            was && r.speaking.is_empty() && r.queued_count > 0
+            r.held.remove(member);
+            r.busy.remove(member);
         });
-        self.emit_round(panel);
         if let Some(a) = alias {
             self.system(panel, "system", tr!("agent.left", alias = a), false);
         }
-        if let (true, Some(cwd)) = (next, cwd) {
-            self.start_round(panel, &cwd).await;
+        match cwd {
+            Some(cwd) => self.pump(panel, &cwd).await,
+            None => self.emit_round(panel),
         }
     }
 
     fn emit_round(&self, panel: &str) {
-        let (active, queued) = self.rt(panel, |r| (!r.speaking.is_empty(), r.queued_count));
-        self.emit(json!({ "t": "ws_round", "panel": panel, "active": active, "queued": queued }));
+        self.emit(self.round_state(panel));
     }
 
+    /// Who is answering, and each waiting batch with the agents it waits for.
     pub fn round_state(&self, panel: &str) -> Value {
-        let (active, queued) = self.rt(panel, |r| (!r.speaking.is_empty(), r.queued_count));
-        json!({ "t": "ws_round", "panel": panel, "active": active, "queued": queued })
+        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect());
+        self.rt(panel, |r| json!({ "t": "ws_round", "panel": panel, "active": !r.busy.is_empty(), "waiting": r.waiting(&members) }))
     }
 
-    /// A human message. It is shown right away; the round starts once the human has been quiet
-    /// for MERGE_WINDOW_MS, or — if a round is running — right after that round ends.
-    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>, files: Vec<String>) -> Result<(), String> {
+    /// A human message. It is shown right away and goes out once the human has been quiet for
+    /// MERGE_WINDOW_MS and the agents it is for are free (see `Runtime`).
+    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>, files: Vec<String>, refs: Vec<crate::workspace::OutputRef>) -> Result<(), String> {
         let text = text.trim().to_string();
         // Only files in the project, or picked from the computer (granted).
         let files: Vec<String> = files.into_iter().filter(|f| self.usable_file(panel, &cwd, f).is_some()).collect();
-        if text.is_empty() && files.is_empty() {
+        // Only this chat's outputs.
+        let refs: Vec<_> = self.with_ws(panel, |ws| refs.iter().filter_map(|r| ws.resolve_ref(r)).collect());
+        if text.is_empty() && files.is_empty() && refs.is_empty() {
             return Ok(());
         }
         let members: Vec<Member> = self.with_ws(panel, |ws| ws.members.clone());
@@ -810,6 +902,7 @@ impl Hub {
         let mut m = msg("you", Body::Text { text }, false);
         m.to = if all { vec![] } else { targeted.clone() };
         m.files = files;
+        m.refs = refs;
         m.via = via;
         m.reply_to = reply_to.and_then(|id| {
             self.with_ws(panel, |ws| {
@@ -823,21 +916,21 @@ impl Hub {
                 })
             })
         });
-        self.push_msg(panel, m);
-        self.queue_round(panel, if all { None } else { Some(targeted) }, cwd);
+        let m = self.push_msg(panel, m);
+        self.queue_round(panel, if all { None } else { Some(targeted) }, cwd, Some((m.id, m.seq)));
         Ok(())
     }
 
-    /// Something for the agents arrived (`targets` None = everyone): open a round for it once the
-    /// merge window passes and nobody is still speaking.
-    fn queue_round(self: &Arc<Self>, panel: &str, targets: Option<Vec<String>>, cwd: String) {
+    /// Something for the agents arrived (`targets` None = everyone): it joins the batch still in
+    /// its merge window, or starts one; once the window passes the batch goes out when it can.
+    fn queue_round(self: &Arc<Self>, panel: &str, targets: Option<Vec<String>>, cwd: String, msg: Option<(String, u64)>) {
+        let to = targets.map(|t| t.into_iter().collect::<HashSet<_>>());
         let gen = self.rt(panel, |r| {
             r.cwd = cwd.clone();
-            match targets {
-                None => r.queued_all = true,
-                Some(t) => r.queued_targets.get_or_insert_with(HashSet::new).extend(t),
+            match r.queue.last_mut().filter(|b| b.open) {
+                Some(b) => b.add(to, msg),
+                None => r.queue.push(Batch { to, msgs: msg.into_iter().collect(), open: true }),
             }
-            r.queued_count += 1;
             r.send_gen += 1;
             r.send_gen
         });
@@ -845,43 +938,38 @@ impl Hub {
         let (hub, panel, cwd) = (self.clone(), panel.to_string(), cwd);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(MERGE_WINDOW_MS)).await;
-            let ready = hub.rt(&panel, |r| r.send_gen == gen && r.speaking.is_empty());
-            if ready {
-                hub.start_round(&panel, &cwd).await;
+            let closed = hub.rt(&panel, |r| {
+                let current = r.send_gen == gen;
+                if let Some(b) = r.queue.last_mut().filter(|_| current) {
+                    b.open = false;
+                }
+                current
+            });
+            if closed {
+                hub.pump(&panel, &cwd).await;
             }
         });
     }
 
-    /// "Interrupt this round and send now": stop agents, then open a round with the queued messages.
+    /// "Interrupt and send now": everything waiting goes out at once, taking its agents' locks
+    /// by force. Only those agents are interrupted; the others keep answering.
     pub async fn send_now(self: &Arc<Self>, panel: &str, cwd: String) {
-        self.interrupt_all(panel).await;
-        self.rt(panel, |r| r.speaking.clear());
-        self.start_round(panel, &cwd).await;
+        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect());
+        let needs = self.rt(panel, |r| r.force(&members));
+        let answering: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().filter(|m| m.status != MemberStatus::Idle && needs.contains(&m.id)).map(|m| m.id.clone()).collect());
+        for m in answering {
+            self.interrupt(panel, &m).await;
+        }
+        self.pump(panel, &cwd).await;
     }
 
-    async fn start_round(self: &Arc<Self>, panel: &str, cwd: &str) {
+    /// Send every waiting batch whose agents are all free and that no earlier waiting batch
+    /// needs one of: it takes their locks.
+    async fn pump(self: &Arc<Self>, panel: &str, cwd: &str) {
         let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect());
-        let targets: Vec<String> = self.rt(panel, |r| {
-            if r.queued_count == 0 {
-                return vec![];
-            }
-            let t: Vec<String> = if r.queued_all {
-                members.clone()
-            } else {
-                let q = r.queued_targets.clone().unwrap_or_default();
-                members.iter().filter(|m| q.contains(*m)).cloned().collect()
-            };
-            r.queued_all = false;
-            r.queued_targets = None;
-            r.queued_count = 0;
-            // A compacting agent doesn't hold the round up; it catches up after.
-            let (busy, t): (Vec<String>, Vec<String>) = t.into_iter().partition(|m| r.compacting.contains_key(m));
-            r.missed.extend(busy);
-            r.speaking = t.iter().cloned().collect();
-            t
-        });
+        let go = self.rt(panel, |r| r.release(&members));
         self.emit_round(panel);
-        for t in targets {
+        for t in go {
             self.trigger(panel, &t, cwd).await;
         }
     }
@@ -893,31 +981,29 @@ impl Hub {
             self.rt(panel, |r| r.pending.insert(member.to_string()));
             return;
         }
-        if let Err(e) = self.deliver(panel, &m, cwd).await {
-            self.system(panel, &m.id, e, true);
-            self.update_member(panel, &m.id, |m| m.status = MemberStatus::Idle);
-            spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
-        }
-    }
-
-    /// An agent finished (or failed) its reply for this round.
-    async fn member_done(self: &Arc<Self>, panel: &str, member: &str, cwd: &str) {
-        let (round_over, next) = self.rt(panel, |r| {
-            let was = r.speaking.remove(member);
-            let over = was && r.speaking.is_empty();
-            (over, over && r.queued_count > 0)
-        });
-        if round_over {
-            self.emit_round(panel);
-            if next {
-                self.start_round(panel, cwd).await;
+        match self.deliver(panel, &m, cwd).await {
+            Ok(true) => {}
+            // Nothing new for it after all: it doesn't keep its lock.
+            Ok(false) => spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string()),
+            Err(e) => {
+                self.system(panel, &m.id, e, true);
+                self.update_member(panel, &m.id, |m| m.status = MemberStatus::Idle);
+                spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
             }
         }
     }
 
+    /// An agent finished (or failed) its answer: its lock is free for whatever waits on it.
+    async fn member_done(self: &Arc<Self>, panel: &str, member: &str, cwd: &str) {
+        if self.rt(panel, |r| r.busy.remove(member)) {
+            self.pump(panel, cwd).await;
+        }
+    }
+
     /// Called when an agent's turn ends: hide [PASS], then either re-deliver (it was interrupted
-    /// into a new round) or mark it done for the round. @mentions never wake anyone.
+    /// by a forced send) or free its lock. @mentions never wake anyone.
     async fn turn_ended(self: &Arc<Self>, panel: String, member: String, text: String, text_ids: Vec<String>, cwd: String) {
+        self.turn_finished(&panel, &member);
         // The marker only ever opens the turn's first message; the rest of the turn's text stays.
         let marked = text_ids.first().is_some_and(|first| self.take_reply_marker(&panel, first).is_some());
         let text = if marked { parse_reply_marker(&text).map(|(_, rest)| rest.to_string()).or_else(|| leading_quote(&text).map(|(_, rest)| rest.to_string())).unwrap_or(text) } else { text };
@@ -1050,10 +1136,8 @@ impl Hub {
         self.interrupt_all(panel).await;
         self.rt(panel, |r| {
             r.pending.clear();
-            r.speaking.clear();
-            r.queued_all = false;
-            r.queued_targets = None;
-            r.queued_count = 0;
+            r.busy.clear();
+            r.queue.clear();
             r.send_gen += 1;
         });
         self.emit_round(panel);
@@ -1111,14 +1195,26 @@ impl Hub {
     }
 
     /// Send an agent everything it hasn't seen yet (other people's text), as one user turn.
-    async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
+    async fn deliver(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<bool, String> {
         /// At most this many attached pictures per delivery, each at most this big (what the models take).
         const MAX_IMAGES: usize = 5;
         const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
-        let (batch, upto, images) = self.with_ws(panel, |ws| {
+        // Its human messages still waiting (and anything after) aren't its to answer yet; others'
+        // answers still being written go next time, whole.
+        let members: Vec<String> = self.with_ws(panel, |ws| ws.members.iter().map(|x| x.id.clone()).collect());
+        let (waiting, answering, late) = self.rt(panel, |r| {
+            let waiting = r.queue.iter().filter(|b| b.needs(&members).contains(&m.id)).flat_map(|b| b.msgs.iter().map(|x| x.1)).min();
+            let answering: HashSet<String> = r.busy.iter().filter(|b| **b != m.id).cloned().collect();
+            (waiting, answering, r.held.get(&m.id).cloned().unwrap_or_default())
+        });
+        let (batch, upto, images, held) = self.with_ws(panel, |ws| {
             let names = ws.names();
-            let unseen: Vec<&Message> = ws.messages.iter().filter(|x| x.seq > m.seen && (x.from != m.id || x.from_thread.is_some())).collect();
-            let upto = ws.next_seq;
+            let upto = waiting.unwrap_or(ws.next_seq + 1);
+            let new = |x: &&Message| ((x.seq > m.seen && x.seq < upto) || late.contains(&x.seq)) && (x.from != m.id || x.from_thread.is_some());
+            let (held, unseen): (Vec<&Message>, Vec<&Message>) = ws.messages.iter().filter(new).partition(|x| answering.contains(&x.from));
+            let held: HashSet<u64> = held.iter().map(|x| x.seq).collect();
+            // `seen` is the last seq handed over, so the next delivery starts after it.
+            let upto = upto - 1;
             // Pictures the human attached go to the agent as images, not just paths.
             let images: Vec<String> = unseen.iter().filter(|x| x.from == "you").flat_map(|x| x.files.iter().filter(|f| crate::files::is_image(f)).cloned()).collect();
             // What a message answers, for its header: `, replying to @x's message: "…"`.
@@ -1142,6 +1238,10 @@ impl Hub {
                         if !pics.is_empty() {
                             files.push_str(&format!("\n(attached images, included with this message: {})", pics.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
                         }
+                        for r in &x.refs {
+                            files.push('\n');
+                            files.push_str(&ws.ref_line(r));
+                        }
                         Some(format!("[#{} human → {to}{}]: {text}{files}", x.seq, re(x)))
                     }
                     Body::Text { text } if x.from_thread.is_some() => Some(format!(
@@ -1161,7 +1261,7 @@ impl Hub {
                     _ => None,
                 })
                 .collect();
-            (lines, upto, images)
+            (lines, upto, images, held)
         });
         // The latest few, each small enough for the model to take.
         let images: Vec<std::path::PathBuf> = images
@@ -1182,7 +1282,7 @@ impl Hub {
             omitted += 1;
         }
         if batch.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let roster = self.with_ws(panel, |ws| {
             ws.members.iter().map(|x| format!("@{}{}", x.alias, x.model.as_ref().map(|mm| format!(" ({mm})")).unwrap_or_default())).collect::<Vec<_>>().join(", ")
@@ -1257,7 +1357,7 @@ impl Hub {
         }
         self.update_member(panel, &m.id, |x| {
             x.status = MemberStatus::Thinking;
-            x.seen = upto;
+            x.seen = upto.max(m.seen);
         });
         let sent = if m.kind == AgentKind::Codex {
             let rpc = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone());
@@ -1283,8 +1383,12 @@ impl Hub {
                 }
             });
             undo_seen();
+        } else {
+            self.rt(panel, |r| r.held.insert(m.id.clone(), held));
+            let turn = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).and_then(|p| p.codex.clone()).and_then(|rpc| rpc.turn_id.lock().unwrap().clone());
+            self.turn_started(panel, &m.id, m.kind, upto.max(m.seen), turn);
         }
-        sent
+        sent.map(|_| true)
     }
 
     async fn spawn(self: &Arc<Self>, panel: &str, m: &Member, cwd: &str) -> Result<(), String> {
@@ -1308,6 +1412,10 @@ impl Hub {
         }
         if let Some(sid) = &m.cli_session_id {
             cmd.args(["--resume", sid]);
+            // Rewound: its conversation goes on from this message of it.
+            if let Some(at) = self.rewind_point(panel, &m.id) {
+                cmd.args(["--resume-session-at", &at]);
+            }
         }
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         cmd.current_dir(&dir).env("PATH", &env.path).env("CLAUDE_CODE_ENTRYPOINT", "recursion");
@@ -1384,11 +1492,13 @@ struct ClaudeReader {
     turn_text_ids: Vec<String>,
     /// Tokens before and after the last `/compact`, from its `compact_boundary`.
     compacted: Option<(u64, u64)>,
+    /// Its latest message in this turn (not a subagent's): where a rewind can resume.
+    last_uuid: Option<String>,
 }
 
 impl ClaudeReader {
     fn new(hub: Arc<Hub>, panel: String, member: String, cwd: String, base_cost: f64) -> Self {
-        Self { hub, panel, member, cwd, base_cost, last_cost: 0.0, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new(), compacted: None }
+        Self { hub, panel, member, cwd, base_cost, last_cost: 0.0, blocks: HashMap::new(), tools: HashMap::new(), streamed_api_ids: HashSet::new(), turn_text: String::new(), turn_text_ids: Vec::new(), compacted: None, last_uuid: None }
     }
 
     fn new_msg(&mut self, body: Body, streaming: bool) -> String {
@@ -1486,6 +1596,9 @@ impl ClaudeReader {
                 let used = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().map(|k| u[k].as_u64().unwrap_or(0)).sum::<u64>();
                 if used > 0 && v["parent_tool_use_id"].is_null() {
                     hub.update_member(&panel, &member, |m| m.context_used = used);
+                }
+                if let (true, Some(uuid)) = (v["parent_tool_use_id"].is_null(), v["uuid"].as_str()) {
+                    self.last_uuid = Some(uuid.to_string());
                 }
                 let api_id = v["message"]["id"].as_str().unwrap_or("").to_string();
                 let streamed = self.streamed_api_ids.contains(&api_id);
@@ -1612,6 +1725,9 @@ impl ClaudeReader {
                     return;
                 }
                 hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
+                if let Some(uuid) = self.last_uuid.take() {
+                    hub.turn_point(&panel, &member, uuid);
+                }
                 if v["is_error"].as_bool().unwrap_or(false) && v["subtype"] != "error_during_execution" {
                     let text = v["result"].as_str().unwrap_or("Claude reported an error").to_string();
                     hub.system(&panel, &member, text, true);
@@ -1724,5 +1840,126 @@ mod reply_marker_tests {
         assert_eq!(rest, "台灣最高的山是**玉山**");
         assert!(leading_quote("> ok\n\nyes").is_none(), "too short to trust");
         assert!(leading_quote("no quote").is_none());
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::{Batch, Runtime};
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A human message for `to` (empty = everyone), past its merge window.
+    fn say(r: &mut Runtime, seq: u64, to: &[&str]) {
+        let to = (!to.is_empty()).then(|| ids(to).into_iter().collect());
+        r.queue.push(Batch { to, msgs: vec![(format!("m{seq}"), seq)], open: false });
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn free_agents_answer_while_others_are_busy() {
+        let members = ids(&["master", "sub1", "sub2"]);
+        let mut r = Runtime::default();
+        say(&mut r, 1, &["master", "sub1"]);
+        assert_eq!(sorted(r.release(&members)), ids(&["master", "sub1"]));
+        say(&mut r, 2, &["sub2"]);
+        assert_eq!(r.release(&members), ids(&["sub2"]));
+        assert!(r.queue.is_empty());
+    }
+
+    #[test]
+    fn a_message_waits_whole_when_one_of_its_agents_is_busy() {
+        let members = ids(&["a", "b"]);
+        let mut r = Runtime::default();
+        say(&mut r, 1, &["a"]);
+        r.release(&members);
+        say(&mut r, 2, &["a", "b"]);
+        assert!(r.release(&members).is_empty(), "b is free but goes with a");
+        assert_eq!(r.waiting(&members)[0]["on"], serde_json::json!(["a"]));
+        r.busy.remove("a");
+        assert_eq!(sorted(r.release(&members)), ids(&["a", "b"]));
+    }
+
+    #[test]
+    fn no_passing_an_earlier_waiting_message() {
+        // The issue's example: "everyone" waits on master and sub1, so a later message for
+        // the free sub2 waits behind it.
+        let members = ids(&["master", "sub1", "sub2"]);
+        let mut r = Runtime::default();
+        say(&mut r, 1, &["master", "sub1"]);
+        r.release(&members);
+        say(&mut r, 2, &["sub2"]);
+        r.release(&members);
+        r.busy.remove("sub2");
+        say(&mut r, 3, &[]);
+        say(&mut r, 4, &["sub2"]);
+        assert!(r.release(&members).is_empty());
+        let w = r.waiting(&members);
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[1]["on"], serde_json::json!(["sub2"]), "waits on sub2, which the earlier message wants");
+        // Everyone free: "everyone" goes first and takes sub2; the last one waits for it.
+        r.busy.clear();
+        assert_eq!(sorted(r.release(&members)), members);
+        assert_eq!(r.queue.len(), 1);
+        r.busy.remove("sub2");
+        assert_eq!(r.release(&members), ids(&["sub2"]));
+    }
+
+    #[test]
+    fn everyone_is_not_starved_by_small_messages() {
+        let members = ids(&["a", "b"]);
+        let mut r = Runtime::default();
+        say(&mut r, 1, &["a"]);
+        r.release(&members);
+        say(&mut r, 2, &[]);
+        for seq in 3..6 {
+            say(&mut r, seq, &["b"]);
+            assert!(r.release(&members).is_empty(), "b's messages queue behind everyone's");
+        }
+        r.busy.clear();
+        assert_eq!(sorted(r.release(&members)), members);
+        assert_eq!(r.queue[0].msgs[0].1, 3);
+    }
+
+    #[test]
+    fn forcing_takes_only_the_needed_locks() {
+        let members = ids(&["a", "b", "c"]);
+        let mut r = Runtime::default();
+        say(&mut r, 1, &["a", "b"]);
+        r.release(&members);
+        say(&mut r, 2, &["a"]);
+        assert_eq!(r.force(&members), ids(&["a"]));
+        assert_eq!(r.release(&members), ids(&["a"]));
+        assert!(r.busy.contains("b"), "b keeps answering");
+    }
+
+    #[test]
+    fn a_batch_in_its_merge_window_waits_and_merges() {
+        let members = ids(&["a", "b", "c"]);
+        let mut r = Runtime::default();
+        r.queue.push(Batch { to: Some(ids(&["a"]).into_iter().collect()), msgs: vec![("m1".into(), 1)], open: true });
+        assert!(r.release(&members).is_empty());
+        r.queue[0].add(Some(ids(&["b"]).into_iter().collect()), [("m2".into(), 2)]);
+        r.queue[0].open = false;
+        assert_eq!(r.release(&members), ids(&["a", "b"]));
+        let mut b = Batch { to: Some(ids(&["a"]).into_iter().collect()), msgs: vec![], open: true };
+        b.add(None, []);
+        assert_eq!(b.needs(&members), members, "one for everyone makes the batch everyone's");
+    }
+
+    #[test]
+    fn a_compacting_agent_holds_nobody_up() {
+        let members = ids(&["a", "b"]);
+        let mut r = Runtime::default();
+        r.compacting.insert("a".into(), String::new());
+        say(&mut r, 1, &[]);
+        assert_eq!(r.release(&members), ids(&["b"]));
+        assert!(r.missed.contains("a"));
     }
 }

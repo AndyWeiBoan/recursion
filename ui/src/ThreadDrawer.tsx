@@ -9,6 +9,7 @@ import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
 import { ImageThumb, isImagePath } from "./Files";
 import { TodoPane } from "./Todos";
+import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
 import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
 
 const STATUS: Record<Thread["status"], string> = {
@@ -247,8 +248,9 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
 function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }) {
   // What the human asked about the quote: says what the thread is about better than the quote alone.
   const ask = t.messages.find((m) => m.from === "you")?.text.replace(/\s+/g, " ").trim();
+  const ref: Payload = { ref: { kind: "thread", id: t.id, title: t.quote } };
   return (
-    <div className={`td-row st-${t.status}`}>
+    <div className={`td-row st-${t.status}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.thread} #${t.num}「${t.quote.slice(0, 30)}」`)}>
       <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
         <span className="td-num">
           <span className="td-icon">{ICON.thread}</span>#{t.num}
@@ -272,6 +274,7 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
       <button className="td-goto" onClick={() => showInChat(t.msg)} title={tr("thread.findOriginal")} aria-label={tr("thread.originalOf", { num: t.num })}>
         ↖
       </button>
+      <QuoteButton panel={panel} p={ref} />
       <RemoveButton panel={panel} id={t.id} name={tr("thread.name", { num: t.num })} />
     </div>
   );
@@ -360,7 +363,7 @@ function imageMatches(path: string, query: string) {
 
 function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: string; at: number }) {
   return (
-    <div className="td-row">
+    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, { image: path }, `🖼 ${path.split("/").pop()}`)}>
       <button className="td-open td-image" onClick={() => (send({ t: "file_open", panel, path }), unzoom())} title={tr("outputs.openImage")}>
         <ImageThumb panel={panel} path={path} size={56} />
         <span className="td-main">
@@ -370,6 +373,7 @@ function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: 
           </span>
         </span>
       </button>
+      <QuoteButton panel={panel} p={{ image: path }} />
       <button className="td-goto" onClick={() => showInChat(msg)} title={tr("outputs.findMessage")} aria-label={tr("outputs.findMessage")}>
         ↗
       </button>
@@ -379,8 +383,9 @@ function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: 
 
 function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Member }) {
   const title = a.title || (a.kind === "page" ? host(a.target) : tr("doc.untitled"));
+  const ref: Payload = { ref: { kind: a.kind, id: a.id, title } };
   return (
-    <div className="td-row">
+    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON[a.kind]} ${title}`)}>
       <button
         className="td-open"
         // The drawer hides the chat's splits, where it opens: show them again, and keep the list.
@@ -398,6 +403,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
           </span>
         </span>
       </button>
+      <QuoteButton panel={panel} p={ref} />
       <RemoveButton panel={panel} id={a.id} name={title} />
     </div>
   );

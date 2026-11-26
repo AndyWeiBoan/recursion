@@ -5,9 +5,11 @@ import { KindPicker, type PickRequest } from "./KindPicker";
 import { LayoutView, useDragWidth } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
-import { restoreZoom, zoom } from "./zoom";
+import { TodoCardLayer } from "./TodoCard";
+import { listenZoomKeys, restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
-import { overlay, pruneBrowsers, viewerPath } from "./browsers";
+import { overlay, pruneBrowsers, viewerPath, zoomBrowser } from "./browsers";
+import { usePanelDrag } from "./panelDrag";
 import { SessionTree } from "./SessionTree";
 import { ago, openSettings, SettingsModal } from "./Settings";
 import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
@@ -149,6 +151,7 @@ export default function App() {
   const [pick, setPick] = useState<PickRequest | null>(null);
   useEffect(() => registerPicker(setPick), []);
   useEffect(restoreZoom, []);
+  useEffect(() => void listenZoomKeys(zoomBrowser), []);
   useEffect(() => void listenForDrops(), []);
   const toggleSidebar = useMemo(() => () => setSidebar((v) => !v), []);
   useShortcuts(toggleSidebar);
@@ -200,6 +203,7 @@ export default function App() {
       </main>
       {pick && <KindPicker req={pick} close={closePicker} />}
       <Toast />
+      <TodoCardLayer />
       <UpdateNotice />
       <Onboarding />
       <SetupTerminal />
@@ -395,12 +399,15 @@ function ClosedList({ closed }: { closed: Closed[] }) {
 
 function Tabs({ session }: { session: Session }) {
   const [editing, setEditing] = useState<string | null>(null);
+  const drag = usePanelDrag();
+  const over = drag?.target?.kind === "window" ? drag.target.window : null;
   return (
     <div className="tabs" data-tauri-drag-region>
       {session.windows.map((w, i) => (
         <div
           key={w.id}
-          className={`tab${w.id === session.active_window ? " on" : ""}`}
+          data-window={w.id}
+          className={`tab${w.id === session.active_window ? " on" : ""}${over === w.id ? " drop" : ""}`}
           onClick={() => send({ t: "window_select", session: session.id, window: w.id })}
           onDoubleClick={() => setEditing(w.id)}
           title={t("common.doubleClickRename")}
@@ -443,6 +450,7 @@ function Tabs({ session }: { session: Session }) {
       >
         ＋
       </button>
+      {drag && !drag.solo && <div className={`tab tab-ghost${drag.target?.kind === "new" ? " drop" : ""}`}>＋ {t("panel.ownWindow")}</div>}
       <div className="tabs-fill" data-tauri-drag-region />
     </div>
   );

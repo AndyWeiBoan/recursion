@@ -2,8 +2,10 @@
 // They are OS views stacked above our HTML, so anything that pops over a panel (menus, the
 // kind picker) must hide them while it is open: see `overlay()`.
 import { t } from "./i18n";
+import { stepLevel, zoomLevel } from "./zoom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useSyncExternalStore } from "react";
 
 export const nativeBrowser = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -35,6 +37,12 @@ if (nativeBrowser) {
 
 export type Bounds = { x: number; y: number; w: number; h: number };
 
+// Panels measure themselves in page pixels; the webviews sit in the window, which the app's zoom scales.
+const toWindow = (b: Bounds): Bounds => {
+  const z = zoomLevel();
+  return { x: Math.round(b.x * z), y: Math.round(b.y * z), w: Math.round(b.w * z), h: Math.round(b.h * z) };
+};
+
 // One queue for all calls: a show that creates the webview must finish before anything else touches it.
 let queue: Promise<unknown> = Promise.resolve();
 const call = (cmd: string, args: Record<string, unknown>) =>
@@ -47,12 +55,47 @@ export function onBrowserEvent(panel: string, fn: (e: BrowserEvent) => void) {
   };
 }
 
+// Each browser panel's page zoom, apart from the app's; remembered per panel.
+const ZOOM_KEY = "recursion.browserZoom";
+let zooms: Record<string, number> = {};
+try {
+  zooms = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? "{}") ?? {};
+} catch {}
+const zoomSubs = new Set<() => void>();
+
+export function useBrowserZoom(panel: string): number {
+  return useSyncExternalStore(
+    (f) => (zoomSubs.add(f), () => zoomSubs.delete(f)),
+    () => zooms[panel] ?? 1,
+  );
+}
+
+/** One step in or out, or back to 100%, for this panel's page only. */
+export function zoomBrowser(panel: string, step: -1 | 0 | 1) {
+  const level = stepLevel(zooms[panel] ?? 1, step);
+  zooms = { ...zooms };
+  if (level === 1) delete zooms[panel];
+  else zooms[panel] = level;
+  try {
+    localStorage.setItem(ZOOM_KEY, JSON.stringify(zooms));
+  } catch {}
+  zoomSubs.forEach((f) => f());
+  if (entries.has(panel)) call("browser_zoom", { panel, level });
+}
+
+/** A new webview starts at 100%: give it the panel's zoom. */
+function zoomNew(panel: string) {
+  const level = zooms[panel];
+  if (level && level !== 1) call("browser_zoom", { panel, level });
+}
+
 /** Show the panel's webview at `b`; creates it on first use, navigates if `url` changed. */
 export function showBrowser(panel: string, url: string, b: Bounds, reshow: () => void) {
   const en = entries.get(panel);
   if (!en) {
     entries.set(panel, { url, reshow });
-    if (overlays === 0) call("browser_show", { panel, url, bounds: b });
+    if (overlays === 0) call("browser_show", { panel, url, bounds: toWindow(b) });
+    zoomNew(panel);
     return;
   }
   en.reshow = reshow;
@@ -60,11 +103,11 @@ export function showBrowser(panel: string, url: string, b: Bounds, reshow: () =>
     en.url = url;
     call("browser_navigate", { panel, url });
   }
-  if (overlays === 0) call("browser_show", { panel, url, bounds: b });
+  if (overlays === 0) call("browser_show", { panel, url, bounds: toWindow(b) });
 }
 
 export function moveBrowser(panel: string, b: Bounds) {
-  if (entries.has(panel)) call("browser_bounds", { panel, bounds: b });
+  if (entries.has(panel)) call("browser_bounds", { panel, bounds: toWindow(b) });
 }
 
 export function hideBrowser(panel: string) {
@@ -89,7 +132,7 @@ export async function agentBrowse(panel: string, op: string, args: { url?: strin
   else entries.set(panel, { url, reshow: null });
   const ensured = queue.then(() => invoke("browser_ensure", { panel, url }));
   queue = ensured.catch(() => {});
-  await ensured;
+  if (await ensured) zoomNew(panel);
   return invoke("browser_agent", { panel, op, args });
 }
 
@@ -99,6 +142,13 @@ export function pruneBrowsers(alive: Set<string>) {
     if (alive.has(id)) continue;
     entries.delete(id);
     call("browser_close", { panel: id });
+    if (zooms[id] !== undefined) {
+      zooms = { ...zooms };
+      delete zooms[id];
+      try {
+        localStorage.setItem(ZOOM_KEY, JSON.stringify(zooms));
+      } catch {}
+    }
   }
 }
 

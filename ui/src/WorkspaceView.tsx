@@ -20,7 +20,8 @@ import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { takeDrops } from "./drop";
-import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type Poll, type Thread, type TurnUsage } from "./types";
+import { RefChip, takeRefs } from "./refs";
+import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
 // Its own instance: the shared `marked` would stack the extension on every hot reload.
@@ -70,7 +71,23 @@ export function colorFor(id: string) {
 }
 
 /** Markdown → sanitized HTML, with @alias mentions highlighted (outside tags and code). */
+// Rendering is the costly part of drawing a message (parse, sanitize, highlight); the same text
+// always gives the same HTML.
+const rendered = new Map<string, string>();
+const RENDERED_MAX = 3000;
+
 export function renderMarkdown(text: string, aliases: string[]): string {
+  const key = aliases.join(" ") + "\0" + text;
+  let html = rendered.get(key);
+  if (html === undefined) {
+    html = renderUncached(text, aliases);
+    if (rendered.size >= RENDERED_MAX) rendered.delete(rendered.keys().next().value!);
+    rendered.set(key, html);
+  }
+  return html;
+}
+
+function renderUncached(text: string, aliases: string[]): string {
   let html = DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
   // Every code block gets a copy button (handled by the click listener below).
   html = html.replace(/<pre>/g, `<div class="code-wrap"><button class="code-copy" type="button" title="${tr("code.copy")}">${tr("code.copy")}</button><pre>`).replace(/<\/pre>/g, "</pre></div>");
@@ -193,7 +210,7 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
             <AddAgent panel={panel} big />
           </div>
         ) : (
-          <Transcript panel={panel} messages={ws.messages} byId={byId} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} />
+          <Transcript panel={panel} messages={ws.messages} byId={byId} threadCounts={threadCounts} threads={ws.threads ?? []} polls={ws.polls ?? []} waiting={ws.round?.waiting} />
         )}
         <Composer panel={panel} members={members} messages={ws.messages} disabled={members.length === 0} busy={busy.length > 0} working={busy} focused={focused && !ui.open} round={ws.round} />
       </div>
@@ -551,6 +568,21 @@ function useReplying(panel: string) {
   );
 }
 
+// Rewind mode: the human's message the chat will start again from, per chat. Nothing is deleted
+// until the new text is sent.
+let rewinding: Record<string, string | null> = {};
+const rewindSubs = new Set<() => void>();
+function setRewinding(panel: string, msg: string | null) {
+  rewinding = { ...rewinding, [panel]: msg };
+  rewindSubs.forEach((f) => f());
+}
+function useRewinding(panel: string) {
+  return useSyncExternalStore(
+    (f) => (rewindSubs.add(f), () => rewindSubs.delete(f)),
+    () => rewinding[panel] ?? null,
+  );
+}
+
 /** Who wrote a message, as shown above a reply. */
 const authorName = (from: string, byId: Map<string, Member>) => (from === "you" ? tr("common.you") : "@" + (byId.get(from)?.alias ?? tr("agent.gone")));
 /** One line of a message's text for a reply preview. */
@@ -565,6 +597,7 @@ function Transcript({
   threadCounts,
   threads,
   polls,
+  waiting,
 }: {
   panel: string;
   messages: Msg[];
@@ -572,7 +605,10 @@ function Transcript({
   threadCounts: Map<string, number>;
   threads: Thread[];
   polls: Poll[];
+  waiting?: Round["waiting"];
 }) {
+  const queued = useMemo(() => new Set((waiting ?? []).flatMap((w) => w.msgs)), [waiting]);
+  const cut = useRewinding(panel);
   const pollById = useMemo(() => new Map(polls.map((p) => [p.id, p])), [polls]);
   const box = useRef<HTMLDivElement>(null);
   // Following the newest message while the view is at the bottom. Scrolled up, it stays put
@@ -654,6 +690,28 @@ function Transcript({
     return () => document.removeEventListener("selectionchange", onChange);
   }, []);
 
+  const view = (m: Msg, i: number) => {
+    const turn = turns.get(m.id);
+    if (turn) {
+      const texts = turn.filter((x) => x.kind === "text");
+      const tools = turn.filter((x) => x.kind === "tool");
+      const rest = turn.filter((x) => x.kind !== "text" && x.kind !== "tool");
+      const blocks: { m: Msg; parts?: Msg[]; group?: Msg[] }[] = [
+        ...(texts.length ? [{ m: texts[0], parts: texts }] : []),
+        ...(tools.length ? [{ m: tools[0], group: tools.length > 1 ? tools : undefined }] : []),
+        ...rest.map((x) => ({ m: x })),
+      ];
+      const who = byId.get(m.from);
+      return blocks.map((b, k) => (
+        <MessageView key={b.m.id} panel={panel} m={b.m} who={who} byId={byId} first={k === 0} head={turn[0]} aliases={aliases} threads={threadCounts.get(b.m.id) ?? 0} parts={b.parts} partThreads={threadCounts} group={b.group} />
+      ));
+    }
+    const prev = messages[i - 1];
+    const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
+    return (
+      <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} queued={queued.has(m.id)} />
+    );
+  };
   return (
     <div className="ws-log-wrap">
     <div
@@ -699,26 +757,9 @@ function Transcript({
     >
       {messages.map((m, i) => {
         if (inTurn.has(m.id)) return null;
-        const turn = turns.get(m.id);
-        if (turn) {
-          const texts = turn.filter((x) => x.kind === "text");
-          const tools = turn.filter((x) => x.kind === "tool");
-          const rest = turn.filter((x) => x.kind !== "text" && x.kind !== "tool");
-          const blocks: { m: Msg; parts?: Msg[]; group?: Msg[] }[] = [
-            ...(texts.length ? [{ m: texts[0], parts: texts }] : []),
-            ...(tools.length ? [{ m: tools[0], group: tools.length > 1 ? tools : undefined }] : []),
-            ...rest.map((x) => ({ m: x })),
-          ];
-          const who = byId.get(m.from);
-          return blocks.map((b, k) => (
-            <MessageView key={b.m.id} panel={panel} m={b.m} who={who} byId={byId} first={k === 0} head={turn[0]} aliases={aliases} threads={threadCounts.get(b.m.id) ?? 0} parts={b.parts} partThreads={threadCounts} group={b.group} />
-          ));
-        }
-        const prev = messages[i - 1];
-        const first = !prev || prev.from !== m.from || prev.kind === "system" || prev.kind === "guard" || !!m.turn;
-        return (
-          <MessageView key={m.id} panel={panel} m={m} who={byId.get(m.from)} byId={byId} first={first} aliases={aliases} threads={threadCounts.get(m.id) ?? 0} poll={m.kind === "poll" || m.kind === "poll_closed" ? pollById.get(m.poll) : undefined} />
-        );
+        // Rewinding: this message and everything after it fade (see .rewind-cut).
+        if (m.id === cut) return [<div key="rewind-cut" className="rewind-cut">{tr("rewind.cut")}</div>, view(m, i)];
+        return view(m, i);
       })}
       {pick &&
         createPortal(
@@ -798,6 +839,11 @@ function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: C
       <button role="menuitem" onClick={act(() => setReplying(panel, m.id))}>
         ↩ {tr("menu.reply")}
       </button>
+      {m.from === "you" && (
+        <button role="menuitem" onClick={act(() => setRewinding(panel, m.id))}>
+          ⟲ {tr("menu.rewind")}
+        </button>
+      )}
       {menu.threadable && (
         <button role="menuitem" onClick={act(() => openWholeThread(panel, m.id, threads))}>
           💬 {hasWhole ? tr("menu.openWholeThread") : tr("menu.discussWhole")}
@@ -816,6 +862,17 @@ function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: C
   );
 }
 
+// A turn's parts come in a new array every time the chat changes; it is the same turn if its
+// messages are the same objects (an unchanged message keeps its object).
+function sameProps<P extends object>(a: P, b: P) {
+  for (const k in a) {
+    const x = a[k] as unknown, y = b[k] as unknown;
+    if (x === y) continue;
+    if (!Array.isArray(x) || !Array.isArray(y) || x.length !== y.length || x.some((v, i) => v !== y[i])) return false;
+  }
+  return true;
+}
+
 const MessageView = memo(function MessageView({
   panel,
   m,
@@ -829,6 +886,7 @@ const MessageView = memo(function MessageView({
   parts,
   partThreads,
   head,
+  queued,
 }: {
   panel: string;
   m: Msg;
@@ -848,6 +906,8 @@ const MessageView = memo(function MessageView({
   partThreads?: Map<string, number>;
   /** The turn's first message: the header shows its time and usage. */
   head?: Msg;
+  /** A human message still waiting for busy agents. */
+  queued?: boolean;
 }) {
   const accounts = useAccounts();
 
@@ -870,18 +930,19 @@ const MessageView = memo(function MessageView({
             <div className="bubble you" data-msg={m.id}>
               {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
               {m.text && <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />}
-              {!!m.files?.length && (
+              {!!(m.files?.length || m.refs?.length) && (
                 <div className="bubble-files">
-                  {m.files.map((f) => (
+                  {m.files?.map((f) => (
                     <FileChip key={f} panel={panel} path={f} />
+                  ))}
+                  {m.refs?.map((r) => (
+                    <RefChip key={`${r.kind}/${r.id}/${r.item ?? ""}`} panel={panel} r={r} />
                   ))}
                 </div>
               )}
             </div>
           )}
-          <div className="meta">
-            → {to} · {time(m.ts)}
-          </div>
+          <div className="meta">{queued ? <span className="queued">{tr("queue.queued")}</span> : <>→ {to} · {time(m.ts)}</>}</div>
         </div>
       </div>
     );
@@ -1006,7 +1067,7 @@ const MessageView = memo(function MessageView({
       </div>
     </div>
   );
-});
+}, sameProps);
 
 /** One text message inside an agent's turn bubble: right-click, threads and quotes work per part. */
 function TextPart({ panel, m, who, byId, aliases, threads }: { panel: string; m: Extract<Msg, { kind: "text" }>; who?: Member; byId: Map<string, Member>; aliases: string[]; threads: number }) {
@@ -1120,7 +1181,7 @@ function Composer({
   /** Agents still answering, for the line above the box. */
   working: Member[];
   focused: boolean;
-  round?: { active: boolean; queued: number };
+  round?: Round;
 }) {
   const [text, setText] = useState("");
   const [sel, setSel] = useState(0);
@@ -1140,7 +1201,64 @@ function Composer({
       ref.current?.focus();
     });
   }, [panel, disabled]);
+  // Things from the 產出 drawer this message points at (dragged in, or added with ↳).
+  const [refs, setRefs] = useState<OutputRef[]>([]);
+  const sameRef = (a: OutputRef, b: OutputRef) => a.kind === b.kind && a.id === b.id && a.item === b.item;
+  useEffect(() => {
+    if (disabled) return;
+    return takeRefs(panel, (p) => {
+      if ("image" in p) setFiles((f) => (f.includes(p.image) ? f : [...f, p.image]));
+      else setRefs((r) => (r.some((x) => sameRef(x, p.ref)) ? r : [...r, p.ref]));
+      ref.current?.focus();
+    });
+  }, [panel, disabled]);
   const reply = replyId ? messages.find((m) => m.id === replyId) : undefined;
+  // Rewind mode: the box holds the target's text; cancelling brings back the draft from before
+  // the first Rewind, however many times the target changed since.
+  const rewindId = useRewinding(panel);
+  const rewindAt = rewindId ? messages.findIndex((m) => m.id === rewindId) : -1;
+  const draft = useRef<{ text: string; files: string[]; refs: OutputRef[] } | null>(null);
+  const shownRewind = useRef<string | null>(null);
+  const fill = (t: string) => {
+    setText(t);
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      if (!el) return;
+      el.focus();
+      el.selectionStart = el.selectionEnd = t.length;
+      setCaret(t.length);
+    });
+  };
+  const leaveRewind = (restore: boolean) => {
+    const d = draft.current;
+    draft.current = shownRewind.current = null;
+    setRewinding(panel, null);
+    if (restore && d) {
+      setFiles(d.files);
+      setRefs(d.refs);
+      fill(d.text);
+    }
+  };
+  useEffect(() => {
+    if (!rewindId || rewindId === shownRewind.current) return;
+    const m = messages[rewindAt];
+    if (!m || m.kind !== "text") return;
+    if (!shownRewind.current) draft.current = { text, files, refs };
+    shownRewind.current = rewindId;
+    setReplying(panel, null);
+    setHist(null);
+    setFiles(m.files ?? []);
+    setRefs(m.refs ?? []);
+    fill(m.text);
+  }, [rewindId]);
+  // The target went away meanwhile (rewound elsewhere, say).
+  useEffect(() => {
+    if (rewindId && rewindAt < 0 && shownRewind.current) {
+      toast(tr("chat.err.rewindGone"));
+      leaveRewind(true);
+    }
+  }, [rewindId, rewindAt]);
+  const doomed = rewindAt < 0 ? 0 : messages.slice(rewindAt + 1).filter((m) => m.kind === "text").length;
   // ↑ / ↓ in an empty box walk through what the human sent in this chat, newest first.
   const sent = useMemo(() => {
     const out: string[] = [];
@@ -1212,22 +1330,41 @@ function Composer({
     { key: "fmt.numbers", make: (t, a, b) => prefix(t, a, b, "number") },
   ];
   const submit = () => {
-    if ((!text.trim() && !files.length) || disabled) return;
-    send({ t: "ws_send", panel, text, reply_to: reply?.id, files });
+    if ((!text.trim() && !files.length && !refs.length) || disabled) return;
+    if (rewindId) {
+      send({ t: "ws_rewind", panel, msg: rewindId, text, files, refs });
+      leaveRewind(false);
+    } else send({ t: "ws_send", panel, text, reply_to: reply?.id, files, refs });
     setReplying(panel, null);
     setText("");
     setHist(null);
     setFiles([]);
+    setRefs([]);
     setCaret(0);
   };
-  const queued = round?.active ? round.queued : 0;
+  const alias = (id: string) => "@" + (members.find((x) => x.id === id)?.alias ?? "?");
   return (
     <div className="ws-input">
       <BusyLine busy={working} />
-      {queued > 0 && (
+      {!!round?.waiting?.length && (
         <div className="queue-bar">
-          <span>{tr("queue.waiting", { n: queued })}</span>
+          <span className="queue-list">
+            {round.waiting.map((w, i) => (
+              <span key={i}>{tr("queue.waiting", { n: w.msgs.length, who: w.on.map(alias).join("、") })}</span>
+            ))}
+          </span>
           <button onClick={() => send({ t: "ws_send_now", panel })}>{tr("queue.sendNow")}</button>
+        </div>
+      )}
+      {rewindAt >= 0 && (
+        <div className="reply-bar rewind-bar">
+          <span className="reply-ref">
+            <span className="reply-who">⟲ {tr("rewind.title")}</span>
+            <span className="reply-text">{tr("rewind.detail", { n: doomed })}</span>
+          </span>
+          <button className="reply-x" onClick={() => leaveRewind(true)} aria-label={tr("rewind.cancel")} title={tr("rewind.cancel") + "（Esc）"}>
+            ✕
+          </button>
         </div>
       )}
       {reply && reply.kind === "text" && (
@@ -1292,10 +1429,13 @@ function Composer({
           onClose={() => setPicking(false)}
         />
       )}
-      {files.length > 0 && (
+      {files.length + refs.length > 0 && (
         <div className="cmp-files">
           {files.map((f) => (
             <FileChip key={f} panel={panel} path={f} onRemove={() => setFiles((x) => x.filter((y) => y !== f))} />
+          ))}
+          {refs.map((r) => (
+            <RefChip key={`${r.kind}/${r.id}/${r.item ?? ""}`} panel={panel} r={r} onRemove={() => setRefs((x) => x.filter((y) => !sameRef(y, r)))} />
           ))}
         </div>
       )}
@@ -1346,6 +1486,9 @@ function Composer({
           const collapsed = el.selectionStart === el.selectionEnd;
           const plain = !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey;
           // Backspace at the very start takes off the last attachment (a pasted picture, say).
+          if (plain && collapsed && e.key === "Backspace" && el.selectionStart === 0 && refs.length) {
+            return e.preventDefault(), setRefs((x) => x.slice(0, -1));
+          }
           if (plain && collapsed && e.key === "Backspace" && el.selectionStart === 0 && files.length) {
             return e.preventDefault(), setFiles((x) => x.slice(0, -1));
           }
@@ -1368,6 +1511,9 @@ function Composer({
             const next = collapsed ? continueList(el.value, el.selectionStart) : null;
             if (next) apply(el, next);
             else submit();
+          } else if (e.key === "Escape" && rewindId) {
+            e.preventDefault();
+            leaveRewind(true);
           } else if (e.key === "Escape" && reply) {
             e.preventDefault();
             setReplying(panel, null);
@@ -1379,7 +1525,7 @@ function Composer({
       />
       </div>
       {/* Stopping lives on each agent in the sidebar (and Esc stops all); sending while they work queues. */}
-      <button className="send-btn" onClick={submit} disabled={disabled || (!text.trim() && !files.length)} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
+      <button className="send-btn" onClick={submit} disabled={disabled || (!text.trim() && !files.length && !refs.length)} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
         ↑
       </button>
     </div>

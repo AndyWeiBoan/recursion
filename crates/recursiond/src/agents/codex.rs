@@ -20,7 +20,7 @@ pub struct Rpc {
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Value>>>,
     pub thread_id: Mutex<Option<String>>,
-    turn_id: Mutex<Option<String>>,
+    pub(super) turn_id: Mutex<Option<String>>,
 }
 
 impl Rpc {
@@ -191,12 +191,23 @@ impl Hub {
                 match rpc.call(self, panel, &m.id, "thread/resume", p).await {
                     Ok(r) => r,
                     // The old thread may be gone (e.g. Codex data cleared): start fresh.
-                    Err(_) => rpc.call(self, panel, &m.id, "thread/start", params).await?,
+                    Err(_) => rpc.call(self, panel, &m.id, "thread/start", params.clone()).await?,
                 }
             }
-            None => rpc.call(self, panel, &m.id, "thread/start", params).await?,
+            None => rpc.call(self, panel, &m.id, "thread/start", params.clone()).await?,
         };
         let tid = result["thread"]["id"].as_str().ok_or("Codex returned no thread id")?.to_string();
+        // Rewound: drop the turns from that one on. If Codex can't, it starts a new thread
+        // and is fed the chat again.
+        let mut tid = tid;
+        if let Some(turn) = self.rewind_point(panel, &m.id).filter(|_| m.cli_session_id.as_deref() == Some(&tid)) {
+            let reverted = rpc.call(self, panel, &m.id, "thread/revert", json!({ "threadId": tid, "beforeTurnId": turn })).await;
+            if reverted.is_err() {
+                let r = rpc.call(self, panel, &m.id, "thread/start", params).await?;
+                tid = r["thread"]["id"].as_str().ok_or("Codex returned no thread id")?.to_string();
+            }
+            self.rewind_taken(panel, &m.id, reverted.is_err());
+        }
         *rpc.thread_id.lock().unwrap() = Some(tid.clone());
         self.update_member(panel, &m.id, |m| m.cli_session_id = Some(tid));
         Ok(())

@@ -1,5 +1,6 @@
 // Polls: the form that starts one, its card in the chat, and its row / full view in the 產出 drawer.
 // While a poll is open nobody's pick is shown (only who has voted), so it can't sway the agents.
+import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
 import { t } from "./i18n";
 import { useState } from "react";
 import { send } from "./client";
@@ -228,8 +229,9 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
 /** The drawer's row for a poll. */
 export function PollRow({ panel, p }: { panel: string; p: Poll }) {
   const open = p.status === "open";
+  const ref: Payload = { ref: { kind: "poll", id: p.id, title: p.question } };
   return (
-    <div className={`td-row${open ? " st-waiting" : ""}`}>
+    <div className={`td-row${open ? " st-waiting" : ""}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.poll} ${p.question}`)}>
       <button className="td-open" onClick={() => setThreadView(panel, { kind: "poll", id: p.id })}>
         <span className="td-num">
           <span className="td-icon">📊</span>#{p.num}
@@ -250,6 +252,7 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
           </span>
         </span>
       </button>
+      <QuoteButton panel={panel} p={ref} />
       <button className="td-goto" onClick={() => showInChat(p.msg)} title={t("poll.findInChat")} aria-label={t("poll.cardOf", { num: p.num })}>
         ↖
       </button>

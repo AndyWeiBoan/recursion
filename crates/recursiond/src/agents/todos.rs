@@ -75,14 +75,14 @@ impl Hub {
         self.emit_todos(panel);
     }
 
-    pub fn todo_add(&self, panel: &str, list: &str, by: &str, text: &str) -> Result<Todo, String> {
+    pub fn todo_add(&self, panel: &str, list: &str, by: &str, text: &str, note: &str) -> Result<Todo, String> {
         let text = text.trim().to_string();
         if text.is_empty() {
             return Err("The item needs some text.".into());
         }
         self.with_list(panel, list, |l| {
             l.next_item += 1;
-            let t = Todo { id: crate::model::new_id(), num: l.next_item, text, state: TodoState::Todo, worker: None, by: by.to_string(), done_by: None, archived: false, created: now_ms() };
+            let t = Todo { id: crate::model::new_id(), num: l.next_item, text, note: note.trim().to_string(), state: TodoState::Todo, worker: None, by: by.to_string(), done_by: None, archived: false, created: now_ms() };
             // New items go above the 完成區.
             let at = l.items.iter().position(|x| x.archived).unwrap_or(l.items.len());
             l.items.insert(at, t.clone());
@@ -90,12 +90,16 @@ impl Hub {
         })
     }
 
-    /// The human's change: new wording, or a new state (theirs to hold while doing it).
-    pub fn todo_update(&self, panel: &str, list: &str, item: &str, text: Option<String>, state: Option<TodoState>) -> Result<(), String> {
+    /// The human's change: new wording, a new card (empty clears it), or a new state (theirs to
+    /// hold while doing it).
+    pub fn todo_update(&self, panel: &str, list: &str, item: &str, text: Option<String>, note: Option<String>, state: Option<TodoState>) -> Result<(), String> {
         self.with_list(panel, list, |l| {
             let t = find_item(l, item).ok_or("No such item.")?;
             if let Some(text) = text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
                 t.text = text;
+            }
+            if let Some(note) = note {
+                t.note = note.trim().to_string();
             }
             if let Some(s) = state {
                 set_state(t, s, "you");
@@ -160,6 +164,14 @@ impl Hub {
                 TodoState::Done => "[x]",
             };
             out.push_str(&format!("\n  #{} {mark} {}", t.num, t.text));
+            // The cards go with todo_read only: every turn would otherwise carry them all.
+            if !t.note.is_empty() {
+                if all {
+                    out.push_str(&format!("\n      card:\n{}", t.note.lines().map(|l| format!("      | {l}")).collect::<Vec<_>>().join("\n")));
+                } else {
+                    out.push_str(" — has a card (todo_read shows it)");
+                }
+            }
             if let (TodoState::Doing, Some(w)) = (t.state, &t.worker) {
                 out.push_str(&format!(" — {} is on it", name(w)));
             }
@@ -201,7 +213,9 @@ impl Hub {
                     Some(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
                     None => vec![s("text")],
                 };
-                let nums = texts.iter().map(|t| self.todo_add(panel, &list, member, t).map(|t| format!("#{}", t.num))).collect::<Result<Vec<_>, _>>()?;
+                // A card only for a single item.
+                let note = if texts.len() == 1 { s("note") } else { String::new() };
+                let nums = texts.iter().map(|t| self.todo_add(panel, &list, member, t, &note).map(|t| format!("#{}", t.num))).collect::<Result<Vec<_>, _>>()?;
                 format!("Added {} to \"{list}\".", nums.join(", "))
             }
             "todo_claim" => {
@@ -222,6 +236,16 @@ impl Hub {
                     return Err(format!("#{num} is taken: {who} is on it. Pick another item."));
                 }
                 format!("#{num} is yours. Call todo_done when it's finished, or todo_release to let it go.")
+            }
+            "todo_note" => {
+                let item = s("todo");
+                let note = args["note"].as_str().unwrap_or("").trim().to_string();
+                let num = self.with_list(panel, &list, |l| {
+                    let t = find_item(l, &item).ok_or_else(|| format!("No item `{item}` in that list."))?;
+                    t.note = note.clone();
+                    Ok(t.num)
+                })?;
+                if note.is_empty() { format!("#{num}'s card cleared.") } else { format!("#{num}'s card saved.") }
             }
             "todo_done" | "todo_release" => {
                 let item = s("todo");
@@ -264,7 +288,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "todo_read",
-            "description": "One todo list in full: each item's #number, [ ] todo / [~] being done (and by whom) / [x] done, and the ones put away.",
+            "description": "One todo list in full: each item's #number, [ ] todo / [~] being done (and by whom) / [x] done, its card (details) if it has one, and the ones put away.",
             "inputSchema": { "type": "object", "properties": { "list": list }, "required": ["list"] }
         },
         {
@@ -275,6 +299,7 @@ pub fn tools() -> Value {
                 "properties": {
                     "list": list,
                     "text": { "type": "string", "description": "One item" },
+                    "note": { "type": "string", "description": "Optional, with `text`: the item's card, in Markdown (details, steps, links). The human opens it by clicking the item." },
                     "items": { "type": "array", "items": { "type": "string" }, "description": "Several items at once (instead of text)" }
                 },
                 "required": ["list"]
@@ -285,6 +310,11 @@ pub fn tools() -> Value {
             "description": "Take an item before you work on it: it shows you are on it, and fails if someone else already is (then pick another). \
 You keep it until todo_done or todo_release, or until you disconnect.",
             "inputSchema": { "type": "object", "properties": { "list": list, "todo": item }, "required": ["list", "todo"] }
+        },
+        {
+            "name": "todo_note",
+            "description": "Write an item's card: its details in Markdown (steps, links, findings). Replaces what the card held; an empty note clears it. todo_read shows the cards.",
+            "inputSchema": { "type": "object", "properties": { "list": list, "todo": item, "note": { "type": "string", "description": "Markdown" } }, "required": ["list", "todo", "note"] }
         },
         {
             "name": "todo_done",

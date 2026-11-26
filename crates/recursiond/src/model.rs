@@ -245,6 +245,23 @@ impl Node {
         }
     }
 
+    /// Add `panel` at the end (right, or bottom) of this whole tree.
+    fn append(&mut self, dir: Dir, panel: &str) {
+        let leaf = Node::Leaf { panel: panel.to_string() };
+        match self {
+            Node::Split { dir: d, children, sizes, .. } if *d == dir => {
+                let n = children.len() as f32;
+                sizes.iter_mut().for_each(|s| *s *= n / (n + 1.0));
+                sizes.push(1.0 / (n + 1.0));
+                children.push(leaf);
+            }
+            _ => {
+                let old = std::mem::replace(self, Node::Leaf { panel: String::new() });
+                *self = Node::Split { id: new_id(), dir, children: vec![old, leaf], sizes: vec![0.5, 0.5] };
+            }
+        }
+    }
+
     /// Remove the leaf holding `target`. Returns Some(true) if this node itself became empty.
     fn remove(&mut self, target: &str) -> Option<bool> {
         match self {
@@ -543,6 +560,46 @@ impl State {
         Ok(())
     }
 
+    /// Take a panel out of its window: into a new window of its own right after it (`into` None),
+    /// or to the right edge of another window of the session. A window left empty goes away.
+    /// Returns the window the panel is in now, which becomes the active one.
+    pub fn panel_to_window(&mut self, panel: &str, into: Option<&str>) -> Res<String> {
+        let (si, wi) = self.locate_panel(panel)?;
+        let s = &mut self.sessions[si];
+        let alone = s.windows[wi].panel_ids().len() == 1;
+        let to = match into {
+            Some(w) if w == s.windows[wi].id => return Err(ModelError::NotFound("window")),
+            Some(w) => Some(s.windows.iter().position(|x| x.id == w).ok_or(ModelError::NotFound("window"))?),
+            None if alone => return Err(ModelError::NotFound("window")),
+            None => None,
+        };
+        let wid = match to {
+            Some(ti) => {
+                let w = &mut s.windows[ti];
+                w.root.append(Dir::Row, panel);
+                w.focus = panel.into();
+                w.id.clone()
+            }
+            None => {
+                let w = Window { id: new_id(), name: String::new(), root: Node::Leaf { panel: panel.into() }, focus: panel.into() };
+                let id = w.id.clone();
+                s.windows.insert(wi + 1, w);
+                id
+            }
+        };
+        if alone {
+            s.windows.remove(wi);
+        } else {
+            let w = &mut s.windows[wi];
+            w.root.remove(panel);
+            if w.focus == panel {
+                w.focus = w.panel_ids()[0].clone();
+            }
+        }
+        s.active_window = Some(wid.clone());
+        Ok(wid)
+    }
+
     /// Close a panel. If it was the last one in its window, the window closes too.
     pub fn close_panel(&mut self, panel: &str) -> Res<Vec<String>> {
         let (si, wi) = self.locate_panel(panel)?;
@@ -796,6 +853,37 @@ mod tests {
         assert_eq!(ids(&st), vec![a.clone(), c.clone(), b.clone()]);
         assert_eq!(st.sessions[0].windows[0].focus, b);
         assert!(st.move_panel(&a, &a, Side::Left).is_err());
+    }
+
+    #[test]
+    fn panels_between_windows() {
+        let (mut st, _) = one_session();
+        let a = first_panel(&st);
+        let b = st.split_panel(&a, Dir::Row, PanelKind::Terminal).unwrap();
+        let c = st.split_panel(&b, Dir::Column, PanelKind::Terminal).unwrap();
+        let w1 = st.sessions[0].windows[0].id.clone();
+        // Out of a split window into a window of its own, right after it.
+        let w2 = st.panel_to_window(&c, None).unwrap();
+        let s = &st.sessions[0];
+        assert_eq!(s.windows.iter().map(|w| w.id.clone()).collect::<Vec<_>>(), vec![w1.clone(), w2.clone()]);
+        assert_eq!(s.windows[0].panel_ids(), vec![a.clone(), b.clone()]);
+        assert_eq!(s.windows[1].panel_ids(), vec![c.clone()]);
+        assert_eq!(s.active_window.as_deref(), Some(w2.as_str()));
+        assert!(st.panels.contains_key(&c));
+        // A window's only panel can't get a window of its own: it already has one.
+        assert!(st.panel_to_window(&c, None).is_err());
+        assert!(st.panel_to_window(&c, Some(&w2)).is_err());
+        // Back into the first window, at its right edge; its own window goes away.
+        assert_eq!(st.panel_to_window(&c, Some(&w1)).unwrap(), w1);
+        let s = &st.sessions[0];
+        assert_eq!(s.windows.len(), 1);
+        assert_eq!(s.windows[0].panel_ids(), vec![a.clone(), b.clone(), c.clone()]);
+        assert_eq!(s.windows[0].focus, c);
+        match &s.windows[0].root {
+            Node::Split { sizes, .. } => assert!((sizes.iter().sum::<f32>() - 1.0).abs() < 1e-5),
+            _ => panic!(),
+        }
+        assert_eq!(s.active_window.as_deref(), Some(w1.as_str()));
     }
 
     #[test]

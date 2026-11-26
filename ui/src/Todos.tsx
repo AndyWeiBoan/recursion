@@ -4,11 +4,20 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { send, useWorkspace } from "./client";
+import { openTodoCard } from "./TodoCard";
+import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
 import { t as tr } from "./i18n";
 import type { Member, Todo, TodoList, TodoState } from "./types";
 
 // Which list is open, per chat; outside React so it survives the drawer re-mounting.
 const openList = new Map<string, string>();
+const openSubs = new Set<() => void>();
+
+/** Show one list (a reference to it was clicked); the 待辦 tab follows. */
+export function showTodoList(panel: string, id: string) {
+  openList.set(panel, id);
+  openSubs.forEach((f) => f());
+}
 
 const progress = (l: TodoList) => ({ done: l.items.filter((x) => x.state === "done").length, total: l.items.length });
 
@@ -25,12 +34,31 @@ function who(id: string, members: Member[]) {
 }
 
 /** Text that turns into an input on double-click. */
-function Editable({ text, onSave, className }: { text: string; onSave: (t: string) => void; className?: string }) {
+/** Double-click to rename. With `onOpen`, a single click opens (the item's card): it waits a
+ *  moment so a double-click doesn't open it too. */
+function Editable({ text, onSave, className, onOpen }: { text: string; onSave: (t: string) => void; className?: string; onOpen?: () => void }) {
   const [editing, setEditing] = useState(false);
   const [v, setV] = useState(text);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
   if (!editing)
     return (
-      <span className={className} onDoubleClick={(e) => (e.stopPropagation(), setV(text), setEditing(true))} title={tr("todo.editHint")}>
+      <span
+        className={className}
+        onClick={
+          onOpen &&
+          ((e) => {
+            if (e.detail !== 1) return;
+            pending.current = setTimeout(onOpen, 230);
+          })
+        }
+        onDoubleClick={(e) => {
+          if (pending.current) clearTimeout(pending.current);
+          e.stopPropagation();
+          setV(text);
+          setEditing(true);
+        }}
+        title={onOpen ? tr("todo.openHint") : tr("todo.editHint")}
+      >
         {text}
       </span>
     );
@@ -94,13 +122,15 @@ function Lists({ panel, lists, open }: { panel: string; lists: TodoList[]; open:
       <ul className="todo-lists">
         {lists.map((l) => {
           const p = progress(l);
+          const ref: Payload = { ref: { kind: "todo", id: l.id, title: l.name } };
           return (
-            <li key={l.id} className="todo-listrow" onClick={() => open(l.id)}>
+            <li key={l.id} className="todo-listrow" onClick={() => open(l.id)} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.todo} ${l.name}`)}>
               <span className="todo-listmain">
                 <Editable className="todo-listname" text={l.name} onSave={(name) => send({ t: "todo_list_rename", panel, list: l.id, name })} />
                 <span className="todo-count">
                   ({p.done}/{p.total})
                 </span>
+                <QuoteButton panel={panel} p={ref} />
                 <DeleteButton onDelete={() => send({ t: "todo_list_remove", panel, list: l.id })} />
               </span>
               <Bar {...p} />
@@ -239,21 +269,28 @@ function Items({ panel, list, members, back }: { panel: string; list: TodoList; 
     setLift({ id: item.id, x0: e.clientX, y0: e.clientY, left: r.left, top: r.top, width: r.width, height: r.height });
   };
 
+  const card = (item: Todo) => () => openTodoCard({ panel, list: list.id, item: item.id });
   const row = (item: Todo, floating = false) => {
     const done = item.state === "done";
+    const ref: Payload = { ref: { kind: "todo", id: list.id, item: item.id, title: item.text } };
     return (
-      <li key={item.id} data-todo={floating ? undefined : item.id} className={`todo st-${item.state}`}>
+      <li key={item.id} data-todo={floating ? undefined : item.id} className={`todo st-${item.state}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.todo} #${item.num} ${item.text}`)}>
         <span className="todo-grip" onPointerDown={(e) => pickUp(e, item)} title={tr("todo.dragHint")} aria-label={tr("todo.dragHint")}>
           ⋮⋮
         </span>
         <input type="checkbox" checked={done} onChange={(e) => update(item, { state: e.target.checked ? "done" : "todo" })} aria-label={tr(done ? "todo.undo" : "todo.done")} />
         <span className="todo-num">#{item.num}</span>
         {done ? (
-          <span className="todo-text" title={item.done_by ? tr("todo.doneBy", { who: who(item.done_by, members) }) : undefined}>
+          <span className="todo-text" onClick={card(item)} title={item.done_by ? tr("todo.doneBy", { who: who(item.done_by, members) }) : undefined}>
             {item.text}
           </span>
         ) : (
-          <Editable className="todo-text" text={item.text} onSave={(text) => update(item, { text })} />
+          <Editable className="todo-text" text={item.text} onSave={(text) => update(item, { text })} onOpen={card(item)} />
+        )}
+        {item.note && (
+          <button className="todo-card-mark" onClick={card(item)} title={tr("todo.hasCard")} aria-label={tr("todo.hasCard")}>
+            ≡
+          </button>
         )}
         {item.state === "doing" && item.worker ? (
           <button className="todo-doing on" onClick={() => update(item, { state: "todo" })} title={tr("todo.releaseHint")}>
@@ -266,6 +303,7 @@ function Items({ panel, list, members, back }: { panel: string; list: TodoList; 
             </button>
           )
         )}
+        <QuoteButton panel={panel} p={ref} />
         <DeleteButton onDelete={() => send({ t: "todo_remove", panel, list: list.id, id: item.id })} />
       </li>
     );
@@ -318,6 +356,11 @@ function Items({ panel, list, members, back }: { panel: string; list: TodoList; 
 export function TodoPane({ panel }: { panel: string }) {
   const ws = useWorkspace(panel);
   const [open, setOpen] = useState<string | null>(openList.get(panel) ?? null);
+  useEffect(() => {
+    const f = () => setOpen(openList.get(panel) ?? null);
+    openSubs.add(f);
+    return () => void openSubs.delete(f);
+  }, [panel]);
   const go = (id: string | null) => {
     if (id) openList.set(panel, id);
     else openList.delete(panel);

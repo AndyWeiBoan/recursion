@@ -127,7 +127,13 @@ fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds
     {
         let main = app.get_webview("main").ok_or("main webview not found")?;
         main.with_webview(|p| gtk_layer::remember_main(p.inner())).map_err(|e| e.to_string())?;
-        wv.with_webview(move |p| gtk_layer::adopt(&p.inner(), bounds)).map_err(|e| e.to_string())?;
+        let (app, panel) = (app.clone(), panel.clone());
+        wv.with_webview(move |p| gtk_layer::adopt(&p.inner(), bounds, move |step| zoom_key(&app, Some(panel.clone()), step))).map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let panel = panel.clone();
+        wv.with_webview(move |p| mac_focus::remember(panel, p.inner() as usize)).map_err(|e| e.to_string())?;
     }
     Ok(wv)
 }
@@ -154,6 +160,27 @@ pub fn browser_close<R: Runtime>(app: AppHandle<R>, panel: String) -> Result<(),
         Some(wv) => wv.close().map_err(|e| e.to_string()),
         None => Ok(()),
     }
+}
+
+/// The page's own zoom (1 = 100%), apart from the app's.
+#[tauri::command]
+pub fn browser_zoom<R: Runtime>(app: AppHandle<R>, panel: String, level: f64) -> Result<(), String> {
+    match get(&app, &panel) {
+        Some(wv) => wv.set_zoom(level.clamp(0.25, 5.0)).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// ⌘= ⌘- ⌘0 (Ctrl on Linux) caught natively: the UI zooms the panel's page, or the app when
+/// `panel` is None.
+#[derive(Serialize, Clone)]
+pub struct ZoomKey {
+    pub panel: Option<String>,
+    pub step: i8,
+}
+
+pub fn zoom_key<R: Runtime>(app: &AppHandle<R>, panel: Option<String>, step: i8) {
+    let _ = app.emit_to("main", "zoom_key", ZoomKey { panel, step });
 }
 
 #[tauri::command]
@@ -573,6 +600,10 @@ mod gtk_layer {
 
     thread_local! {
         static MAIN: RefCell<Option<WebView>> = const { RefCell::new(None) };
+        /// Where each browser webview goes. The overlay asks (`get-child-position`) and gets
+        /// exactly this: margins and a size request only set a minimum, so a webview that had
+        /// been bigger stayed that big and spilled past its panel.
+        static PLACES: RefCell<Vec<(gtk::glib::WeakRef<gtk::Widget>, gtk::Rectangle)>> = const { RefCell::new(Vec::new()) };
     }
 
     pub fn remember_main(main: WebView) {
@@ -587,6 +618,9 @@ mod gtk_layer {
         }
         let vbox = parent.downcast::<gtk::Box>().ok()?;
         let ov = gtk::Overlay::new();
+        ov.connect_get_child_position(|_, w| {
+            PLACES.with(|p| p.borrow().iter().find(|(k, _)| k.upgrade().as_ref() == Some(w)).map(|(_, r)| *r))
+        });
         vbox.remove(&main);
         ov.add(&main);
         vbox.pack_start(&ov, true, true, 0);
@@ -594,7 +628,27 @@ mod gtk_layer {
         Some(ov)
     }
 
-    pub fn adopt(child: &WebView, b: Bounds) {
+    /// `on_zoom` gets Ctrl+= / Ctrl+- / Ctrl+0 pressed in the page: those zoom the page, not the app.
+    pub fn adopt(child: &WebView, b: Bounds, on_zoom: impl Fn(i8) + 'static) {
+        child.connect_key_press_event(move |_, ev| {
+            use gtk::gdk::keys::constants as k;
+            let ctrl = ev.state().contains(gtk::gdk::ModifierType::CONTROL_MASK) && !ev.state().contains(gtk::gdk::ModifierType::MOD1_MASK);
+            let key = ev.keyval();
+            let step = if key == k::equal || key == k::plus || key == k::KP_Add {
+                1
+            } else if key == k::minus || key == k::underscore || key == k::KP_Subtract {
+                -1
+            } else if key == k::_0 || key == k::KP_0 {
+                0
+            } else {
+                return gtk::glib::Propagation::Proceed;
+            };
+            if !ctrl {
+                return gtk::glib::Propagation::Proceed;
+            }
+            on_zoom(step);
+            gtk::glib::Propagation::Stop
+        });
         let Some(ov) = overlay() else {
             eprintln!("[browser] no GTK overlay; browser panel will be misplaced");
             return;
@@ -610,9 +664,48 @@ mod gtk_layer {
     }
 
     pub fn place(child: &WebView, b: Bounds) {
-        child.set_margin_start(b.x.round() as i32);
-        child.set_margin_top(b.y.round() as i32);
-        child.set_size_request(b.w.max(1.0).round() as i32, b.h.max(1.0).round() as i32);
-        child.queue_resize();
+        let rect = gtk::Rectangle::new(b.x.round() as i32, b.y.round() as i32, b.w.max(1.0).round() as i32, b.h.max(1.0).round() as i32);
+        let w: &gtk::Widget = child.upcast_ref();
+        PLACES.with(|p| {
+            let mut p = p.borrow_mut();
+            p.retain(|(k, _)| k.upgrade().is_some());
+            match p.iter_mut().find(|(k, _)| k.upgrade().as_ref() == Some(w)) {
+                Some(e) => e.1 = rect,
+                None => p.push((w.downgrade(), rect)),
+            }
+        });
+        child.set_size_request(rect.width(), rect.height());
+        // The overlay only asks where its children go when it lays itself out.
+        match child.parent() {
+            Some(ov) => ov.queue_allocate(),
+            None => child.queue_resize(),
+        }
+    }
+}
+
+/// macOS: which browser panel has the keyboard, for the View menu's zoom items (a menu shortcut
+/// is taken before any page sees the key).
+#[cfg(target_os = "macos")]
+pub mod mac_focus {
+    use objc2_app_kit::{NSView, NSWindow};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// Panel → its WKWebView. Only looked at for panels whose webview is still open.
+    static VIEWS: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
+
+    pub fn remember(panel: String, view: usize) {
+        VIEWS.lock().unwrap().get_or_insert_with(HashMap::new).insert(panel, view);
+    }
+
+    /// The browser panel among `open` whose page is the window's first responder.
+    /// Main thread only (the menu's handler runs there).
+    pub fn focused(window: usize, open: &[String]) -> Option<String> {
+        let views = VIEWS.lock().unwrap();
+        let views = views.as_ref()?;
+        let window = unsafe { &*(window as *const NSWindow) };
+        let responder = window.firstResponder()?;
+        let view = responder.downcast_ref::<NSView>()?;
+        open.iter().find(|p| views.get(*p).is_some_and(|&v| unsafe { view.isDescendantOf(&*(v as *const NSView)) })).cloned()
     }
 }
