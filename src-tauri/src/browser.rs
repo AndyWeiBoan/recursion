@@ -5,7 +5,7 @@
 //! permissions to the `main` webview only. They talk back through Rust-side callbacks.
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::{PageLoadEvent, WebviewBuilder};
+use tauri::webview::{NewWindowFeatures, NewWindowResponse, PageLoadEvent, WebviewBuilder, WebviewWindowBuilder};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, Url, Webview, WebviewUrl};
 
 #[derive(Deserialize, Clone, Copy)]
@@ -120,7 +120,8 @@ fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds
         })
         .on_document_title_changed(move |_, title| {
             emit(&b, BrowserEvent { panel: c.clone(), url: None, title: Some(title), loading: None });
-        });
+        })
+        .on_new_window(popup(app.clone()));
     let r = bounds.rect();
     let wv = window.add_child(builder, r.position, r.size).map_err(|e| e.to_string())?;
     #[cfg(target_os = "linux")]
@@ -136,6 +137,56 @@ fn create<R: Runtime>(app: &AppHandle<R>, panel: &str, url: &str, bounds: Bounds
         wv.with_webview(move |p| mac_focus::remember(panel, p.inner() as usize)).map_err(|e| e.to_string())?;
     }
     Ok(wv)
+}
+
+/// A page opening a window (`window.open`, a `target=_blank` link) gets a real one, tied to it:
+/// "Sign in with Google" and the like run in a popup that reports back to the page through
+/// `window.opener` and then closes itself. Without this, nothing happened when it was clicked.
+fn popup<R: Runtime>(app: AppHandle<R>) -> impl Fn(Url, NewWindowFeatures) -> NewWindowResponse<R> + Send + 'static {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    move |url, features| {
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let sized = features.size().is_some();
+        // Like the panels, no Tauri IPC: the capability file only lets `main` in.
+        let mut b = WebviewWindowBuilder::new(&app, format!("popup-{n}"), WebviewUrl::External("about:blank".parse().unwrap()))
+            .window_features(features)
+            .title(url.host_str().unwrap_or("Recursion"))
+            .on_document_title_changed(|w, title| {
+                let _ = w.set_title(&title);
+            });
+        if !sized {
+            b = b.inner_size(520.0, 680.0).center();
+        }
+        match b.build() {
+            Ok(window) => {
+                close_with_page(&window);
+                NewWindowResponse::Create { window }
+            }
+            Err(e) => {
+                eprintln!("[browser] could not open a window for {url}: {e}");
+                NewWindowResponse::Deny
+            }
+        }
+    }
+}
+
+/// A popup ends with `window.close()` (or its opener closing it): close its window too. Left
+/// alone, Linux kept an empty window and macOS ignored it.
+fn close_with_page<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::WidgetExt;
+        // wry answers the page's close by destroying the webview (which drops any other `close`
+        // handler), so follow that.
+        let w = window.clone();
+        let _ = window.with_webview(move |p| {
+            p.inner().connect_destroy(move |_| {
+                let _ = w.destroy();
+            });
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let _ = window.with_webview(|p| unsafe { mac_popup::close_on_did_close(p.inner()) });
 }
 
 #[tauri::command]
@@ -707,5 +758,32 @@ pub mod mac_focus {
         let responder = window.firstResponder()?;
         let view = responder.downcast_ref::<NSView>()?;
         open.iter().find(|p| views.get(*p).is_some_and(|&v| unsafe { view.isDescendantOf(&*(v as *const NSView)) })).cloned()
+    }
+}
+
+/// macOS: WKWebView tells its UI delegate `webViewDidClose:` when the page closes itself; wry's
+/// delegate doesn't answer it, so we teach its class to close the window.
+#[cfg(target_os = "macos")]
+mod mac_popup {
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::sel;
+    use objc2_app_kit::NSView;
+    use objc2_web_kit::WKWebView;
+
+    extern "C-unwind" fn did_close(_this: *mut AnyObject, _sel: Sel, webview: *mut WKWebView) {
+        let Some(view) = (unsafe { webview.as_ref() }) else { return };
+        let view: &NSView = view;
+        if let Some(window) = view.window() {
+            window.performClose(None);
+        }
+    }
+
+    pub unsafe fn close_on_did_close(webview: *mut std::ffi::c_void) {
+        let webview = &*(webview as *const WKWebView);
+        let Some(delegate) = webview.UIDelegate() else { return };
+        let cls: &AnyClass = (*(&*delegate as *const _ as *const AnyObject)).class();
+        // Adding is a no-op once the class has it (every popup shares wry's delegate class).
+        let imp: Imp = std::mem::transmute(did_close as extern "C-unwind" fn(*mut AnyObject, Sel, *mut WKWebView));
+        objc2::ffi::class_addMethod(cls as *const AnyClass as *mut AnyClass, sel!(webViewDidClose:), imp, c"v@:@".as_ptr());
     }
 }

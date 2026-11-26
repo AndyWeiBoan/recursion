@@ -37,4 +37,4 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSUserDefaults", "NSError", "NSData", "NSDictionary", "NSValue", "NSURL", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", features = ["NSImage", "NSImageRep", "NSBitmapImageRep", "NSView", "NSResponder", "NSWindow", "NSGraphics"] }
-objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKContentWorld", "WKFrameInfo", "WKSnapshotConfiguration", "block2", "objc2-app-kit"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKContentWorld", "WKFrameInfo", "WKSnapshotConfiguration", "WKUIDelegate", "block2", "objc2-app-kit"] }
