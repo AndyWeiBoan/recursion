@@ -250,8 +250,26 @@ async fn update_install(app: tauri::AppHandle, pending: tauri::State<'_, Pending
     app.restart();
 }
 
+/// macOS shows the accent picker (h → ĥ) when a key is held, so holding j/k in vim inside a
+/// terminal panel popped a menu instead of repeating. Make holding repeat, as Terminal.app does.
+/// `registerDefaults` sits below the user's own settings, so anyone who set
+/// `defaults write dev.recursion.app ApplePressAndHoldEnabled -bool true` keeps the picker.
+fn hold_key_repeats() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::{NSDictionary, NSNumber, NSString, NSUserDefaults};
+        let key = NSString::from_str("ApplePressAndHoldEnabled");
+        let off: objc2::rc::Retained<AnyObject> = NSNumber::new_bool(false).into();
+        let defaults: objc2::rc::Retained<NSDictionary<NSString, AnyObject>> =
+            NSDictionary::from_retained_objects(&[&*key], &[off]);
+        unsafe { NSUserDefaults::standardUserDefaults().registerDefaults(&defaults) };
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    hold_key_repeats();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
