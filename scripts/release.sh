@@ -92,10 +92,13 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 run=
 if $x86; then
   title="x86_64 $ver $sha"
+  # Runs with this title from before (a retried release) are not ours: wait for a new one.
+  runs() { gh run list --repo "$SRC_REPO" --workflow linux-x86_64.yml --limit 20 --json databaseId,displayTitle \
+    -q ".[] | select(.displayTitle == \"$title\") | .databaseId"; }
+  old=" $(runs | tr '\n' ' ') "
   gh workflow run linux-x86_64.yml --repo "$SRC_REPO" -f ref="$sha" -f version="$ver"
   for _ in $(seq 30); do
-    run=$(gh run list --repo "$SRC_REPO" --workflow linux-x86_64.yml --limit 10 --json databaseId,displayTitle \
-      -q "[.[] | select(.displayTitle == \"$title\")][0].databaseId")
+    for id in $(runs); do case "$old" in *" $id "*) ;; *) run=$id; break ;; esac; done
     [ -n "$run" ] && break
     sleep 2
   done
