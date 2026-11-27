@@ -1,0 +1,57 @@
+# The x86_64 Linux packages of a release. This repo's machines are arm64 (a Mac, and Linux on
+# Apple silicon), so release.sh asks GitHub to build these while it builds the rest, then
+# downloads them, adds them to latest.json and publishes them with the others.
+#   gh workflow run linux-x86_64.yml -f ref=<commit> -f version=<x.y.z>
+name: linux-x86_64
+run-name: x86_64 ${{ inputs.version }} ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit to build (pushed)
+        required: true
+      version:
+        description: Version to build it as (release.sh commits the bump only after publishing)
+        required: true
+
+jobs:
+  build:
+    # The oldest supported Ubuntu: the packages need its glibc or newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf file
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - run: python3 scripts/set-version.py "${{ inputs.version }}"
+      - name: Build
+        env:
+          CI: "true"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: pnpm tauri build --bundles appimage,rpm,deb
+      - name: Collect
+        run: |
+          mkdir out
+          cd target/release/bundle
+          cp appimage/*.AppImage appimage/*.AppImage.sig rpm/*.rpm rpm/*.rpm.sig deb/*.deb deb/*.deb.sig ../../../out/
+          ls -l ../../../out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: out/*
+          retention-days: 7

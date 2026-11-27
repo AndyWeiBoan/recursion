@@ -6,7 +6,8 @@
 #
 # On a Mac it builds right here (macOS only). On Linux it builds the Linux packages (AppImage,
 # rpm, deb; this machine's architecture) here and the macOS one on the Mac mini (ssh macmini,
-# where the repo is synced to ~/src/recursion). The update is signed with
+# where the repo is synced to ~/src/recursion). Either way the x86_64 Linux packages are built
+# on GitHub meanwhile (.github/workflows/linux-x86_64.yml), from the commit pushed there. The update is signed with
 # ~/.tauri/recursion-updater.key (on the machine that builds) and uploaded to the public
 # AndyWeiBoan/recursion-releases repo, whose latest.json the app checks
 # (tauri.conf.json > plugins.updater). Then the version bump is committed and pushed.
@@ -17,6 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 MAC=macmini
 REPO=AndyWeiBoan/recursion-releases
+SRC_REPO=AndyWeiBoan/recursion
 OUT=target/release-upload
 KEY=~/.tauri/recursion-updater.key
 CONFIG='{"build":{"beforeBuildCommand":"bash scripts/sidecar.sh release"},"bundle":{"macOS":{"signingIdentity":"-"}}}'
@@ -63,19 +65,20 @@ if ! $dry && [ -n "$(git status --porcelain --untracked-files=no -- . ':!design'
   die "commit (and push) these first"
 fi
 
+# GitHub builds x86_64 from what it has: this very commit must be pushed.
+sha=$(git rev-parse HEAD)
+x86=true
+if ! git fetch -q origin || [ -z "$(git branch -r --contains "$sha")" ]; then
+  $dry || die "push this commit first (GitHub builds the x86_64 packages from it)"
+  echo "== not pushed: the dry run skips the x86_64 build"
+  x86=false
+fi
+
 cur=$(python3 -c 'import re; print(re.search(r"^version = \"(.*)\"", open("Cargo.toml").read(), re.M).group(1))')
 [ -n "$ver" ] || ver=$(echo "$cur" | awk -F. '{print $1"."$2"."$3+1}')
 echo "== $cur -> $ver$($dry && echo ' (dry run)')"
 
-# One version everywhere: the app compares tauri.conf.json's with latest.json's.
-python3 - "$ver" <<'EOF'
-import re, sys
-ver = sys.argv[1]
-for path, pattern in (("Cargo.toml", r'^(version = ")[^"]*(")'), ("src-tauri/tauri.conf.json", r'("version": ")[^"]*(")'), ("package.json", r'("version": ")[^"]*(")')):
-    s = open(path).read()
-    s = re.sub(pattern, lambda m: m.group(1) + ver + m.group(2), s, count=1, flags=re.M)
-    open(path, "w").write(s)
-EOF
+python3 scripts/set-version.py "$ver"
 cargo metadata --format-version 1 >/dev/null # refresh Cargo.lock
 VERSION_FILES=(Cargo.toml Cargo.lock package.json src-tauri/tauri.conf.json)
 # A dry run leaves the version as it was.
@@ -84,6 +87,21 @@ $dry && trap 'git checkout -q -- "${VERSION_FILES[@]}"' EXIT
 if command -v pnpm >/dev/null; then pnpm exec vite build; else npx vite build; fi
 
 rm -rf "$OUT" && mkdir -p "$OUT"
+
+# Start the x86_64 build on GitHub; it runs while we build here, and is collected at the end.
+run=
+if $x86; then
+  title="x86_64 $ver $sha"
+  gh workflow run linux-x86_64.yml --repo "$SRC_REPO" -f ref="$sha" -f version="$ver"
+  for _ in $(seq 30); do
+    run=$(gh run list --repo "$SRC_REPO" --workflow linux-x86_64.yml --limit 10 --json databaseId,displayTitle \
+      -q "[.[] | select(.displayTitle == \"$title\")][0].databaseId")
+    [ -n "$run" ] && break
+    sleep 2
+  done
+  [ -n "$run" ] || die "the x86_64 build on GitHub didn't start"
+  echo "== x86_64 building on GitHub: https://github.com/$SRC_REPO/actions/runs/$run"
+fi
 if cargo tauri --version >/dev/null 2>&1; then tauri=(cargo tauri); else tauri=(npx tauri); fi
 
 # Linux first: it's quick, and a failure here stops us before the long Mac build.
@@ -123,14 +141,27 @@ else
   ssh "$MAC" "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u ~/$B/macos/Recursion.app; rm -rf ~/$B/macos/Recursion.app"
 fi
 
+X86_FILES=()
+if [ -n "$run" ]; then
+  gh run watch "$run" --repo "$SRC_REPO" --exit-status --interval 15 >/dev/null || die "the x86_64 build failed: https://github.com/$SRC_REPO/actions/runs/$run"
+  gh run download "$run" --repo "$SRC_REPO" -n linux-x86_64 -D "$OUT"
+  for f in "$OUT"/*; do
+    case "$f" in *.sig) ;; *x86_64*|*amd64*) X86_FILES+=("${f##*/}") ;; esac
+  done
+  [ "${#X86_FILES[@]}" = 3 ] || die "expected 3 x86_64 packages, got: ${X86_FILES[*]}"
+fi
+# (the ${a[@]+...} form: macOS's bash 3.2 calls an empty array unbound under set -u)
+ALL_LINUX=($($linux && printf '%s ' "${LINUX_FILES[@]##*/}") ${X86_FILES[@]+"${X86_FILES[@]}"})
+
 url="https://github.com/$REPO/releases/download/v$ver/Recursion.app.tar.gz"
-python3 - "$ver" "$url" "$OUT" "$ARCH" $($linux && printf '%s ' "${LINUX_FILES[@]##*/}") <<'EOF'
+python3 - "$ver" "$url" "$OUT" ${ALL_LINUX[@]+"${ALL_LINUX[@]}"} <<'EOF'
 import json, sys, datetime
-ver, url, out, arch, *linux = sys.argv[1:]
+ver, url, out, *linux = sys.argv[1:]
 sig = lambda f: open(f"{out}/{f}.sig").read().strip()
 platforms = {"darwin-aarch64": {"signature": sig("Recursion.app.tar.gz"), "url": url}}
 # The updater looks for <os>-<arch>-<how it was installed>, then <os>-<arch>.
 for f in linux:
+    arch = "x86_64" if ("x86_64" in f or "amd64" in f) else "aarch64"
     kind = f.rsplit(".", 1)[1].lower()
     entry = {"signature": sig(f), "url": url.rsplit("/", 1)[0] + "/" + f}
     platforms[f"linux-{arch}-{kind}"] = entry
@@ -148,7 +179,7 @@ fi
 
 gh release create "v$ver" --repo "$REPO" --title "Recursion $ver" --notes "" \
   "$OUT/latest.json" "$OUT/Recursion.app.tar.gz" "$OUT/Recursion_${ver}_aarch64.dmg" \
-  $($linux && for f in "${LINUX_FILES[@]}"; do printf '%s ' "$OUT/${f##*/}"; done)
+  $(for f in ${ALL_LINUX[@]+"${ALL_LINUX[@]}"}; do printf '%s ' "$OUT/$f"; done)
 echo "== published v$ver: https://github.com/$REPO/releases/tag/v$ver"
 
 git add "${VERSION_FILES[@]}"
