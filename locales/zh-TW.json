@@ -264,6 +264,7 @@
   "menu.rewind": "從這則重新開始（Rewind）",
   "rewind.title": "從這則訊息重新開始",
   "rewind.detail": "這則和之後的 {n} 則訊息會被刪除 · 檔案變更不會復原",
+  "rewind.threadDetail": "這則和之後的 {n} 則訊息會被刪除",
   "rewind.cut": "送出後，從這裡開始的訊息都會被刪除",
   "rewind.cancel": "取消 rewind",
   "menu.openWholeThread": "打開整則的討論串",

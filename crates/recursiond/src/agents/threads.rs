@@ -104,13 +104,16 @@ impl Hub {
         let mut all = t.messages.clone();
         all.push(ThreadMsg { from: "you".into(), text: text.clone(), ts: 0 });
         let text = unanswered(&all, &t.agent);
-        // No fork yet means the agent has never seen this thread: introduce it.
+        // No fork yet means the agent has never seen this thread: introduce it. After a rewind the
+        // fork is new too, so it also gets what was said in the thread before the rewound message.
         let prompt = if t.fork.is_none() {
             let quoted = t.quote.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n");
+            let before = earlier(&all, &t.agent);
+            let before = if before.is_empty() { String::new() } else { format!("What was said in this thread so far:\n\n{before}\n\n") };
             format!(
                 "[Recursion thread #{}] The human opened a side thread about this part of your earlier reply in the group chat:\n\n{quoted}\n\n\
                  Only you and the human see this thread; the other agents and the main chat do not. You can read files here but not \
-                 change anything or run commands. Answer the human directly, in their language.\n\nHuman: {text}",
+                 change anything or run commands. Answer the human directly, in their language.\n\n{before}Human: {text}",
                 t.num
             )
         } else {
@@ -120,6 +123,28 @@ impl Hub {
         let (panel, thread) = (panel.to_string(), thread.to_string());
         tokio::spawn(async move { hub.thread_turn(&panel, &thread, prompt, cwd, false).await });
         Ok(())
+    }
+
+    /// Start the thread again from the human's message at `at`: it and everything after it go, and
+    /// `text` is sent in its place. The agent's fork is dropped; the next reply runs in a new fork
+    /// of its main conversation that is told what the thread said before `at`.
+    pub async fn thread_rewind(self: &Arc<Self>, panel: &str, thread: &str, at: usize, text: &str, cwd: String) -> Result<(), String> {
+        if text.trim().is_empty() {
+            return Err(tr!("err.emptyMessage"));
+        }
+        let t = self.with_ws(panel, |ws| ws.threads.iter().find(|t| t.id == thread).cloned()).ok_or_else(|| tr!("thread.notFound"))?;
+        if t.status == ThreadStatus::Replying {
+            return Err(tr!("thread.err.busy"));
+        }
+        if t.messages.get(at).is_none_or(|m| m.from != "you") {
+            return Err(tr!("chat.err.rewindGone"));
+        }
+        self.update_thread(panel, thread, |t| {
+            t.messages.truncate(at);
+            t.fork = None;
+            t.status = ThreadStatus::Waiting;
+        });
+        self.thread_send(panel, thread, text, cwd).await
     }
 
     /// Ask the thread's agent for a conclusion and post it to the main chat.
@@ -189,6 +214,17 @@ impl Hub {
 fn unanswered(messages: &[ThreadMsg], agent: &str) -> String {
     let since = messages.iter().rposition(|m| m.from == agent).map_or(0, |i| i + 1);
     messages[since..].iter().filter(|m| m.from == "you").map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// What was said before the messages the agent has not answered yet, as a transcript.
+fn earlier(messages: &[ThreadMsg], agent: &str) -> String {
+    let since = messages.iter().rposition(|m| m.from == agent).map_or(0, |i| i + 1);
+    messages[..since]
+        .iter()
+        .filter(|m| m.from != "system")
+        .map(|m| format!("{}: {}", if m.from == "you" { "Human" } else { "You" }, m.text))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// One Claude reply in the fork. Returns (text, session id to resume next time).
@@ -333,5 +369,14 @@ mod tests {
         assert_eq!(unanswered(&msgs, "a1"), "重點是經濟虧損\n\n?");
         let msgs = [m("you", "q1"), m("a1", "r1"), m("system", "出錯了"), m("you", "q2"), m("you", "q3")];
         assert_eq!(unanswered(&msgs, "a1"), "q2\n\nq3");
+    }
+
+    #[test]
+    fn a_new_fork_is_told_what_came_before() {
+        // Rewound to the second question: the new fork needs the first exchange.
+        let msgs = [m("you", "q1"), m("a1", "r1"), m("system", "出錯了"), m("you", "q2 again")];
+        assert_eq!(earlier(&msgs, "a1"), "Human: q1\n\nYou: r1");
+        assert_eq!(unanswered(&msgs, "a1"), "q2 again");
+        assert_eq!(earlier(&[m("you", "first")], "a1"), "");
     }
 }

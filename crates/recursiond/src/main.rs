@@ -170,6 +170,8 @@ enum In {
     WsRoster,
     ThreadOpen { panel: String, msg: String, quote: String, text: String },
     ThreadSend { panel: String, thread: String, text: String },
+    /// Start a thread again from the human's message at index `at` (see `Hub::thread_rewind`).
+    ThreadRewind { panel: String, thread: String, at: usize, text: String },
     ThreadBring { panel: String, thread: String },
     /// Take a thread, document, page or poll off the 產出 list.
     OutputRemove { panel: String, id: String },
@@ -495,6 +497,11 @@ impl App {
             ThreadSend { panel, thread, text } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
                 self.hub.thread_send(&panel, &thread, &text, cwd).await?;
+                changed = false;
+            }
+            ThreadRewind { panel, thread, at, text } => {
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
+                self.hub.thread_rewind(&panel, &thread, at, &text, cwd).await?;
                 changed = false;
             }
             OutputRemove { panel, id } => {
