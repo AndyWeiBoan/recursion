@@ -309,7 +309,11 @@ pub enum Back {
 impl Back {
     /// Taking the chat back to before message `seq`: keep the turns that ended before it was sent.
     pub fn plan(kind: AgentKind, marks: &[TurnMark], seq: u64) -> Back {
-        let Some(cut) = marks.iter().position(|t| !t.end.is_some_and(|e| e < seq)) else { return Back::Keep };
+        // A turn that never recorded its end (the daemon stopped during it) was over by the time
+        // the next one was handed what it was shown: without that, one such turn would make
+        // everything after it look newer than the target.
+        let ended_before = |i: usize| marks[i].end.or_else(|| marks.get(i + 1).map(|n| n.upto)).is_some_and(|e| e < seq);
+        let Some(cut) = (0..marks.len()).position(|i| !ended_before(i)) else { return Back::Keep };
         match kind {
             // Claude resumes at the last message of the last turn kept.
             AgentKind::Claude => match marks[..cut].iter().rposition(|t| t.point.is_some()) {
@@ -1046,6 +1050,14 @@ mod rewind_tests {
         assert_eq!(Back::plan(AgentKind::Claude, &marks, 10), Back::To { point: "u1".into(), turns: 1, seen: 4 });
         let unfinished = [mark(4, Some(6), "u1"), mark(8, None, "")];
         assert_eq!(Back::plan(AgentKind::Claude, &unfinished, 20), Back::To { point: "u1".into(), turns: 1, seen: 4 });
+    }
+
+    #[test]
+    fn a_turn_cut_short_by_a_restart_does_not_hide_the_turns_after_it() {
+        // The daemon stopped during the second turn: no end. The turns after it still count.
+        let marks = [mark(4, Some(6), "u1"), mark(8, None, "u2"), mark(12, Some(14), "u3"), mark(20, Some(22), "u4")];
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 18), Back::To { point: "u3".into(), turns: 3, seen: 12 });
+        assert_eq!(Back::plan(AgentKind::Claude, &marks, 10), Back::To { point: "u1".into(), turns: 1, seen: 4 });
     }
 
     #[test]

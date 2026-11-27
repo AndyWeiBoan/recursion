@@ -1461,13 +1461,24 @@ impl Hub {
                 hub.procs.lock().unwrap().remove(&(panel_s.clone(), member_s.clone()));
                 hub.todo_release_all(&panel_s, &member_s);
                 let was_busy = hub.with_ws(&panel_s, |ws| ws.members.iter().any(|m| m.id == member_s && m.status != MemberStatus::Idle));
-                if was_busy {
-                    let err = err_buf.lock().unwrap().trim().to_string();
+                let err = err_buf.lock().unwrap().trim().to_string();
+                let failed = status.is_some_and(|s| !s.success());
+                // It was told to go back to a message its conversation no longer has (compacted
+                // since): Claude ends the turn as if interrupted and exits, so nothing would show.
+                if failed && err.contains("No message found with message.uuid") && hub.rewind_point(&panel_s, &member_s).is_some() {
+                    hub.rewind_unreachable(&panel_s, &member_s, cwd_done.clone());
+                    if was_busy {
+                        hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
+                        spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
+                    }
+                } else if was_busy || (failed && !err.is_empty()) {
                     let code = status.and_then(|s| s.code()).map(|c| c.to_string()).unwrap_or_else(|| "?".into());
                     let detail = if err.is_empty() { String::new() } else { format!("\n\n```\n{}\n```", err.chars().take(1500).collect::<String>()) };
                     hub.system(&panel_s, &member_s, format!("{}{detail}", tr!("agent.crashed", cli = "Claude", code = code)), true);
-                    hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
-                    spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
+                    if was_busy {
+                        hub.update_member(&panel_s, &member_s, |m| m.status = MemberStatus::Idle);
+                        spawn_member_done(hub.clone(), panel_s.clone(), member_s.clone(), cwd_done.clone());
+                    }
                 }
             }
         });
@@ -1521,6 +1532,7 @@ impl ClaudeReader {
         let (panel, member) = (self.panel.clone(), self.member.clone());
         match v["type"].as_str().unwrap_or("") {
             "system" if v["subtype"] == "compact_boundary" => {
+                hub.history_compacted(&panel, &member);
                 let meta = &v["compact_metadata"];
                 if let (Some(before), Some(after)) = (meta["pre_tokens"].as_u64(), meta["post_tokens"].as_u64()) {
                     self.compacted = Some((before, after));

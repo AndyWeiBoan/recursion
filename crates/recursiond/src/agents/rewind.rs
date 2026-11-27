@@ -86,28 +86,57 @@ impl Hub {
 
     /// A turn was handed to an agent, having shown it messages up to `upto`. `point` is Codex's
     /// turn id; Claude's comes when the turn ends (`turn_point`).
-    pub(crate) fn turn_started(&self, panel: &str, member: &str, kind: AgentKind, upto: u64, point: Option<String>) {
+    pub(crate) fn turn_started(&self, panel: &str, member: &str, _kind: AgentKind, upto: u64, point: Option<String>) {
         self.with_ws(panel, |ws| {
             let marks = ws.turns.entry(member.to_string()).or_default();
             marks.push(TurnMark { upto, end: None, point });
             if marks.len() > MAX_TURNS {
                 marks.remove(0);
             }
-            // Claude took its rewind with this turn: from now on it resumes where it is.
-            if kind == AgentKind::Claude {
-                ws.rewinds.remove(member);
-            }
         });
         self.mark_dirty(panel);
     }
 
-    /// Claude's last message in the turn: where a rewind to after this turn resumes.
+    /// Claude's last message in the turn: where a rewind to after this turn resumes. It also
+    /// means Claude went on from its rewind point (if it owed one): only now is the rewind taken.
+    /// A turn that died before writing anything leaves the rewind owed, so the next start goes
+    /// back again instead of picking up the conversation from before the rewind.
     pub(crate) fn turn_point(&self, panel: &str, member: &str, uuid: String) {
         self.with_ws(panel, |ws| {
             if let Some(t) = ws.turns.get_mut(member).and_then(|v| v.last_mut()) {
                 t.point = Some(uuid);
             }
+            ws.rewinds.remove(member);
         });
+        self.mark_dirty(panel);
+    }
+
+    /// Claude compacted its conversation: the messages before that can no longer be resumed at
+    /// (`--resume-session-at` doesn't find them). A rewind to before it starts a new conversation.
+    pub(crate) fn history_compacted(&self, panel: &str, member: &str) {
+        self.with_ws(panel, |ws| {
+            for t in ws.turns.get_mut(member).into_iter().flatten() {
+                t.point = None;
+            }
+        });
+        self.mark_dirty(panel);
+    }
+
+    /// Claude couldn't go back to its rewind point (the message is gone from its conversation):
+    /// start it afresh instead, fed the chat from the start, and hand it what it is owed.
+    pub(crate) fn rewind_unreachable(self: &Arc<Self>, panel: &str, member: &str, cwd: String) {
+        if self.with_ws(panel, |ws| ws.rewinds.remove(member).is_none()) {
+            return;
+        }
+        self.with_ws(panel, |ws| ws.turns.remove(member));
+        self.update_member(panel, member, |m| {
+            m.cli_session_id = None;
+            m.seen = 0;
+        });
+        let alias = self.alias_of(panel, member).unwrap_or_default();
+        self.system(panel, member, tr!("rewind.fresh", alias = alias), false);
+        self.mark_dirty(panel);
+        self.queue_round(panel, Some(vec![member.to_string()]), cwd, None);
     }
 
     /// The turn ended: it covers the chat up to here.
