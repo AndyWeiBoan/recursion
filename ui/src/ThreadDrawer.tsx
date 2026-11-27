@@ -3,7 +3,10 @@
 import { useDragWidth } from "./Layout";
 import { t as tr } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { send } from "./client";
+import { copyText } from "./clipboard";
+import { overlay } from "./browsers";
 import { closeThreads, openThreads, setThreadSearch, setThreadView, unzoom, type ArtifactFilter, type ThreadsUI } from "./threadsUI";
 import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
@@ -431,8 +434,19 @@ function Quote({ text, msg, whole }: { text: string; msg: string; whole: boolean
   );
 }
 
-function Composer({ placeholder, onSend, disabled }: { placeholder: string; onSend: (text: string) => void; disabled?: boolean }) {
-  const [text, setText] = useState("");
+function Composer({ placeholder, onSend, disabled, value, onChange, onEscape, focusKey }: { placeholder: string; onSend: (text: string) => void; disabled?: boolean; value?: string; onChange?: (text: string) => void; onEscape?: () => void; focusKey?: unknown }) {
+  // Uncontrolled unless the thread view drives it (rewind fills the box).
+  const [own, setOwn] = useState("");
+  const text = value ?? own;
+  const setText = onChange ?? setOwn;
+  const box = useRef<HTMLTextAreaElement>(null);
+  // A new `focusKey` (a rewind picked its message) puts the caret at the end of the filled box.
+  useEffect(() => {
+    const el = box.current;
+    if (!el || focusKey == null) return;
+    el.focus();
+    el.selectionStart = el.selectionEnd = el.value.length;
+  }, [focusKey]);
   const submit = () => {
     if (!text.trim() || disabled) return;
     onSend(text.trim());
@@ -441,6 +455,7 @@ function Composer({ placeholder, onSend, disabled }: { placeholder: string; onSe
   return (
     <div className="td-compose">
       <textarea
+        ref={box}
         autoFocus
         value={text}
         rows={3}
@@ -450,6 +465,10 @@ function Composer({ placeholder, onSend, disabled }: { placeholder: string; onSe
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
+          } else if (e.key === "Escape" && onEscape) {
+            e.preventDefault();
+            e.stopPropagation();
+            onEscape();
           }
         }}
       />
@@ -493,6 +512,35 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
     if (box.current) box.current.scrollTop = box.current.scrollHeight;
   }, [t.messages.length, t.status]);
   const busy = t.status === "replying";
+  const [text, setText] = useState("");
+  const [menu, setMenu] = useState<{ x: number; y: number; i: number; quote: string } | null>(null);
+  // Rewind mode: the box holds the target's text; cancelling brings back the draft from before
+  // the first Rewind, however many times the target changed since. Nothing is deleted until sent.
+  const [rewindAt, setRewindAt] = useState<number | null>(null);
+  const draft = useRef<string | null>(null);
+  const startRewind = (i: number) => {
+    if (draft.current === null) draft.current = text;
+    setRewindAt(i);
+    setText(t.messages[i].text);
+  };
+  const leaveRewind = (restore: boolean) => {
+    if (restore && draft.current !== null) setText(draft.current);
+    draft.current = null;
+    setRewindAt(null);
+  };
+  // The target went away meanwhile (the thread changed under us).
+  const target = rewindAt === null ? undefined : t.messages[rewindAt];
+  useEffect(() => {
+    if (rewindAt !== null && target?.from !== "you") leaveRewind(true);
+  }, [rewindAt, target?.from]);
+  const doomed = rewindAt === null ? 0 : t.messages.slice(rewindAt + 1).filter((m) => m.from !== "system").length;
+  const onMenu = (e: React.MouseEvent, i: number) => {
+    e.preventDefault();
+    const sel = window.getSelection();
+    const el = e.currentTarget as HTMLElement;
+    const quote = sel && !sel.isCollapsed && el.contains(sel.anchorNode) ? sel.toString().trim() : "";
+    setMenu({ x: e.clientX, y: e.clientY, i, quote });
+  };
   return (
     <>
       <header className="td-head">
@@ -509,37 +557,125 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
       </header>
       <div className="td-body" ref={box}>
         <Quote text={t.quote} msg={t.msg} whole={!!t.whole} />
-        {t.messages.map((m, i) =>
-          m.from === "system" ? (
-            <div key={i} className="td-sys">
-              {m.text}
-            </div>
-          ) : m.from === "you" ? (
-            <div key={i} className="td-msg you">
-              {m.text}
-            </div>
-          ) : (
-            <div key={i} className="td-msg agent">
-              <span className="td-who">
-                <Avatar m={byId.get(m.from)} size={16} /> @{byId.get(m.from)?.alias ?? "agent"} · {time(m.ts)}
-              </span>
-              <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, []) }} />
-            </div>
-          ),
-        )}
+        {t.messages.map((m, i) => {
+          const cut = i === rewindAt ? <div key="rewind-cut" className="rewind-cut">{tr("rewind.cut")}</div> : null;
+          const faded = rewindAt !== null && i >= rewindAt ? " rewound" : "";
+          const el =
+            m.from === "system" ? (
+              <div key={i} className={`td-sys${faded}`}>
+                {m.text}
+              </div>
+            ) : m.from === "you" ? (
+              <div key={i} className={`td-msg you${faded}`} onContextMenu={(e) => onMenu(e, i)}>
+                {m.text}
+              </div>
+            ) : (
+              <div key={i} className={`td-msg agent${faded}`} onContextMenu={(e) => onMenu(e, i)}>
+                <span className="td-who">
+                  <Avatar m={byId.get(m.from)} size={16} /> @{byId.get(m.from)?.alias ?? "agent"} · {time(m.ts)}
+                </span>
+                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, []) }} />
+              </div>
+            );
+          return cut ? [cut, el] : el;
+        })}
         {busy && (
           <div className="td-sys">
             <span className="spin">✳</span> {tr("thread.agentReplying", { alias: who?.alias ?? "agent" })}
           </div>
         )}
       </div>
-      <Composer placeholder={busy ? tr("thread.waitAgent") : tr("thread.replyPlaceholder", { alias: who?.alias ?? "agent" })} disabled={busy} onSend={(text) => send({ t: "thread_send", panel, thread: t.id, text })} />
+      {rewindAt !== null && (
+        <div className="reply-bar rewind-bar td-rewind">
+          <span className="reply-ref">
+            <span className="reply-who">⟲ {tr("rewind.title")}</span>
+            <span className="reply-text">{tr("rewind.threadDetail", { n: doomed })}</span>
+          </span>
+          <button className="reply-x" onClick={() => leaveRewind(true)} aria-label={tr("rewind.cancel")} title={tr("rewind.cancel") + "（Esc）"}>
+            ✕
+          </button>
+        </div>
+      )}
+      <Composer
+        placeholder={busy ? tr("thread.waitAgent") : tr("thread.replyPlaceholder", { alias: who?.alias ?? "agent" })}
+        disabled={busy}
+        value={text}
+        onChange={setText}
+        onEscape={rewindAt !== null ? () => leaveRewind(true) : undefined}
+        focusKey={rewindAt}
+        onSend={(msg) => {
+          if (rewindAt !== null) {
+            send({ t: "thread_rewind", panel, thread: t.id, at: rewindAt, text: msg });
+            leaveRewind(false);
+          } else send({ t: "thread_send", panel, thread: t.id, text: msg });
+        }}
+      />
       <div className="td-foot">
         <button className="td-bring" disabled={busy || !t.fork} onClick={() => send({ t: "thread_bring", panel, thread: t.id })} title={tr("thread.bringHint")}>
           ↩ {tr("thread.bring")}
         </button>
       </div>
+      {menu && (
+        <ThreadMenu
+          menu={menu}
+          canRewind={t.messages[menu.i]?.from === "you" && !busy}
+          onRewind={() => startRewind(menu.i)}
+          onCopy={() => void copyText(menu.quote || t.messages[menu.i]?.text || "")}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </>
+  );
+}
+
+/** Right-click on a thread message: copy it (or the selected part), or rewind from the human's own. */
+function ThreadMenu({ menu, canRewind, onRewind, onCopy, onClose }: { menu: { x: number; y: number; quote: string }; canRewind: boolean; onRewind: () => void; onCopy: () => void; onClose: () => void }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const restore = overlay(); // native browser panels would draw on top of it
+    const away = (e: Event) => {
+      if (!(e.target as HTMLElement).closest?.(".ctx-menu")) close.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close.current();
+      }
+    };
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", close.current);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", close.current);
+      restore();
+    };
+  }, []);
+  const act = (f: () => void) => () => (f(), onClose());
+  return createPortal(
+    <div
+      className="menu ctx-menu"
+      role="menu"
+      style={{ left: menu.x, top: menu.y }}
+      ref={(el) => {
+        if (!el) return;
+        el.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - el.offsetWidth - 8))}px`;
+        el.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - el.offsetHeight - 8))}px`;
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {canRewind && (
+        <button role="menuitem" onClick={act(onRewind)}>
+          ⟲ {tr("menu.rewind")}
+        </button>
+      )}
+      <button role="menuitem" onClick={act(onCopy)}>
+        ⧉ {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
+      </button>
+    </div>,
+    document.body,
   );
 }
 

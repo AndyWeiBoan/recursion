@@ -161,6 +161,7 @@ export type Cmd =
   | { t: "ws_roster" }
   | { t: "thread_open"; panel: string; msg: string; quote: string; text: string }
   | { t: "thread_send"; panel: string; thread: string; text: string }
+  | { t: "thread_rewind"; panel: string; thread: string; at: number; text: string }
   | { t: "thread_bring"; panel: string; thread: string }
   | { t: "doc_get"; session: string; doc: string }
   | { t: "doc_action"; session: string; doc: string; action: "reply" | "prompt"; data: string }

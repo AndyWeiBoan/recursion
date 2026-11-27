@@ -276,6 +276,8 @@
   "rewind.title": "Starting again from this message",
   "rewind.detail": "It and the {n} messages after it will be deleted · file changes are not undone",
   "rewind.detail_one": "It and the message after it will be deleted · file changes are not undone",
+  "rewind.threadDetail": "It and the {n} messages after it will be deleted",
+  "rewind.threadDetail_one": "It and the message after it will be deleted",
   "rewind.cut": "Once you send, everything from here on is deleted",
   "rewind.cancel": "Cancel rewind",
   "menu.openWholeThread": "Open the thread on this message",
