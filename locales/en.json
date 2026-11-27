@@ -602,6 +602,7 @@
   "todoCard.copied": "Card copied",
   "todoCard.empty": "Nothing here yet. Click to write (Markdown)",
   "todoCard.placeholder": "Details, steps, links… in Markdown",
+  "todoCard.resize": "Drag to resize",
   "todoCard.copyLink": "Copy link",
   "todoCard.openLink": "Open link",
   "todoCard.linkCopied": "Link copied",

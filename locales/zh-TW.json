@@ -586,6 +586,7 @@
   "todoCard.copied": "已複製卡片內容",
   "todoCard.empty": "還沒有內容，點這裡寫（支援 Markdown）",
   "todoCard.placeholder": "用 Markdown 寫細節、步驟、連結…",
+  "todoCard.resize": "拖曳調整大小",
   "todoCard.copyLink": "複製連結",
   "todoCard.openLink": "打開連結",
   "todoCard.linkCopied": "已複製連結",

@@ -1,5 +1,5 @@
 // A todo item's card: its details in Markdown, floating above everything. Opened by clicking the
-// item; moved by its title bar and resized by its corner (both remembered); the human edits it
+// item; moved by its title bar and resized by its corner grip (both remembered); the human edits it
 // here, agents with `todo_note`. Links open; right-click one to copy it.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
@@ -81,20 +81,6 @@ function TodoCard({ panel, list, item }: Open) {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [editing, link]);
-  // The size the corner was dragged to.
-  useEffect(() => {
-    const el = card.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      const next = { ...place, w: el.offsetWidth, h: el.offsetHeight };
-      if (next.w !== place.w || next.h !== place.h) {
-        setPlace(next);
-        savePlace(next);
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [place]);
   if (!todo || !l) return null;
 
   const drag = (e: React.PointerEvent) => {
@@ -114,6 +100,31 @@ function TodoCard({ panel, list, item }: Open) {
       savePlace(last);
     };
     document.body.classList.add("card-dragging");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  // Our own corner grip: CSS `resize` does nothing in macOS's WebView, whose scrolling body
+  // covers the corner. Growing stops at the window's edge rather than moving the card.
+  const resize = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const x0 = e.clientX - place.w,
+      y0 = e.clientY - place.h;
+    let last = place;
+    const move = (ev: PointerEvent) => {
+      const w = Math.min(Math.max(ev.clientX - x0, 280), MAX_W, window.innerWidth - place.x - 8);
+      const h = Math.min(Math.max(ev.clientY - y0, 180), MAX_H, window.innerHeight - place.y - 8);
+      last = { ...place, w, h };
+      setPlace(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("card-resizing");
+      savePlace(last);
+    };
+    document.body.classList.add("card-resizing");
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
@@ -198,6 +209,7 @@ function TodoCard({ panel, list, item }: Open) {
           <button onClick={() => (void openExternal(link.href), setLink(null))}>↗ {tr("todoCard.openLink")}</button>
         </div>
       )}
+      <div className="tc-grip" onPointerDown={resize} title={tr("todoCard.resize")} aria-hidden />
     </div>,
     document.body,
   );
