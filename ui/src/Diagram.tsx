@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { saveDownload } from "./clipboard";
 import { t } from "./i18n";
+import { Icon } from "./icons";
 
 const MIN = 0.2;
 const MAX = 4;
@@ -136,7 +137,7 @@ export function DiagramView({ svg, title }: { svg: string; title: string }) {
     <div className={`dgv${light ? " light" : ""}`}>
       <div className="dgv-bar">
         <button onClick={() => zoom(1 / 1.25, ...center())} aria-label="−">
-          −
+          <Icon name="minus" />
         </button>
         <span className="dgv-pct">{Math.round(view.s * 100)}%</span>
         <button onClick={() => zoom(1.25, ...center())} aria-label="+">
@@ -156,7 +157,7 @@ export function DiagramView({ svg, title }: { svg: string; title: string }) {
           title={t("dg.theme")}
           aria-label={t("dg.theme")}
         >
-          {light ? "☾" : "☀"}
+          <Icon name={light ? "dark" : "light"} size={14} />
         </button>
         <button onClick={exportPng}>{t("dg.png")}</button>
         <button onClick={exportSvg}>{t("dg.svg")}</button>

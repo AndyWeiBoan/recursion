@@ -2,6 +2,7 @@
 import { t } from "./i18n";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PanelKind } from "./types";
+import { Icon, type IconName } from "./icons";
 
 export interface PickRequest {
   title: string;
@@ -10,10 +11,10 @@ export interface PickRequest {
   onPick: (kind: PanelKind) => void;
 }
 
-const ITEMS: { kind: PanelKind; label: string; hint: string; key: string; icon: string }[] = [
-  { kind: "terminal", get label() { return t("kind.terminal"); }, get hint() { return t("kind.terminal.hint"); }, key: "t", icon: "›_" },
-  { kind: "workspace", get label() { return t("kind.workspace"); }, get hint() { return t("kind.workspace.hint"); }, key: "g", icon: "✳" },
-  { kind: "browser", get label() { return t("kind.browser"); }, get hint() { return t("kind.browser.hint"); }, key: "b", icon: "◎" },
+const ITEMS: { kind: PanelKind; label: string; hint: string; key: string; icon: IconName }[] = [
+  { kind: "terminal", get label() { return t("kind.terminal"); }, get hint() { return t("kind.terminal.hint"); }, key: "t", icon: "terminal" },
+  { kind: "workspace", get label() { return t("kind.workspace"); }, get hint() { return t("kind.workspace.hint"); }, key: "g", icon: "chat" },
+  { kind: "browser", get label() { return t("kind.browser"); }, get hint() { return t("kind.browser.hint"); }, key: "b", icon: "browser" },
 ];
 
 const LAST_KEY = "recursion.lastKind";
@@ -97,7 +98,7 @@ export function KindPicker({ req, close }: { req: PickRequest; close: () => void
             onMouseEnter={() => setSel(i)}
             onClick={() => choose(it.kind)}
           >
-            <span className={`picker-ic ic-${it.kind}`}>{it.icon}</span>
+            <span className={`picker-ic ic-${it.kind}`}><Icon name={it.icon} size={20} /></span>
             <span className="picker-text">
               <span className="picker-label">{it.label}</span>
               <span className="picker-hint">{it.hint}</span>

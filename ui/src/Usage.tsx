@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { send, useAccounts } from "./client";
 import { openSettings } from "./Settings";
 import type { Account } from "./types";
+import { BrandMark, Icon } from "./icons";
 
 const KEY = "recursion.usageOpen";
 const WINDOWS: [string, string][] = [
@@ -11,8 +12,6 @@ const WINDOWS: [string, string][] = [
   ["seven_day", "usage.7d"],
 ];
 const KIND = { claude: "Claude", codex: "Codex" };
-// Same marks and colours as the agent picker.
-const MARK = { claude: { glyph: "✳", color: "#e8714a" }, codex: { glyph: "◎", color: "#3fb8a8" } };
 
 const level = (v: number) => (v > 0.9 ? "hi" : v > 0.7 ? "mid" : "lo");
 
@@ -85,37 +84,24 @@ export function UsagePanel() {
     <div className={`usage-panel${open ? " open" : ""}`}>
       <div className="usage-top">
         <button className="usage-head" onClick={toggle} aria-expanded={open} title={open ? t("usage.collapse") : t("usage.expand")}>
-          <span className={`sess-fold usage-fold${open ? "" : " closed"}`} aria-hidden="true">
-            ›
-          </span>
-          <span>{t("usage.title")}</span>
-          {!open && (
-            <span className="usage-sum">
-              {shown.filter(hasData).map((a) => {
-                const v = Math.max(...WINDOWS.map(([k]) => a.usage[k] ?? 0));
-                return (
-                  <span key={a.id} className={`usage-pct ${level(v)}`} title={t("usage.highest", { who: label(a), pct: Math.round(v * 100) })}>
-                    <i style={{ color: MARK[a.kind].color }}>{MARK[a.kind].glyph}</i>
-                    {a.name} {Math.round(v * 100)}%
-                  </span>
-                );
-              })}
-            </span>
-          )}
+          <Icon name="usage" size={14} /> {t("usage.title")}
         </button>
-        <button className={`usage-refresh${refreshing ? " spinning" : ""}`} onClick={refresh} title={t("usage.refresh")} aria-label={t("usage.refresh")}>
-          <span aria-hidden="true">↻</span>
-        </button>
+        {open && (
+          <button className={`usage-refresh${refreshing ? " spinning" : ""}`} onClick={refresh} title={t("usage.refresh")} aria-label={t("usage.refresh")}>
+            <Icon name="reload" size={14} />
+          </button>
+        )}
       </div>
       {open &&
         shown.map((a) => (
           <button key={a.id} className="usage-acct" onClick={() => openSettings("accounts")} title={t("usage.openAccounts", { who: a.email ?? t("acct.notLoggedIn") })}>
             <span className="usage-name">
-              <i style={{ color: MARK[a.kind].color }}>{MARK[a.kind].glyph}</i>
+              <BrandMark kind={a.kind} size={12} />
               {label(a)}
             </span>
-            {a.email && <span className="usage-email">{a.email}</span>}
+            {a.email && a.email !== a.name && <span className="usage-email">{a.email}</span>}
             {!hasData(a) && <span className="usage-none">{a.logged_in ? t("usage.unavailable") : t("acct.notLoggedIn")}</span>}
+            {hasData(a) && a.logged_in && a.expired && <span className="usage-none"><Icon name="key" size={12} /> {t("usage.stale")}</span>}
             {WINDOWS.filter(([k]) => a.usage[k] !== undefined).map(([k, name]) => {
               const v = Math.min(1, a.usage[k]);
               return (

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { send, useMcp, type McpServer, type McpStatus } from "./client";
 import { t } from "./i18n";
+import { Icon } from "./icons";
 
 /** Where a server was copied from, for people. */
 function fromLabel(from?: string | null) {
@@ -47,12 +48,12 @@ function Pairs({ label, hint, rows, onChange }: { label: string; hint: string; r
             spellCheck={false}
           />
           <button type="button" onClick={() => onChange(rows.filter((_, j) => j !== i))} aria-label={t("common.delete")} title={t("common.delete")}>
-            ✕
+            <Icon name="close" />
           </button>
         </div>
       ))}
       <button type="button" className="acct-new" onClick={() => onChange([...rows, { k: "", v: "", kept: false }])}>
-        ＋ {t("mcp.addPair")}
+        <Icon name="add" size={14} /> {t("mcp.addPair")}
       </button>
       <span className="field-hint">{hint}</span>
     </div>
@@ -238,7 +239,7 @@ export function McpPane() {
           <Form onDone={() => setAdding(false)} />
         ) : (
           <button className="acct-new" onClick={() => setAdding(true)}>
-            ＋ {t("mcp.add")}
+            <Icon name="add" size={14} /> {t("mcp.add")}
           </button>
         )}
       </section>

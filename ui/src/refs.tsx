@@ -7,6 +7,7 @@ import { t as tr } from "./i18n";
 import { openThreads, unzoom } from "./threadsUI";
 import { showTodoList } from "./Todos";
 import type { OutputRef, Workspace } from "./types";
+import { Icon, type IconName } from "./icons";
 
 /** What can go in the box from the drawer. */
 export type Payload = { ref: OutputRef } | { image: string };
@@ -25,7 +26,7 @@ export function addToChat(panel: string, p: Payload) {
   takers.get(panel)?.(p);
 }
 
-export const REF_ICON: Record<OutputRef["kind"], string> = { doc: "📄", diagram: "◈", page: "🌐", poll: "📊", todo: "☑", thread: "💬" };
+export const REF_ICON: Record<OutputRef["kind"], IconName> = { doc: "doc", diagram: "diagram", page: "page", poll: "poll", todo: "todo", thread: "thread" };
 
 /** Its current title, or that it is gone (taken off the 產出 list, or deleted). */
 function look(ws: Workspace | null, r: OutputRef): { title: string; gone: boolean } {
@@ -70,13 +71,13 @@ export function RefChip({ panel, r, onRemove }: { panel: string; r: OutputRef; o
   return (
     <span className={`file-chip ref-chip${gone ? " gone" : ""}`}>
       <button className="file-chip-open" disabled={gone} onClick={() => openRef(panel, r)} title={gone ? tr("ref.goneHint") : tr("ref.open", { title })}>
-        <span className="ref-icon">{REF_ICON[r.kind]}</span>
+        <span className="ref-icon"><Icon name={REF_ICON[r.kind]} size={13} /></span>
         <span className="ref-title">{title.replace(/\s+/g, " ")}</span>
         {gone && <span className="ref-gone">{tr("ref.gone")}</span>}
       </button>
       {onRemove && (
         <button className="file-chip-x" onClick={onRemove} aria-label={tr("ref.remove", { title })}>
-          ✕
+          <Icon name="close" />
         </button>
       )}
     </span>
@@ -87,7 +88,7 @@ export function RefChip({ panel, r, onRemove }: { panel: string; r: OutputRef; o
 export function QuoteButton({ panel, p }: { panel: string; p: Payload }) {
   return (
     <button className="td-goto td-quote-btn" onClick={(e) => (e.stopPropagation(), addToChat(panel, p))} title={tr("ref.add")} aria-label={tr("ref.add")}>
-      ↳
+      <Icon name="quote" />
     </button>
   );
 }

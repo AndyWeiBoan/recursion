@@ -7,6 +7,7 @@ import { detectLogins, send, setSetup, useAccounts, useAccountsLoaded, useSetup,
 import { disposeTerminal, fitTerminal, focusTerminal, mountTerminal } from "./terminals";
 import { Modal } from "./WorkspaceView";
 import type { Account, AgentKind } from "./types";
+import { Icon } from "./icons";
 
 export const KINDS: { kind: AgentKind; name: string }[] = [
   { kind: "claude", name: "Claude Code" },
@@ -81,7 +82,7 @@ export function SetupTerminal() {
 function CliRow({ name, kind, info }: { name: string; kind: AgentKind; info: CliInfo | null | undefined }) {
   return (
     <div className="setup-row">
-      <span className={`setup-mark ${info ? "ok" : info === null ? "no" : ""}`}>{info ? "✓" : info === null ? "✕" : "…"}</span>
+      <span className={`setup-mark ${info ? "ok" : info === null ? "no" : ""}`}>{info ? <Icon name="check" size={13} /> : info === null ? <Icon name="close" size={13} /> : "…"}</span>
       <div className="setup-main">
         <b>{name}</b>
         <span className="dim">{info ? t("setup.installed", { version: info.version || "?" }) : info === null ? t("setup.notInstalled") : t("setup.checking")}</span>
@@ -115,7 +116,7 @@ export function AddAccountChoices({ kind }: { kind: AgentKind }) {
     <div className="setup-add">
       {found && (
         <div className="setup-row found">
-          <span className="setup-mark ok">✓</span>
+          <span className="setup-mark ok"><Icon name="check" size={13} /></span>
           <div className="setup-main">
             <b>{found.email ?? t("acct.loggedIn")}</b>
             <span className="dim">{t("setup.foundLogin")}{found.plan ? ` · ${found.plan}` : ""}</span>
@@ -138,7 +139,7 @@ function AccountRows({ kind }: { kind: AgentKind }) {
     <>
       {accounts.map((a) => (
         <div key={a.id} className="setup-row">
-          <span className={`setup-mark ${a.logged_in ? "ok" : ""}`}>{a.logged_in ? "✓" : "…"}</span>
+          <span className={`setup-mark ${a.logged_in ? "ok" : ""}`}>{a.logged_in ? <Icon name="check" size={13} /> : "…"}</span>
           <div className="setup-main">
             <b>{accountLabel(a)}</b>
             <span className="dim">{a.logged_in ? accountDetail(a) || t("acct.loggedIn") : t("setup.waitingLogin")}</span>
@@ -177,7 +178,7 @@ export function Onboarding() {
         <ol className="setup-steps">
           {[t("setup.step.tools"), t("setup.step.accounts")].map((s, i) => (
             <li key={s} className={i === step ? "on" : i < step ? "done" : ""}>
-              <span>{i < step ? "✓" : i + 1}</span>
+              <span>{i < step ? <Icon name="check" size={12} /> : i + 1}</span>
               {s}
             </li>
           ))}

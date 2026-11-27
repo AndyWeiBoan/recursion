@@ -12,8 +12,9 @@ import { Avatar, renderMarkdown } from "./WorkspaceView";
 import { PollRow, PollView } from "./Polls";
 import { ImageThumb, isImagePath } from "./Files";
 import { TodoPane } from "./Todos";
-import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
+import { QuoteButton, startRefDrag, type Payload } from "./refs";
 import type { Artifact, Member, Poll, Thread, Workspace } from "./types";
+import { Icon } from "./icons";
 
 const STATUS: Record<Thread["status"], string> = {
   get replying() { return tr("thread.replying"); },
@@ -102,7 +103,7 @@ const KINDS: { id: ArtifactFilter; label: string }[] = [
   { id: "poll", get label() { return tr("outputs.polls"); } },
   { id: "image", get label() { return tr("outputs.images"); } },
 ];
-const ICON = { thread: "💬", doc: "📄", diagram: "📐", page: "🌐" };
+const ICON = { thread: "thread", doc: "doc", diagram: "diagram", page: "page" } as const;
 const KIND_WORD = {
   get doc() { return tr("kind.doc"); },
   get page() { return tr("kind.page"); },
@@ -196,7 +197,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
         <b>{tr("outputs.title")}</b>
         <span className="dim">{count("all")}</span>
         <button className="td-x" onClick={() => closeThreads(panel)} aria-label={tr("outputs.close")} title={tr("common.close") + "（Esc）"}>
-          ✕
+          <Icon name="close" />
         </button>
       </header>
       {!anchor && (
@@ -211,7 +212,7 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
           <span className="td-chip" title={tr("outputs.anchorHint")}>
             {tr("outputs.anchor", { time: time(anchor.ts), alias: byId.get(anchor.from)?.alias ?? "?" })}
             <button onClick={() => setThreadSearch(panel, { msg: null })} aria-label={tr("outputs.clearFilter")}>
-              ✕
+              <Icon name="close" />
             </button>
           </span>
         )}
@@ -253,7 +254,7 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
   const ask = t.messages.find((m) => m.from === "you")?.text.replace(/\s+/g, " ").trim();
   const ref: Payload = { ref: { kind: "thread", id: t.id, title: t.quote } };
   return (
-    <div className={`td-row st-${t.status}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.thread} #${t.num}「${t.quote.slice(0, 30)}」`)}>
+    <div className={`td-row st-${t.status}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `#${t.num}「${t.quote.slice(0, 30)}」`)}>
       <button className="td-open" onClick={() => setThreadView(panel, { kind: "thread", id: t.id })}>
         <span className="td-num">
           <span className="td-icon">{ICON.thread}</span>#{t.num}
@@ -275,7 +276,7 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
         </span>
       </button>
       <button className="td-goto" onClick={() => showInChat(t.msg)} title={tr("thread.findOriginal")} aria-label={tr("thread.originalOf", { num: t.num })}>
-        ↖
+        <Icon name="find" />
       </button>
       <QuoteButton panel={panel} p={ref} />
       <RemoveButton panel={panel} id={t.id} name={tr("thread.name", { num: t.num })} />
@@ -287,7 +288,7 @@ function ThreadRow({ panel, t, who }: { panel: string; t: Thread; who?: Member }
 export function RemoveButton({ panel, id, name }: { panel: string; id: string; name: string }) {
   return (
     <button className="td-goto td-remove" onClick={() => send({ t: "output_remove", panel, id })} title={tr("outputs.remove")} aria-label={tr("outputs.removeNamed", { name })}>
-      ✕
+      <Icon name="close" />
     </button>
   );
 }
@@ -337,7 +338,7 @@ function Tabs({ filter, count, pick }: { filter: ArtifactFilter; count: (k: Arti
       {hidden.length > 0 && (
         <div className="td-more" onPointerDown={(e) => e.stopPropagation()}>
           <button className={picked ? "on" : ""} onClick={() => setOpen((o) => !o)} title={tr("outputs.moreTabs")} aria-label={tr("outputs.moreTabs")} aria-expanded={open}>
-            {picked ? picked.label : "⋯"} ▾
+            {picked ? picked.label : <Icon name="more" size={14} />} <Icon name="dropdown" size={12} />
           </button>
           {open && (
             <div className="td-more-menu" role="menu">
@@ -366,7 +367,7 @@ function imageMatches(path: string, query: string) {
 
 function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: string; at: number }) {
   return (
-    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, { image: path }, `🖼 ${path.split("/").pop()}`)}>
+    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, { image: path }, path.split("/").pop() ?? path)}>
       <button className="td-open td-image" onClick={() => (send({ t: "file_open", panel, path }), unzoom())} title={tr("outputs.openImage")}>
         <ImageThumb panel={panel} path={path} size={56} />
         <span className="td-main">
@@ -378,7 +379,7 @@ function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: 
       </button>
       <QuoteButton panel={panel} p={{ image: path }} />
       <button className="td-goto" onClick={() => showInChat(msg)} title={tr("outputs.findMessage")} aria-label={tr("outputs.findMessage")}>
-        ↗
+        <Icon name="open" />
       </button>
     </div>
   );
@@ -388,7 +389,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
   const title = a.title || (a.kind === "page" ? host(a.target) : tr("doc.untitled"));
   const ref: Payload = { ref: { kind: a.kind, id: a.id, title } };
   return (
-    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON[a.kind]} ${title}`)}>
+    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, ref, title)}>
       <button
         className="td-open"
         // The drawer hides the chat's splits, where it opens: show them again, and keep the list.
@@ -396,7 +397,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
         title={a.kind === "page" ? tr("outputs.openPage", { alias: who?.alias ?? "agent", url: a.target }) : tr("outputs.openDoc")}
       >
         <span className="td-num">
-          <span className="td-icon">{ICON[a.kind]}</span>
+          <span className="td-icon"><Icon name={ICON[a.kind]} size={14} /></span>
         </span>
         <span className="td-main">
           <span className="td-quote">{title}</span>
@@ -473,7 +474,7 @@ function Composer({ placeholder, onSend, disabled, value, onChange, onEscape, fo
         }}
       />
       <button className="td-send" onClick={submit} disabled={disabled || !text.trim()} aria-label={tr("keys.send")}>
-        ↑
+        <Icon name="up" />
       </button>
     </div>
   );
@@ -485,7 +486,7 @@ function NewThread({ panel, msg, quote, who }: { panel: string; msg: string; quo
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← {tr("common.back")}
+          <Icon name="back" size={14} /> {tr("common.back")}
         </button>
         <b>{tr("thread.new")}</b>
       </header>
@@ -545,14 +546,14 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← {tr("common.back")}
+          <Icon name="back" size={14} /> {tr("common.back")}
         </button>
         <b>#{t.num}</b>
         <span className="dim">
           @{who?.alias ?? tr("agent.gone")} · {STATUS[t.status]}
         </span>
         <button className="td-x" onClick={() => closeThreads(panel)} aria-label={tr("thread.close")} title={tr("drawer.closeHint")}>
-          ✕
+          <Icon name="close" />
         </button>
       </header>
       <div className="td-body" ref={box}>
@@ -574,25 +575,25 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
                 <span className="td-who">
                   <Avatar m={byId.get(m.from)} size={16} /> @{byId.get(m.from)?.alias ?? "agent"} · {time(m.ts)}
                 </span>
-                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, []) }} />
+                <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, {}) }} />
               </div>
             );
           return cut ? [cut, el] : el;
         })}
         {busy && (
           <div className="td-sys">
-            <span className="spin">✳</span> {tr("thread.agentReplying", { alias: who?.alias ?? "agent" })}
+            <Icon name="busy" size={13} /> {tr("thread.agentReplying", { alias: who?.alias ?? "agent" })}
           </div>
         )}
       </div>
       {rewindAt !== null && (
         <div className="reply-bar rewind-bar td-rewind">
           <span className="reply-ref">
-            <span className="reply-who">⟲ {tr("rewind.title")}</span>
+            <span className="reply-who"><Icon name="rewind" size={13} /> {tr("rewind.title")}</span>
             <span className="reply-text">{tr("rewind.threadDetail", { n: doomed })}</span>
           </span>
           <button className="reply-x" onClick={() => leaveRewind(true)} aria-label={tr("rewind.cancel")} title={tr("rewind.cancel") + "（Esc）"}>
-            ✕
+            <Icon name="close" />
           </button>
         </div>
       )}
@@ -612,7 +613,7 @@ function ThreadView({ panel, t, byId }: { panel: string; t: Thread; byId: Map<st
       />
       <div className="td-foot">
         <button className="td-bring" disabled={busy || !t.fork} onClick={() => send({ t: "thread_bring", panel, thread: t.id })} title={tr("thread.bringHint")}>
-          ↩ {tr("thread.bring")}
+          <Icon name="bring" size={14} /> {tr("thread.bring")}
         </button>
       </div>
       {menu && (
@@ -668,11 +669,11 @@ function ThreadMenu({ menu, canRewind, onRewind, onCopy, onClose }: { menu: { x:
     >
       {canRewind && (
         <button role="menuitem" onClick={act(onRewind)}>
-          ⟲ {tr("menu.rewind")}
+          <Icon name="rewind" size={14} /> {tr("menu.rewind")}
         </button>
       )}
       <button role="menuitem" onClick={act(onCopy)}>
-        ⧉ {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
+        <Icon name="copy" size={14} /> {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
       </button>
     </div>,
     document.body,

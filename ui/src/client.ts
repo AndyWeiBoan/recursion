@@ -504,25 +504,28 @@ export function useRoster(chatsKey: string): Record<string, Member[]> {
   );
 }
 
-// "Add an agent to this chat" from outside the chat (the sidebar menu).
-const addAgentListeners = new Map<string, () => void>();
-export function onAddAgentRequest(panel: string, f: () => void) {
-  addAgentListeners.set(panel, f);
+// A chat's add-agent form or its settings, asked for from outside the chat (a panel's menu).
+type ChatAsk = "addAgent" | "settings";
+const chatListeners = new Map<string, (what: ChatAsk) => void>();
+export function onChatRequest(panel: string, f: (what: ChatAsk) => void) {
+  chatListeners.set(panel, f);
   return () => {
-    if (addAgentListeners.get(panel) === f) addAgentListeners.delete(panel);
+    if (chatListeners.get(panel) === f) chatListeners.delete(panel);
   };
 }
-/** Focus the chat panel and open its add-agent form (once it is on screen). */
-export function requestAddAgent(panel: string) {
+/** Focus the chat panel and open that there (once it is on screen). */
+function requestInChat(panel: string, what: ChatAsk) {
   send({ t: "panel_focus", panel });
   let tries = 0;
   const tick = () => {
-    const f = addAgentListeners.get(panel);
-    if (f) f();
+    const f = chatListeners.get(panel);
+    if (f) f(what);
     else if (tries++ < 20) setTimeout(tick, 50);
   };
   tick();
 }
+export const requestAddAgent = (panel: string) => requestInChat(panel, "addAgent");
+export const requestChatSettings = (panel: string) => requestInChat(panel, "settings");
 
 // ---------- accounts ----------
 /** The human's MCP servers (keys hidden), their last connection test, and what the CLIs have. */

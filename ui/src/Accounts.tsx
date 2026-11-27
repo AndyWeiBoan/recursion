@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { detectLogins, send, useAccounts } from "./client";
 import { accountDetail, accountLabel, AddAccountChoices, KINDS } from "./Setup";
 import type { Account, AgentKind } from "./types";
+import { Icon } from "./icons";
 
 const WINDOWS: [string, string][] = [
   ["five_hour", "usage.5h.long"],
@@ -38,7 +39,13 @@ function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
   const [confirm, setConfirm] = useState(false);
   return (
     <div className="acct-row">
-      <span className={`acct-dot${a.logged_in ? " on" : ""}`} title={a.logged_in ? t("acct.loggedIn") : t("acct.notLoggedIn")} />
+      {a.logged_in && a.expired ? (
+        <span className="acct-dot-key" title={t(a.expired.why === "usage" ? "acct.expiredWhy.usage" : "acct.expiredWhy.agent", { time: new Date(a.expired.at).toLocaleString() })}>
+          <Icon name="key" />
+        </span>
+      ) : (
+        <span className={`acct-dot${a.logged_in ? " on" : ""}`} title={a.logged_in ? t("acct.loggedIn") : t("acct.notLoggedIn")} />
+      )}
       <div className="acct-main">
         <div className="acct-name">
           {editing ? (
@@ -58,11 +65,16 @@ function Row({ a, onLogin }: { a: Account; onLogin: () => void }) {
             </b>
           )}
         </div>
-        <span className="acct-who">{a.logged_in ? accountDetail(a) || t("acct.loggedIn") : t("acct.notLoggedIn")}</span>
+        <span className="acct-who">
+          {!a.logged_in ? t("acct.notLoggedIn") : a.expired ? <b className="acct-expired">{t("acct.expired")}</b> : accountDetail(a) || t("acct.loggedIn")}
+        </span>
         <Usage a={a} />
+        {a.logged_in && a.expired && Object.keys(a.usage).length > 0 && <span className="usage-none">{t("usage.stale")}</span>}
       </div>
       <div className="acct-acts">
-        <button onClick={onLogin}>{a.logged_in ? t("acct.relogin") : t("acct.login")}</button>
+        <button className={a.logged_in && a.expired ? "primary" : undefined} onClick={onLogin}>
+          {a.logged_in ? t("acct.relogin") : t("acct.login")}
+        </button>
         {confirm ? (
           <button className="danger" onClick={() => (send({ t: "account_remove", account: a.id }), detectLogins())} onMouseLeave={() => setConfirm(false)}>
             {t("common.confirmDelete")}

@@ -114,6 +114,8 @@ enum In {
     PanelMove { panel: String, target: String, side: model::Side },
     PanelToWindow { panel: String, window: Option<String> },
     PanelFocus { panel: String },
+    /// Name a panel in the sidebar ("" = back to its default, e.g. "Chat 2").
+    PanelRename { panel: String, name: String },
     PanelKind { panel: String, kind: PanelKind },
     PanelUrl { panel: String, url: String },
     LayoutResize { window: String, split: String, sizes: Vec<f32> },
@@ -325,6 +327,9 @@ impl App {
                 }
                 hub.refresh_accounts(Some(&id)).await;
                 if hub.accounts.get(&id).is_some_and(|a| a.logged_in) {
+                    if hub.accounts.clear_expired(&id) {
+                        hub.emit_accounts();
+                    }
                     hub.resolve_relogin(&id);
                     return;
                 }
@@ -449,6 +454,7 @@ impl App {
                 self.state.lock().unwrap().panel_to_window(&panel, window.as_deref()).map_err(e)?;
             }
             PanelFocus { panel } => self.state.lock().unwrap().focus_panel(&panel).map_err(e)?,
+            PanelRename { panel, name } => self.state.lock().unwrap().set_panel_title(&panel, name.trim().to_string()).map_err(e)?,
             PanelKind { panel, kind } => {
                 self.state.lock().unwrap().set_panel_kind(&panel, kind).map_err(e)?;
                 if kind != model::PanelKind::Terminal {

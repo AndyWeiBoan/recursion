@@ -6,14 +6,15 @@ import { languages, pick, t } from "./i18n";
 import { Modal } from "./WorkspaceView";
 import { UpdateSection, useAppVersion } from "./Update";
 import { McpPane } from "./Mcp";
+import { Icon, type IconName } from "./icons";
 
 export type SettingsPage = "general" | "accounts" | "mcp" | "keys" | "about";
-const PAGES: { id: SettingsPage; label: string; icon: string }[] = [
-  { id: "general", get label() { return t("settings.general"); }, icon: "⚙" },
-  { id: "accounts", get label() { return t("settings.accounts"); }, icon: "👤" },
-  { id: "mcp", get label() { return t("settings.mcp"); }, icon: "🔌" },
-  { id: "keys", get label() { return t("settings.keys"); }, icon: "⌨" },
-  { id: "about", get label() { return t("settings.about"); }, icon: "ⓘ" },
+const PAGES: { id: SettingsPage; label: string; icon: IconName }[] = [
+  { id: "general", get label() { return t("settings.general"); }, icon: "settings" },
+  { id: "accounts", get label() { return t("settings.accounts"); }, icon: "user" },
+  { id: "mcp", get label() { return t("settings.mcp"); }, icon: "plug" },
+  { id: "keys", get label() { return t("settings.keys"); }, icon: "keyboard" },
+  { id: "about", get label() { return t("settings.about"); }, icon: "info" },
 ];
 
 // Open/closed lives outside React so the sidebar button and the keyboard shortcut share it.
@@ -127,7 +128,7 @@ function General() {
             ))}
           </select>
           <span className="chev" aria-hidden="true">
-            ⌄
+            <Icon name="dropdown" size={14} />
           </span>
         </div>
         <span className="field-hint">{t("settings.languageHint")}</span>
@@ -191,7 +192,7 @@ export function SettingsModal() {
           <h2>{t("settings.title")}</h2>
           {PAGES.map((p) => (
             <button key={p.id} className={p.id === page ? "on" : ""} onClick={() => openSettings(p.id)}>
-              <span aria-hidden="true">{p.icon}</span>
+              <Icon name={p.icon} size={15} />
               {p.label}
             </button>
           ))}

@@ -8,6 +8,7 @@ import { copyText } from "./clipboard";
 import { openExternal, send, toast, useWorkspace } from "./client";
 import { t as tr } from "./i18n";
 import { renderMarkdown } from "./WorkspaceView";
+import { Icon } from "./icons";
 
 type Open = { panel: string; list: string; item: string };
 let open: Open | null = null;
@@ -160,7 +161,7 @@ function TodoCard({ panel, list, item }: Open) {
           </>
         )}
         <button className="tc-x" onClick={close} aria-label={tr("common.close")} title={tr("common.close") + "（Esc）"}>
-          ✕
+          <Icon name="close" />
         </button>
       </header>
       {editing !== null ? (
@@ -177,7 +178,7 @@ function TodoCard({ panel, list, item }: Open) {
       ) : note ? (
         <div
           className="tc-body md"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(note, []) }}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(note, {}) }}
           onClick={(e) => {
             const a = (e.target as HTMLElement).closest("a");
             if (!a?.href) return;
@@ -204,9 +205,9 @@ function TodoCard({ panel, list, item }: Open) {
               setLink(null);
             }}
           >
-            ⧉ {tr("todoCard.copyLink")}
+            <Icon name="copy" size={14} /> {tr("todoCard.copyLink")}
           </button>
-          <button onClick={() => (void openExternal(link.href), setLink(null))}>↗ {tr("todoCard.openLink")}</button>
+          <button onClick={() => (void openExternal(link.href), setLink(null))}><Icon name="open" size={14} /> {tr("todoCard.openLink")}</button>
         </div>
       )}
       <div className="tc-grip" onPointerDown={resize} title={tr("todoCard.resize")} aria-hidden />

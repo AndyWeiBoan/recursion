@@ -1,6 +1,6 @@
 // Polls: the form that starts one, its card in the chat, and its row / full view in the 產出 drawer.
 // While a poll is open nobody's pick is shown (only who has voted), so it can't sway the agents.
-import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
+import { QuoteButton, startRefDrag, type Payload } from "./refs";
 import { t } from "./i18n";
 import { useState } from "react";
 import { send } from "./client";
@@ -8,6 +8,7 @@ import { RemoveButton, showInChat } from "./ThreadDrawer";
 import { closeThreads, setThreadView } from "./threadsUI";
 import { Avatar } from "./WorkspaceView";
 import type { Member, Poll } from "./types";
+import { Icon } from "./icons";
 
 const MAX = 8;
 export const letter = (i: number) => String.fromCharCode(65 + i);
@@ -105,14 +106,14 @@ export function PollForm({ panel, onDone }: { panel: string; onDone: () => void 
             />
             {o.trim() ? (
               <button type="button" className={`poll-mine${mine === i ? " on" : ""}`} onClick={() => setMine(mine === i ? null : i)} title={t("poll.mineHint")}>
-                {mine === i ? `✓ ${t("poll.mine")}` : t("poll.mine")}
+                {mine === i ? <><Icon name="check" size={12} /> {t("poll.mine")}</> : t("poll.mine")}
               </button>
             ) : (
               <span />
             )}
             {options.length > 2 ? (
               <button type="button" className="poll-del" onClick={() => (setOptions(options.filter((_, k) => k !== i)), setMine(mine === i ? null : mine !== null && mine > i ? mine - 1 : mine))} aria-label={t("poll.removeOption", { letter: letter(i) })}>
-                ✕
+                <Icon name="close" />
               </button>
             ) : (
               <span />
@@ -145,7 +146,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
   return (
     <div className={`poll-card${open ? " open" : ""}`} data-poll={p.id}>
       <div className="poll-head">
-        <span className="poll-ic">📊</span>
+        <span className="poll-ic"><Icon name="poll" size={14} /></span>
         <b>{p.question}</b>
         <span className="poll-state">
           #{p.num} · {open ? t("poll.agentsIn", { done: agentsIn, all: p.voters.length }) : `${t("poll.closed")} · ${t("poll.votes", { n: p.votes.length })}`}
@@ -166,7 +167,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
               <span className="poll-letter">{letter(i)}</span>
               <span className="poll-text">{o}</span>
               {open ? (
-                mine === i && <span className="poll-check">✓ {t("common.you")}</span>
+                mine === i && <span className="poll-check"><Icon name="check" size={12} /> {t("common.you")}</span>
               ) : (
                 <>
                   <span className="poll-bar">
@@ -204,7 +205,7 @@ export function PollCard({ panel, p, byId, full }: { panel: string; p: Poll; byI
             <span className="poll-outcome">{outcome(p)}</span>
             {!full && reasons.length > 0 && (
               <button className="poll-why" onClick={() => setWhy((v) => !v)}>
-                {why ? `▾ ${t("poll.hideReasons")}` : `▸ ${t("poll.showReasons", { n: reasons.length })}`}
+                <Icon name={why ? "dropdown" : "expand"} size={12} /> {why ? t("poll.hideReasons") : t("poll.showReasons", { n: reasons.length })}
               </button>
             )}
           </>
@@ -231,10 +232,10 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
   const open = p.status === "open";
   const ref: Payload = { ref: { kind: "poll", id: p.id, title: p.question } };
   return (
-    <div className={`td-row${open ? " st-waiting" : ""}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.poll} ${p.question}`)}>
+    <div className={`td-row${open ? " st-waiting" : ""}`} onPointerDown={(e) => startRefDrag(e, panel, ref, p.question)}>
       <button className="td-open" onClick={() => setThreadView(panel, { kind: "poll", id: p.id })}>
         <span className="td-num">
-          <span className="td-icon">📊</span>#{p.num}
+          <span className="td-icon"><Icon name="poll" size={14} /></span>#{p.num}
         </span>
         <span className="td-main">
           <span className="td-quote">{p.question}</span>
@@ -254,7 +255,7 @@ export function PollRow({ panel, p }: { panel: string; p: Poll }) {
       </button>
       <QuoteButton panel={panel} p={ref} />
       <button className="td-goto" onClick={() => showInChat(p.msg)} title={t("poll.findInChat")} aria-label={t("poll.cardOf", { num: p.num })}>
-        ↖
+        <Icon name="find" />
       </button>
       <RemoveButton panel={panel} id={p.id} name={t("poll.name", { num: p.num })} />
     </div>
@@ -267,18 +268,18 @@ export function PollView({ panel, p, byId }: { panel: string; p: Poll; byId: Map
     <>
       <header className="td-head">
         <button className="td-back" onClick={() => setThreadView(panel, { kind: "list" })}>
-          ← {t("common.back")}
+          <Icon name="back" size={14} /> {t("common.back")}
         </button>
         <b>{t("poll.name", { num: p.num })}</b>
         <span className="dim">{p.status === "open" ? t("poll.open") : t("poll.closed")}</span>
         <button className="td-x" onClick={() => closeThreads(panel)} aria-label={t("common.close")} title={t("drawer.closeHint")}>
-          ✕
+          <Icon name="close" />
         </button>
       </header>
       <div className="td-body">
         <PollCard panel={panel} p={p} byId={byId} full />
         <button className="td-find" onClick={() => showInChat(p.msg)}>
-          ↖ {t("common.findInChat")}
+          <Icon name="find" size={14} /> {t("common.findInChat")}
         </button>
       </div>
     </>

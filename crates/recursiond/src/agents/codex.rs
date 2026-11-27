@@ -197,6 +197,10 @@ impl Hub {
             None => rpc.call(self, panel, &m.id, "thread/start", params.clone()).await?,
         };
         let tid = result["thread"]["id"].as_str().ok_or("Codex returned no thread id")?.to_string();
+        if let Some(model) = result["model"].as_str().filter(|s| !s.is_empty()) {
+            let model = model.to_string();
+            self.update_member(panel, &m.id, |m| m.running_model = Some(model));
+        }
         // Rewound: drop the turns from that one on. If Codex can't, it starts a new thread
         // and is fed the chat again.
         let mut tid = tid;

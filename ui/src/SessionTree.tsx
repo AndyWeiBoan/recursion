@@ -1,15 +1,28 @@
 // Sidebar tree under each session: its windows, what each window holds, and the agents of each chat.
-import { viewerPath } from "./browsers";
+import { overlay, viewerPath } from "./browsers";
 import { t } from "./i18n";
-import { useRef, useState } from "react";
-import { accountName, requestAddAgent, send, useAccounts } from "./client";
-import { Avatar, STATUS_LABEL } from "./WorkspaceView";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { accountName, requestAddAgent, requestChatSettings, send, useAccounts } from "./client";
+import { Avatar, modelLabel, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
+import { Icon, type IconName } from "./icons";
+import { closeChecked } from "./closing";
 
 function k(n: number) {
   if (n >= 1e6) return `${+(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}K`;
   return String(n);
+}
+
+/** What it may do without asking, as an icon (its name and meaning on hover). */
+function Mode({ m }: { m: Member }) {
+  const p = PERM_MODES.find((x) => x.id === (m.mode ?? "edits"));
+  return p ? (
+    <span className="tree-mode" title={`${p.label}：${p.hint}`}>
+      <Icon name={p.id} size={12} />
+    </span>
+  ) : null;
 }
 
 function ContextBar({ m }: { m: Member }) {
@@ -56,11 +69,11 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
               </span>
             ) : (
               <span className="tree-agent-model" title={acct ? t("agent.account", { acct }) : undefined}>
-                {m.model ?? m.kind}
+                {modelLabel(m)}
                 {acct && ` · ${acct}`}
-                {m.mode && m.mode !== "edits" && <span className={`tree-mode m-${m.mode}`}> · {PERM_MODES.find((p) => p.id === m.mode)?.label}</span>}
               </span>
             ))}
+          {!editing && <Mode m={m} />}
         </span>
         <ContextBar m={m} />
       </span>
@@ -74,7 +87,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
             send({ t: "ws_stop_agent", panel, member: m.id });
           }}
         >
-          ■
+          <Icon name="stop" />
         </button>
       )}
       {!editing && !busy && (
@@ -86,7 +99,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
             setMenu((v) => !v);
           }}
         >
-          ⋯
+          <Icon name="more" />
         </button>
       )}
       {menu && (
@@ -99,7 +112,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
           <span className="menu-label">{t("perm.title")}</span>
           {PERM_MODES.map((p) => (
             <button key={p.id} className={`menu-check${(m.mode ?? "edits") === p.id ? " on" : ""}`} title={p.hint} onClick={() => (setMenu(false), send({ t: "ws_set_mode", panel, member: m.id, mode: p.id }))}>
-              {p.label}
+              <Icon name={p.id} size={13} /> {p.label}
             </button>
           ))}
           <div className="menu-sep" />
@@ -113,7 +126,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
 }
 
 /** Text field that replaces a name in place: Enter or leaving it saves, Esc cancels. */
-function InlineEdit({ value, prefix, onSave, onDone }: { value: string; prefix?: string; onSave: (v: string) => void; onDone: () => void }) {
+export function InlineEdit({ value, prefix, onSave, onDone }: { value: string; prefix?: string; onSave: (v: string) => void; onDone: () => void }) {
   // Opening it can switch windows, and the terminal or chat box there grabs the focus a moment
   // later; that blur must not count as "done", so take the focus back while the edit is fresh.
   const opened = useRef(performance.now());
@@ -150,7 +163,7 @@ function InlineEdit({ value, prefix, onSave, onDone }: { value: string; prefix?:
   );
 }
 
-const ICON: Record<PanelKind, string> = { terminal: "›_", workspace: "✳", browser: "◎" };
+const ICON: Record<PanelKind, IconName> = { terminal: "terminal", workspace: "chat", browser: "browser" };
 
 function host(url: string) {
   try {
@@ -160,21 +173,91 @@ function host(url: string) {
   }
 }
 
-/** Icon, label and detail for one panel, as the tree shows it. */
-function describe(p: Panel, docs: Doc[], terms: Record<string, TermInfo>) {
-  if (p.kind === "terminal") return { icon: ICON.terminal, cls: "terminal", label: t("kind.terminal"), detail: terms[p.id]?.fg ?? "shell" };
-  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: p.title || t("kind.workspace"), detail: "" };
+/** Unnamed panels are numbered by kind across their session: Chat 1, Chat 2, Terminal 1… */
+export function panelNumbers(session: Session, panels: State["panels"]) {
+  const nth = new Map<string, number>();
+  const seen: Record<string, number> = {};
+  for (const w of session.windows)
+    for (const id of leaves(w.root)) {
+      const p = panels[id];
+      if (p) nth.set(id, (seen[p.kind] = (seen[p.kind] ?? 0) + 1));
+    }
+  return nth;
+}
+
+/** Icon, name and detail of one panel, the same in the tree, the tabs and the panel's header.
+ * `n`: its number among the session's panels of its kind, for the default name ("Chat 2"). */
+export function describe(p: Panel, n: number, docs: Doc[], terms: Record<string, TermInfo>) {
+  const named = (kind: string) => p.title || `${t(kind)} ${n}`;
+  if (p.kind === "terminal") return { icon: ICON.terminal, cls: "terminal", label: named("kind.terminal"), detail: terms[p.id]?.fg ?? "shell" };
+  if (p.kind === "workspace") return { icon: ICON.workspace, cls: "workspace", label: named("kind.workspace"), detail: "" };
   if (p.url?.startsWith("doc:")) {
     const d = docs.find((x) => x.id === p.url!.slice(4));
-    return { icon: "▤", cls: "browser", label: t("kind.doc"), detail: d?.title ?? t("common.deleted") };
+    return { icon: "doc" as IconName, cls: "browser", label: named("kind.doc"), detail: d?.title ?? t("common.deleted") };
   }
   const file = viewerPath(p.url);
-  if (file !== null) return { icon: "▤", cls: "browser", label: t("kind.file"), detail: file.slice(file.lastIndexOf("/") + 1) };
-  return { icon: ICON.browser, cls: "browser", label: t("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
+  if (file !== null) return { icon: "file" as IconName, cls: "browser", label: named("kind.file"), detail: file.slice(file.lastIndexOf("/") + 1) };
+  return { icon: ICON.browser, cls: "browser", label: named("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
+}
+
+/** A panel's menu: the same from its ⋯, from a right-click on its sidebar row, and on its tab. */
+function PanelMenuItems({ p, close, onRename }: { p: Panel; close: () => void; onRename: () => void }) {
+  return (
+    <>
+      {p.kind === "workspace" && <button onClick={() => (close(), requestAddAgent(p.id))}>{t("agent.addToChat")}</button>}
+      {p.kind === "workspace" && <button onClick={() => (close(), requestChatSettings(p.id))}>{t("scope.chat")}…</button>}
+      <button onClick={() => (close(), onRename())}>{t("common.rename")}</button>
+      <button className="danger" onClick={() => closeChecked(`panel:${p.id}`, [p.id], () => (close(), send({ t: "panel_close", panel: p.id })))}>
+        {t("common.close")}
+      </button>
+    </>
+  );
+}
+
+/** That menu where the pointer was right-clicked (above native browser panels too). */
+export function PanelContextMenu({ p, at, onRename, onClose }: { p: Panel; at: { x: number; y: number }; onRename: () => void; onClose: () => void }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const restore = overlay();
+    const away = (e: Event) => {
+      if (!(e.target as HTMLElement).closest?.(".ctx-menu")) close.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") (e.stopPropagation(), close.current());
+    };
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", close.current);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", close.current);
+      restore();
+    };
+  }, []);
+  return createPortal(
+    <div
+      className="menu ctx-menu"
+      role="menu"
+      style={{ left: at.x, top: at.y }}
+      ref={(el) => {
+        if (!el) return;
+        el.style.left = `${Math.max(8, Math.min(at.x, window.innerWidth - el.offsetWidth - 8))}px`;
+        el.style.top = `${Math.max(8, Math.min(at.y, window.innerHeight - el.offsetHeight - 8))}px`;
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <PanelMenuItems p={p} close={onClose} onRename={onRename} />
+    </div>,
+    document.body,
+  );
 }
 
 function PanelRow({
   p,
+  n,
   docs,
   terms,
   members,
@@ -182,16 +265,24 @@ function PanelRow({
   onFold,
 }: {
   p: Panel;
+  n: number;
   docs: Doc[];
   terms: Record<string, TermInfo>;
   members: Member[];
   folded: boolean;
   onFold: () => void;
 }) {
-  const d = describe(p, docs, terms);
+  const d = describe(p, n, docs, terms);
+  const [editing, setEditing] = useState(false);
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   return (
     <>
-      <div className="tree-row" onClick={() => send({ t: "panel_focus", panel: p.id })} title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}`}>
+      {at && <PanelContextMenu p={p} at={at} onRename={() => setEditing(true)} onClose={() => setAt(null)} />}
+      <div
+        className="tree-row"
+        onClick={() => send({ t: "panel_focus", panel: p.id })}
+        onContextMenu={(e) => (e.preventDefault(), setAt({ x: e.clientX, y: e.clientY }))}
+      >
         {members.length > 0 ? (
           <button
             className={`sess-fold tree-fold${folded ? " closed" : ""}`}
@@ -199,20 +290,24 @@ function PanelRow({
             aria-expanded={!folded}
             onClick={(e) => (e.stopPropagation(), onFold())}
           >
-            ›
+            <Icon name="expand" size={12} />
           </button>
         ) : (
           <span className="sess-fold-space tree-fold" />
         )}
-        <span className={`tree-ic ic-${d.cls}`}>{d.icon}</span>
-        <span className="tree-label">
-          {d.label}
-          {d.detail && <span className="tree-detail"> · {d.detail}</span>}
-        </span>
-        {p.kind === "workspace" && (
-          <button className="tree-add" title={t("agent.add")} aria-label={t("agent.addToChat")} onClick={(e) => (e.stopPropagation(), requestAddAgent(p.id))}>
-            ＋
-          </button>
+        <span className={`tree-ic ic-${d.cls}`}><Icon name={d.icon} size={16} /></span>
+        {editing ? (
+          <InlineEdit value={d.label} onSave={(name) => send({ t: "panel_rename", panel: p.id, name })} onDone={() => setEditing(false)} />
+        ) : (
+          <span className="tree-label" onDoubleClick={(e) => (e.stopPropagation(), setEditing(true))} title={`${d.label}${d.detail ? ` · ${d.detail}` : ""}（${t("common.doubleClickRename")}）`}>
+            {d.label}
+            {d.detail && <span className="tree-detail"> · {d.detail}</span>}
+          </span>
+        )}
+        {!editing && (
+          <RowMenu label={t("common.more")}>
+            {(close) => <PanelMenuItems p={p} close={close} onRename={() => setEditing(true)} />}
+          </RowMenu>
         )}
       </div>
       {members.length > 0 && !folded && (
@@ -226,91 +321,76 @@ function PanelRow({
   );
 }
 
-/** One window (a tab): its panels side by side in the tree, its name above them if it has one,
- * and "⋯" to rename or close it. The one on screen is lit as a whole. */
-function WindowGroup({ session, w, index, on, children }: { session: string; w: Session["windows"][number]; index: number; on: boolean; children: React.ReactNode }) {
-  const [editing, setEditing] = useState(false);
-  const name = w.name && w.name !== String(index + 1) ? w.name : "";
-  const rename = (v: string) => send({ t: "window_rename", session, window: w.id, name: v });
-  return (
-    <div className={`tree-win${on ? " on" : ""}`}>
-      {editing ? (
-        <div className="tree-win-name">
-          <InlineEdit value={name} onSave={rename} onDone={() => setEditing(false)} />
-        </div>
-      ) : (
-        name && (
-          <div className="tree-win-name" onDoubleClick={() => setEditing(true)} title={t("window.doubleClickRename")}>
-            {name}
-          </div>
-        )
-      )}
-      {children}
-      {!editing && <WindowMenu onRename={() => setEditing(true)} onClose={() => send({ t: "window_close", session, window: w.id })} />}
-    </div>
-  );
+/** One window (a tab): its panels, set apart from the next window by a line. The one on screen
+ * (of the session on screen: every session has an active window) is lit as a whole. Windows have no names or menu here: their panels do. */
+function WindowGroup({ on, children }: { on: boolean; children: React.ReactNode }) {
+  return <div className={`tree-win${on ? " on" : ""}`}>{children}</div>;
 }
 
-/** "⋯" on a window row: rename or close it. */
-function WindowMenu({ onRename, onClose }: { onRename: () => void; onClose: () => void }) {
+/** "⋯" at the end of a row, opening the menu `children` draws (given a way to close it). */
+function RowMenu({ label, children }: { label: string; children: (close: () => void) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
-    <>
+    <span className="tree-menu-wrap">
       <button
         className="sess-more tree-more"
-        aria-label={t("window.menu")}
+        aria-label={label}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
         onDoubleClick={(e) => e.stopPropagation()}
       >
-        ⋯
+        <Icon name="more" />
       </button>
       {open && (
         <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setOpen(false)}>
-          <button onClick={() => (setOpen(false), onRename())}>{t("common.rename")}</button>
-          <button className="danger" onClick={() => (setOpen(false), onClose())}>
-            {t("window.close")}
-          </button>
+          {children(() => setOpen(false))}
         </div>
       )}
-    </>
+    </span>
   );
 }
 
 const FOLDED_KEY = "recursion.collapsedChats";
 
-function loadFolded(): Set<string> {
+function loadFolded(key = FOLDED_KEY): Set<string> {
   try {
-    return new Set(JSON.parse(localStorage.getItem(FOLDED_KEY) ?? "[]"));
+    return new Set(JSON.parse(localStorage.getItem(key) ?? "[]"));
   } catch {
     return new Set();
   }
+}
+
+/** Folded ids, kept across restarts. */
+function useFolded(key: string) {
+  const [folded, setFolded] = useState<Set<string>>(() => loadFolded(key));
+  const fold = (id: string) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      try {
+        localStorage.setItem(key, JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+  return [folded, fold] as const;
 }
 
 /** Session → windows → panels (with their kind) → agents of each chat. */
 export function SessionTree({ session, state, terms, roster }: { session: Session; state: State; terms: Record<string, TermInfo>; roster: Record<string, Member[]> }) {
   const docs = session.docs ?? [];
   // Chats whose agent list is folded away, kept across restarts like folded sessions.
-  const [folded, setFolded] = useState<Set<string>>(loadFolded);
-  const fold = (id: string) =>
-    setFolded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
-      try {
-        localStorage.setItem(FOLDED_KEY, JSON.stringify([...next]));
-      } catch {}
-      return next;
-    });
+  const [folded, fold] = useFolded(FOLDED_KEY);
+  const nth = panelNumbers(session, state.panels);
   return (
     <div className="tree">
-      {session.windows.map((w, i) => (
-        <WindowGroup key={w.id} session={session.id} w={w} index={i} on={w.id === session.active_window}>
+      {session.windows.map((w) => (
+        <WindowGroup key={w.id} on={session.id === state.active_session && w.id === session.active_window}>
           {leaves(w.root)
             .filter((id) => state.panels[id])
             .map((id) => (
-              <PanelRow key={id} p={state.panels[id]} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
+              <PanelRow key={id} p={state.panels[id]} n={nth.get(id) ?? 1} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
             ))}
         </WindowGroup>
       ))}

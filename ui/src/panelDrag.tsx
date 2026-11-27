@@ -193,3 +193,70 @@ export function PanelDragLayer({ root }: { root: Node }) {
     document.body,
   );
 }
+
+type Side = "left" | "right" | "top" | "bottom";
+
+/** Pointer down on a tab of another window: dragged into the layout on screen, that window's
+ *  panels join this one, beside the panel let go over (on the side of it nearest the pointer).
+ *  The window they left goes away. A plain click still just switches to it. */
+export function startTabDrag(e: React.PointerEvent, panels: string[], into: string, label: string) {
+  if (e.button !== 0 || isControl(e.target) || !panels.length) return;
+  const x0 = e.clientX;
+  const y0 = e.clientY;
+  let ghost: HTMLDivElement | null = null;
+  let zone: HTMLDivElement | null = null;
+  let undo: (() => void)[] = [];
+  let at: { panel: string; side: Side } | null = null;
+  const place = (x: number, y: number) => {
+    at = null;
+    for (const el of document.querySelectorAll<HTMLElement>(".layout [data-panel]")) {
+      const r = el.getBoundingClientRect();
+      if (!inside(r, x, y)) continue;
+      // The edge nearest the pointer, as a share of the panel's size.
+      const d = { left: (x - r.left) / r.width, right: (r.right - x) / r.width, top: (y - r.top) / r.height, bottom: (r.bottom - y) / r.height };
+      const side = (Object.keys(d) as Side[]).reduce((a, b) => (d[b] < d[a] ? b : a));
+      at = { panel: el.dataset.panel!, side };
+      const half = side === "left" || side === "right" ? { width: r.width / 2, height: r.height } : { width: r.width, height: r.height / 2 };
+      Object.assign(zone!.style, { left: `${side === "right" ? r.left + r.width / 2 : r.left}px`, top: `${side === "bottom" ? r.top + r.height / 2 : r.top}px`, width: `${half.width}px`, height: `${half.height}px`, display: "" });
+      return;
+    }
+    zone!.style.display = "none";
+  };
+  const move = (ev: PointerEvent) => {
+    if (!ghost) {
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+      ghost = document.createElement("div");
+      ghost.className = "ref-ghost";
+      ghost.textContent = label;
+      zone = document.createElement("div");
+      zone.className = "panel-drop-zone";
+      zone.style.display = "none";
+      document.body.append(ghost, zone);
+      undo = [shield("grabbing"), overlay()];
+    }
+    ghost.style.translate = `${ev.clientX + 12}px ${ev.clientY + 10}px`;
+    place(ev.clientX, ev.clientY);
+  };
+  const end = (drop: boolean) => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("blur", cancel);
+    if (!ghost) return;
+    ghost.remove();
+    zone?.remove();
+    undo.forEach((u) => u());
+    // The drag ends in a click on the tab: not a "switch to it".
+    const eat = (c: MouseEvent) => (c.stopPropagation(), c.preventDefault());
+    window.addEventListener("click", eat, true);
+    setTimeout(() => window.removeEventListener("click", eat, true));
+    const to = at as { panel: string; side: Side } | null;
+    if (!drop || !to) return;
+    for (const p of panels) send({ t: "panel_to_window", panel: p, window: into });
+    if (panels.length === 1) send({ t: "panel_move", panel: panels[0], target: to.panel, side: to.side });
+  };
+  const up = () => end(true);
+  const cancel = () => end(false);
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("blur", cancel);
+}

@@ -5,9 +5,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { send, useWorkspace } from "./client";
 import { openTodoCard } from "./TodoCard";
-import { QuoteButton, REF_ICON, startRefDrag, type Payload } from "./refs";
+import { QuoteButton, startRefDrag, type Payload } from "./refs";
 import { t as tr } from "./i18n";
 import type { Member, Todo, TodoList, TodoState } from "./types";
+import { Icon } from "./icons";
 
 // Which list is open, per chat; outside React so it survives the drawer re-mounting.
 const openList = new Map<string, string>();
@@ -110,7 +111,7 @@ function DeleteButton({ onDelete }: { onDelete: () => void }) {
       title={tr(armed ? "common.confirmDelete" : "common.delete")}
       aria-label={tr("common.delete")}
     >
-      {armed ? tr("common.confirmDelete") : "✕"}
+      {armed ? tr("common.confirmDelete") : <Icon name="close" size={13} />}
     </button>
   );
 }
@@ -124,7 +125,7 @@ function Lists({ panel, lists, open }: { panel: string; lists: TodoList[]; open:
           const p = progress(l);
           const ref: Payload = { ref: { kind: "todo", id: l.id, title: l.name } };
           return (
-            <li key={l.id} className="todo-listrow" onClick={() => open(l.id)} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.todo} ${l.name}`)}>
+            <li key={l.id} className="todo-listrow" onClick={() => open(l.id)} onPointerDown={(e) => startRefDrag(e, panel, ref, l.name)}>
               <span className="todo-listmain">
                 <Editable className="todo-listname" text={l.name} onSave={(name) => send({ t: "todo_list_rename", panel, list: l.id, name })} />
                 <span className="todo-count">
@@ -274,9 +275,9 @@ function Items({ panel, list, members, back }: { panel: string; list: TodoList; 
     const done = item.state === "done";
     const ref: Payload = { ref: { kind: "todo", id: list.id, item: item.id, title: item.text } };
     return (
-      <li key={item.id} data-todo={floating ? undefined : item.id} className={`todo st-${item.state}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `${REF_ICON.todo} #${item.num} ${item.text}`)}>
+      <li key={item.id} data-todo={floating ? undefined : item.id} className={`todo st-${item.state}`} onPointerDown={(e) => startRefDrag(e, panel, ref, `#${item.num} ${item.text}`)}>
         <span className="todo-grip" onPointerDown={(e) => pickUp(e, item)} title={tr("todo.dragHint")} aria-label={tr("todo.dragHint")}>
-          ⋮⋮
+          <Icon name="grip" />
         </span>
         <input type="checkbox" checked={done} onChange={(e) => update(item, { state: e.target.checked ? "done" : "todo" })} aria-label={tr(done ? "todo.undo" : "todo.done")} />
         <span className="todo-num">#{item.num}</span>
@@ -289,7 +290,7 @@ function Items({ panel, list, members, back }: { panel: string; list: TodoList; 
         )}
         {item.note && (
           <button className="todo-card-mark" onClick={card(item)} title={tr("todo.hasCard")} aria-label={tr("todo.hasCard")}>
-            ≡
+            <Icon name="note" />
           </button>
         )}
         {item.state === "doing" && item.worker ? (

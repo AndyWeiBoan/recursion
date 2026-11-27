@@ -4,7 +4,7 @@ import { openSettings } from "./Settings";
 import { accountLabel } from "./Setup";
 import { FileChip, FilePicker, isImagePath } from "./Files";
 import { useDragWidth } from "./Layout";
-import { Icon } from "./icons";
+import { BrandMark, Icon, type IconName } from "./icons";
 import { apply, codeBlock, continueList, inCodeBlock, prefix, wrap, type Edit } from "./format";
 import { t as tr } from "./i18n";
 import { copyText, readClipboardImage } from "./clipboard";
@@ -18,10 +18,10 @@ import { overlay } from "./browsers";
 import { openThreadsFor, openWholeThread, showInChat, ThreadDrawer } from "./ThreadDrawer";
 import { outcome, PollCard, PollForm } from "./Polls";
 import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
-import { accountName, isMac, onAddAgentRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
+import { accountName, isMac, onChatRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { takeDrops } from "./drop";
 import { RefChip, takeRefs } from "./refs";
-import { chatsOf, leaves, PERM_MODES, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
+import { chatsOf, leaves, PERM_MODES, type Account, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
 // Its own instance: the shared `marked` would stack the extension on every hot reload.
@@ -70,29 +70,30 @@ export function colorFor(id: string) {
   return AVATAR_COLORS[h % AVATAR_COLORS.length];
 }
 
-/** Markdown → sanitized HTML, with @alias mentions highlighted (outside tags and code). */
+/** Markdown → sanitized HTML, with @alias mentions highlighted (outside tags and code) in the
+ * colour of that agent's name. `mentions`: alias (lower case) → colour. */
 // Rendering is the costly part of drawing a message (parse, sanitize, highlight); the same text
 // always gives the same HTML.
 const rendered = new Map<string, string>();
 const RENDERED_MAX = 3000;
 
-export function renderMarkdown(text: string, aliases: string[]): string {
-  const key = aliases.join(" ") + "\0" + text;
+export function renderMarkdown(text: string, mentions: Record<string, string>): string {
+  const key = Object.entries(mentions).flat().join(" ") + "\0" + text;
   let html = rendered.get(key);
   if (html === undefined) {
-    html = renderUncached(text, aliases);
+    html = renderUncached(text, mentions);
     if (rendered.size >= RENDERED_MAX) rendered.delete(rendered.keys().next().value!);
     rendered.set(key, html);
   }
   return html;
 }
 
-function renderUncached(text: string, aliases: string[]): string {
+function renderUncached(text: string, mentions: Record<string, string>): string {
   let html = DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
   // Every code block gets a copy button (handled by the click listener below).
   html = html.replace(/<pre>/g, `<div class="code-wrap"><button class="code-copy" type="button" title="${tr("code.copy")}">${tr("code.copy")}</button><pre>`).replace(/<\/pre>/g, "</pre></div>");
-  if (aliases.length) {
-    const known = new Set(aliases.map((a) => a.toLowerCase()).concat(["all", "全部", "所有人"]));
+  if (Object.keys(mentions).length) {
+    const known = new Set(Object.keys(mentions).concat(["all", "全部", "所有人"]));
     let inCode = 0;
     html = html
       .split(/(<[^>]+>)/)
@@ -103,7 +104,7 @@ function renderUncached(text: string, aliases: string[]): string {
           return part;
         }
         if (inCode) return part;
-        return part.replace(/(^|[^\w.])@([\w\-一-鿿]+)/g, (m, pre, name) => (known.has(name.toLowerCase()) ? `${pre}<span class="mention">@${name}</span>` : m));
+        return part.replace(/(^|[^\w.])@([\w\-一-鿿]+)/g, (m, pre, name) => (known.has(name.toLowerCase()) ? `${pre}<span class="mention"${mentions[name.toLowerCase()] ? ` style="--mc:${mentions[name.toLowerCase()]}"` : ""}>@${name}</span>` : m));
       })
       .join("");
   }
@@ -154,7 +155,7 @@ function DocSubmission({ via, panel }: { via: DocVia; panel: string }) {
     <div className="doc-sub">
       <button className="doc-sub-head" onClick={() => send({ t: "doc_open", panel, doc: via.doc })} title={tr("doc.openThis")}>
         <span className="m-doc-ic" aria-hidden="true">
-          ▤
+          <Icon name="doc" />
         </span>
         <span>
           {tr("doc.sentFromBefore")}<b>「{via.title}」</b>{tr("doc.sentFromAfter")}
@@ -219,13 +220,17 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
   );
 }
 
+/** The model an agent runs, short: the one picked, else what its CLI reported running (its
+ * default), without the maker's prefix and date ("claude-opus-4-1-20250805" → "opus-4-1"). The
+ * mark beside it already says whose. */
+export function modelLabel(m: Member) {
+  const raw = m.model ?? m.running_model;
+  return raw ? raw.replace(/^claude-/, "").replace(/-\d{8}$/, "").replace(/\[1m\]$/, "") : tr("agent.defaultModelShort");
+}
+
+/** An agent: its maker's mark (Claude's, or OpenAI's for Codex). Its @name says which one. */
 export function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
-  const label = (m?.alias ?? "?").slice(0, 1).toUpperCase();
-  return (
-    <span className="avatar" style={{ width: size, height: size, background: m ? colorFor(m.id) : "#4a4b52", fontSize: size * 0.46 }}>
-      {label}
-    </span>
-  );
+  return <span className="avatar" style={{ width: size, height: size }}>{m ? <BrandMark kind={m.kind} size={size} /> : "?"}</span>;
 }
 
 /** Centered dialog over the whole app. Closes on ✕, Esc, or a click outside. */
@@ -253,7 +258,7 @@ export function Modal({ title, onClose, children, escape = true }: { title: stri
     <div className="modal-scrim" onMouseDown={(e) => escape && e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
         <button className="modal-x" onClick={onClose} aria-label={tr("common.close")} title={tr("common.close") + "（Esc）"}>
-          ✕
+          <Icon name="close" />
         </button>
         {children}
       </div>
@@ -262,13 +267,20 @@ export function Modal({ title, onClose, children, escape = true }: { title: stri
   );
 }
 
+/** The account an agent runs under, if that account needs logging in again. */
+function expiredAccount(m: Member, accounts: Account[]) {
+  const a = accounts.find((x) => x.id === (m.account ?? `${m.kind}-default`));
+  return a?.expired ? a : undefined;
+}
+
 /** The chat's part of its panel header: who is in it, add an agent, the 產出 drawer, what it cost. */
 export function ChatHead({ panel }: { panel: string }) {
   const ws = useWorkspace(panel);
   const ui = useThreadsUI(panel);
+  const accounts = useAccounts();
   const [adding, setAdding] = useState(false);
   const [setting, setSetting] = useState(false);
-  useEffect(() => onAddAgentRequest(panel, () => setAdding(true)), [panel]);
+  useEffect(() => onChatRequest(panel, (what) => (what === "settings" ? setSetting(true) : setAdding(true))), [panel]);
   const members = ws?.members ?? [];
   // The empty chat shows the big form instead; otherwise "add" must always be reachable,
   // including when every agent was removed from a chat that has history.
@@ -280,13 +292,28 @@ export function ChatHead({ panel }: { panel: string }) {
   return (
     <span className="title chat-head">
       <span className="chat-faces">
-        {members.map((m) => (
-          <span key={m.id} className={`chat-face st-${m.status}`} title={`@${m.alias} · ${m.model ?? m.kind}`}>
-            <Avatar m={m} size={18} />
-          </span>
-        ))}
+        {members.map((m) => {
+          const gone = expiredAccount(m, accounts);
+          return gone ? (
+            <button
+              key={m.id}
+              className="chat-face expired"
+              title={tr("acct.expiredMember", { alias: m.alias, name: gone.name })}
+              onClick={() => send({ t: "account_login", account: gone.id })}
+            >
+              <Avatar m={m} size={18} />
+              <span className="chat-face-key" aria-hidden="true">
+                <Icon name="key" />
+              </span>
+            </button>
+          ) : (
+            <span key={m.id} className={`chat-face st-${m.status}`} title={`@${m.alias} · ${modelLabel(m)}`}>
+              <Avatar m={m} size={18} />
+            </span>
+          );
+        })}
         <button className="chat-add" onClick={() => setAdding((v) => !v)} title={tr("agent.new")} aria-label={tr("agent.new")}>
-          ＋
+          <Icon name="add" />
         </button>
       </span>
       {adding && (
@@ -294,21 +321,24 @@ export function ChatHead({ panel }: { panel: string }) {
           <AddAgent panel={panel} onDone={() => setAdding(false)} />
         </Modal>
       )}
-      <button
-        className={`chat-outputs${ui.open ? " on" : ""}`}
-        onClick={() => (ui.open ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
-        title={tr("outputs.buttonHint")}
-      >
-        📎 {tr("outputs.title")}{outputs > 0 ? ` ${outputs}` : ""}
-      </button>
-      {cost > 0 && (
+      {/* What it cost only means something against a budget: on a subscription nothing is billed. */}
+      {cost > 0 && !!ws.settings?.budget_usd && (
         <span className={`chat-cost${ws.settings?.budget_usd && cost >= ws.settings.budget_usd ? " over" : ""}`} title={tr("chat.costHint") + (ws.settings?.budget_usd ? ` · ${tr("scope.budget")} $${ws.settings.budget_usd.toFixed(2)}` : "")}>
           ${cost.toFixed(2)}
           {ws.settings?.budget_usd ? <span className="dim"> / ${ws.settings.budget_usd.toFixed(2)}</span> : null}
         </span>
       )}
+      <button
+        className={`chat-outputs icon-only${ui.open ? " on" : ""}`}
+        onClick={() => (ui.open ? closeThreads(panel) : openThreads(panel, { view: { kind: "list" }, msg: null, query: "" }))}
+        title={tr("outputs.buttonHint")}
+        aria-label={tr("outputs.title")}
+      >
+        <Icon name="outputs" />
+        {outputs > 0 && <span className="chat-outputs-n">{outputs}</span>}
+      </button>
       <button className={`chat-gear${ws.settings?.rules ? " has-rules" : ""}`} onClick={() => setSetting(true)} title={tr("scope.chat")} aria-label={tr("scope.chat")}>
-        ⚙
+        <Icon name="settings" />
       </button>
       {setting && (
         <Modal title={tr("scope.chat")} onClose={() => setSetting(false)}>
@@ -319,9 +349,9 @@ export function ChatHead({ panel }: { panel: string }) {
   );
 }
 
-const KIND_INFO: Record<AgentKind, { vendor: string; glyph: string; color: string; hint: string }> = {
-  claude: { vendor: "Anthropic", glyph: "✳", color: "#e8714a", get hint() { return tr("agent.kindHint", { cli: "claude" }); } },
-  codex: { vendor: "OpenAI", glyph: "◎", color: "#3fb8a8", get hint() { return tr("agent.kindHint", { cli: "codex" }); } },
+const KIND_INFO: Record<AgentKind, { vendor: string; hint: string }> = {
+  claude: { vendor: "Anthropic", get hint() { return tr("agent.kindHint", { cli: "claude" }); } },
+  codex: { vendor: "OpenAI", get hint() { return tr("agent.kindHint", { cli: "codex" }); } },
 };
 
 function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone?: () => void }) {
@@ -351,7 +381,19 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   }, [takenKey]);
   const [model, setModel] = useState(defaultModel(kind));
   const [mode, setMode] = useState<PermMode>(defaults.mode ?? "edits");
-  const accounts = useAccounts().filter((a) => a.kind === kind);
+  const allAccounts = useAccounts();
+  const accounts = allAccounts.filter((a) => a.kind === kind);
+  // A kind with no account in Recursion can't be added: its card is greyed out, and the form
+  // starts on the other kind if that one has an account.
+  const usable = (k: AgentKind) => allAccounts.some((a) => a.kind === k);
+  useEffect(() => {
+    const other: AgentKind = kind === "claude" ? "codex" : "claude";
+    if (allAccounts.length && !usable(kind) && usable(other)) {
+      setKind(other);
+      setModel(defaultModel(other));
+      if (!touched) setAlias(free(other));
+    }
+  }, [allAccounts.length]);
   const [account, setAccount] = useState("");
   const pickedAccount = accounts.find((a) => a.id === account) ?? accounts.find((a) => a.logged_in) ?? accounts[0];
   const list = useModels(kind);
@@ -393,7 +435,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
               ))}
             </select>
             <span className="chev" aria-hidden="true">
-              ⌄
+              <Icon name="dropdown" size={14} />
             </span>
           </div>
         </div>
@@ -406,6 +448,8 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
             role="radio"
             aria-checked={kind === k}
             className={`kind-card${kind === k ? " on" : ""}`}
+            disabled={!usable(k)}
+            title={usable(k) ? undefined : tr("agent.noAccountOfKind", { name: KIND_NAME[k] })}
             onClick={() => {
               setKind(k);
               setModel(defaultModel(k));
@@ -413,15 +457,13 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
               if (!touched) setAlias(free(k));
             }}
           >
-            <span className="kind-glyph" style={{ background: KIND_INFO[k].color }}>
-              {KIND_INFO[k].glyph}
-            </span>
+            <BrandMark kind={k} size={30} />
             <span className="kind-text">
               <b>{KIND_NAME[k]}</b>
-              <span>{KIND_INFO[k].vendor}</span>
+              <span>{usable(k) ? KIND_INFO[k].vendor : tr("agent.noAccount")}</span>
             </span>
             <span className="kind-check" aria-hidden="true">
-              ✓
+              <Icon name="check" />
             </span>
           </button>
         ))}
@@ -459,15 +501,16 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
                 <option key={a.id} value={a.id}>
                   {accountLabel(a)}
                   {a.email && a.email !== accountLabel(a) ? ` · ${a.email}` : ""}
-                  {a.logged_in ? "" : tr("acct.notLoggedInParen")}
+                  {!a.logged_in ? tr("acct.notLoggedInParen") : a.expired ? tr("acct.expiredParen") : ""}
                 </option>
               ))}
             </select>
             <span className="chev" aria-hidden="true">
-              ⌄
+              <Icon name="dropdown" size={14} />
             </span>
           </div>
           {pickedAccount && !pickedAccount.logged_in && <span className="field-hint warn">{tr("acct.loginFirst")}</span>}
+          {pickedAccount?.logged_in && pickedAccount.expired && <span className="field-hint warn">{tr("acct.expired")}</span>}
         </div>
       )}
       <div className="field">
@@ -481,7 +524,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
             ))}
           </select>
           <span className="chev" aria-hidden="true">
-            ⌄
+            <Icon name="dropdown" size={14} />
           </span>
         </div>
         <span className="field-hint">
@@ -495,7 +538,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         <div className="mode-seg" role="radiogroup" aria-labelledby={`mode-${id}`}>
           {PERM_MODES.map((p) => (
             <button key={p.id} type="button" role="radio" aria-checked={mode === p.id} className={`${mode === p.id ? "on" : ""} m-${p.id}`} onClick={() => setMode(p.id)}>
-              {p.label}
+              <Icon name={p.id} size={13} /> {p.label}
             </button>
           ))}
         </div>
@@ -525,7 +568,7 @@ function BusyLine({ busy }: { busy: Member[] }) {
   if (!busy.length) return null;
   return (
     <div className="ws-busy-row">
-      <span className="spin">✳</span>
+      <Icon name="busy" size={13} />
       <span className="ws-busy-faces">
         {busy.map((b) => (
           <Avatar key={b.id} m={b} size={18} />
@@ -617,7 +660,8 @@ function Transcript({
   const stick = useRef(true);
   const [away, setAway] = useState<number | null>(null); // messages.length when it left the bottom
   const jumping = useRef(false);
-  const aliases = useMemo(() => [...byId.values()].map((m) => m.alias), [byId]);
+  // @names in messages, in the colour of each agent's name.
+  const aliases = useMemo(() => Object.fromEntries([...byId.values()].map((m) => [m.alias.toLowerCase(), colorFor(m.id)])), [byId]);
   const last = messages[messages.length - 1];
 
   // Sending something brings you to it.
@@ -780,7 +824,7 @@ function Transcript({
               setPick(null);
             }}
           >
-            💬 {tr("menu.discussThis")}
+            <Icon name="thread" size={14} /> {tr("menu.discussThis")}
           </button>,
           document.body,
         )}
@@ -788,7 +832,7 @@ function Transcript({
     </div>
       {away !== null && (
         <button className="to-latest" onClick={toLatest}>
-          ↓ {unseen ? tr("chat.newMessages", { n: unseen }) : tr("chat.toLatest")}
+          <Icon name="down" size={14} /> {unseen ? tr("chat.newMessages", { n: unseen }) : tr("chat.toLatest")}
         </button>
       )}
     </div>
@@ -837,25 +881,25 @@ function MessageMenu({ panel, menu, threads, onClose }: { panel: string; menu: C
       onContextMenu={(e) => e.preventDefault()}
     >
       <button role="menuitem" onClick={act(() => setReplying(panel, m.id))}>
-        ↩ {tr("menu.reply")}
+        <Icon name="reply" size={14} /> {tr("menu.reply")}
       </button>
       {m.from === "you" && (
         <button role="menuitem" onClick={act(() => setRewinding(panel, m.id))}>
-          ⟲ {tr("menu.rewind")}
+          <Icon name="rewind" size={14} /> {tr("menu.rewind")}
         </button>
       )}
       {menu.threadable && (
         <button role="menuitem" onClick={act(() => openWholeThread(panel, m.id, threads))}>
-          💬 {hasWhole ? tr("menu.openWholeThread") : tr("menu.discussWhole")}
+          <Icon name="thread" size={14} /> {hasWhole ? tr("menu.openWholeThread") : tr("menu.discussWhole")}
         </button>
       )}
       {menu.threadable && menu.quote && (
         <button role="menuitem" onClick={act(() => (openThreadsFor(panel, m.id, 0, menu.quote), window.getSelection()?.removeAllRanges()))}>
-          💬 {tr("menu.discussSelection")}
+          <Icon name="thread" size={14} /> {tr("menu.discussSelection")}
         </button>
       )}
       <button role="menuitem" onClick={act(() => void copyText(menu.quote || text))}>
-        ⧉ {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
+        <Icon name="copy" size={14} /> {menu.quote ? tr("menu.copySelection") : tr("menu.copyWhole")}
       </button>
     </div>,
     document.body,
@@ -893,7 +937,7 @@ const MessageView = memo(function MessageView({
   who?: Member;
   byId: Map<string, Member>;
   first: boolean;
-  aliases: string[];
+  aliases: Record<string, string>;
   /** Threads opened on this message. */
   threads: number;
   /** For the first of several tool calls in a row: all of them, shown as one line. */
@@ -915,7 +959,7 @@ const MessageView = memo(function MessageView({
   if (m.kind === "poll_closed")
     return poll ? (
       <button className="m-sys m-poll-closed" onClick={() => showInChat(poll.msg)} title={tr("poll.jumpToCard")}>
-        📊 {tr("poll.endedLine", { num: poll.num, outcome: outcome(poll) })}
+        <Icon name="poll" size={14} /> {tr("poll.endedLine", { num: poll.num, outcome: outcome(poll) })}
       </button>
     ) : null;
 
@@ -952,7 +996,7 @@ const MessageView = memo(function MessageView({
     return (
       <div className={`m-guard m-relogin${m.resolved ? " done" : ""}`}>
         <span>
-          🔑 {tr("acct.needsRelogin", { name: m.name })}
+          <Icon name="key" size={14} /> {tr("acct.needsRelogin", { name: m.name })}
           <span className="dim">{m.resolved ? "　" + tr("acct.reloggedIn") : `　${m.text.slice(0, 120)}`}</span>
         </span>
         {!m.resolved && (
@@ -967,7 +1011,7 @@ const MessageView = memo(function MessageView({
   if (m.kind === "guard") {
     return (
       <div className={`m-guard${m.resolved ? " done" : ""}`}>
-        <span>⚠ {m.text}</span>
+        <span><Icon name="warn" size={14} /> {m.text}</span>
         {!m.resolved && (
           <span className="acts">
             <button onClick={() => send({ t: "ws_stop", panel })}>{tr("common.stop")}</button>
@@ -1017,7 +1061,7 @@ const MessageView = memo(function MessageView({
             </div>
           ) : (
             <div className="m-perm-state">
-              {m.state === "allowed" ? `✓ ${tr("perm.allowed")}` : m.state === "always_allowed" ? `✓ ${tr("perm.alwaysAllowed")}` : `✕ ${tr("perm.denied")}`}
+              <Icon name={m.state === "denied" ? "close" : "check"} size={13} /> {m.state === "allowed" ? tr("perm.allowed") : m.state === "always_allowed" ? tr("perm.alwaysAllowed") : tr("perm.denied")}
             </div>
           )}
         </div>
@@ -1027,7 +1071,7 @@ const MessageView = memo(function MessageView({
       body = (
         <button className="m-doc" onClick={() => send({ t: "doc_open", panel, doc: m.doc })} title={tr("doc.openBeside")}>
           <span className="m-doc-ic" aria-hidden="true">
-            {diagram ? "📐" : "▤"}
+            <Icon name={diagram ? "diagram" : "doc"} size={15} />
           </span>
           <span className="m-doc-text">
             <b>{m.title}</b>
@@ -1041,7 +1085,7 @@ const MessageView = memo(function MessageView({
     case "error":
       body = (
         <div className="m-err">
-          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, []) }} />
+          <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, {}) }} />
         </div>
       );
       break;
@@ -1055,7 +1099,7 @@ const MessageView = memo(function MessageView({
             <b style={{ color: who ? colorFor(who.id) : undefined }}>@{who?.alias ?? "agent"}</b>
             {who && (
               <span>
-                {who.model ?? who.kind}
+                {modelLabel(who)}
                 {accountName(accounts, who) && ` · ${accountName(accounts, who)}`}
               </span>
             )}
@@ -1070,12 +1114,12 @@ const MessageView = memo(function MessageView({
 }, sameProps);
 
 /** One text message inside an agent's turn bubble: right-click, threads and quotes work per part. */
-function TextPart({ panel, m, who, byId, aliases, threads }: { panel: string; m: Extract<Msg, { kind: "text" }>; who?: Member; byId: Map<string, Member>; aliases: string[]; threads: number }) {
+function TextPart({ panel, m, who, byId, aliases, threads }: { panel: string; m: Extract<Msg, { kind: "text" }>; who?: Member; byId: Map<string, Member>; aliases: Record<string, string>; threads: number }) {
   return (
     <div className="bubble-part" data-msg={m.id} data-threadable={!m.streaming && who ? "" : undefined}>
       {m.from_thread && (
         <button className="from-thread" onClick={() => openThreads(panel, { view: { kind: "thread", id: m.from_thread!.thread }, msg: null })}>
-          ↩ {tr("thread.conclusionOf", { num: m.from_thread.num })}
+          <Icon name="bring" size={13} /> {tr("thread.conclusionOf", { num: m.from_thread.num })}
         </button>
       )}
       {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
@@ -1094,7 +1138,7 @@ function TextPart({ panel, m, who, byId, aliases, threads }: { panel: string; m:
             openThreadsFor(panel, m.id, threads, quote);
           }}
         >
-          💬 {threads}
+          <Icon name="thread" size={13} /> {threads}
         </button>
       )}
     </div>
@@ -1110,11 +1154,11 @@ function ToolView({ m }: { m: Msg }) {
   return (
     <div className={`m-tool${m.is_error ? " err" : ""}`}>
       <button className="m-tool-head" onClick={() => setOpen((v) => !v)} title={tr("tool.clickToExpand")}>
-        <span className="tool-ic">{open ? "▾" : "▸"}</span>
+        <span className="tool-ic"><Icon name={open ? "dropdown" : "expand"} size={12} /></span>
         <b>{m.name}</b>
         {m.summary && <span className="m-tool-sum">{m.summary}</span>}
       </button>
-      <div className="m-tool-res">⎿ {m.result == null ? tr("tool.running") : firstLine || tr("tool.noOutput")}</div>
+      <div className="m-tool-res"><Icon name="result" size={12} /> {m.result == null ? tr("tool.running") : firstLine || tr("tool.noOutput")}</div>
       {open && (
         <div className="m-tool-detail">
           {m.detail && <pre>{m.detail}</pre>}
@@ -1137,10 +1181,10 @@ function ToolGroup({ tools }: { tools: Msg[] }) {
   return (
     <div className={`m-tools${failed ? " err" : ""}${running ? " live" : ""}`}>
       <button className="m-tool-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} title={open ? tr("common.collapse") : tr("tool.expandEach")}>
-        <span className="tool-ic">{open ? "▾" : "▸"}</span>
+        <span className="tool-ic"><Icon name={open ? "dropdown" : "expand"} size={12} /></span>
         {running && !open ? (
           <>
-            <span className="spin" aria-hidden="true">⟳</span>
+            <Icon name="busy" size={12} />
             <b>{running.name}</b>
             {running.summary && <span className="m-tool-sum">{running.summary}</span>}
             <span className="m-tools-n">{tr("tool.nth", { n: ts.indexOf(running) + 1 })}</span>
@@ -1296,7 +1340,7 @@ function Composer({
   // @mention autocomplete for the word under the caret.
   const token = /(^|\s)@([\w\-一-鿿]*)$/.exec(text.slice(0, caret));
   const options = token
-    ? [...members.map((m) => ({ alias: m.alias, label: m.model ?? m.kind, m })), { alias: "all", label: tr("mention.all"), m: undefined }].filter((o) =>
+    ? [...members.map((m) => ({ alias: m.alias, label: modelLabel(m), m })), { alias: "all", label: tr("mention.all"), m: undefined }].filter((o) =>
         o.alias.toLowerCase().startsWith(token[2].toLowerCase()),
       )
     : [];
@@ -1343,9 +1387,21 @@ function Composer({
     setCaret(0);
   };
   const alias = (id: string) => "@" + (members.find((x) => x.id === id)?.alias ?? "?");
+  // Who this would go to (as the daemon reads @mentions: none, or @all, means everyone) and
+  // whose account needs logging in again: they would be skipped.
+  const accounts = useAccounts();
+  const named = [...text.replace(/```[\s\S]*?```|`[^`]*`/g, "").matchAll(/(?:^|[^\p{L}\p{N}])@([\p{L}\p{N}_.-]+)/gu)].map((x) => x[1].replace(/\.+$/, "").toLowerCase());
+  const everyone = !named.length || named.some((n) => n === "all" || n === "全部" || n === "所有人");
+  const skipped = members.filter((m) => (everyone || named.includes(m.alias.toLowerCase())) && expiredAccount(m, accounts));
   return (
     <div className="ws-input">
       <BusyLine busy={working} />
+      {skipped.length > 0 && (text.trim() || files.length || refs.length) ? (
+        <div className={`queue-bar expired-bar${round?.waiting?.length ? " stacked" : ""}`}>
+          <span className="queue-list"><Icon name="key" size={13} /> {tr("acct.expiredSend", { who: skipped.map((m) => "@" + m.alias).join("、") })}</span>
+          <button onClick={() => send({ t: "account_login", account: expiredAccount(skipped[0], accounts)!.id })}>{tr("acct.relogin")}</button>
+        </div>
+      ) : null}
       {!!round?.waiting?.length && (
         <div className="queue-bar">
           <span className="queue-list">
@@ -1359,22 +1415,22 @@ function Composer({
       {rewindAt >= 0 && (
         <div className="reply-bar rewind-bar">
           <span className="reply-ref">
-            <span className="reply-who">⟲ {tr("rewind.title")}</span>
+            <span className="reply-who"><Icon name="rewind" size={13} /> {tr("rewind.title")}</span>
             <span className="reply-text">{tr("rewind.detail", { n: doomed })}</span>
           </span>
           <button className="reply-x" onClick={() => leaveRewind(true)} aria-label={tr("rewind.cancel")} title={tr("rewind.cancel") + "（Esc）"}>
-            ✕
+            <Icon name="close" />
           </button>
         </div>
       )}
       {reply && reply.kind === "text" && (
         <div className="reply-bar">
           <button className="reply-ref" onClick={() => showInChat(reply.id)} title={tr("reply.jump")}>
-            <span className="reply-who">↩ {tr("reply.to")} {authorName(reply.from, new Map(members.map((x) => [x.id, x])))}</span>
+            <span className="reply-who"><Icon name="reply" size={13} /> {tr("reply.to")} {authorName(reply.from, new Map(members.map((x) => [x.id, x])))}</span>
             <span className="reply-text">{excerpt(reply.text)}</span>
           </button>
           <button className="reply-x" onClick={() => setReplying(panel, null)} aria-label={tr("reply.cancel")} title={tr("reply.cancel") + "（Esc）"}>
-            ✕
+            <Icon name="close" />
           </button>
         </div>
       )}
@@ -1407,7 +1463,7 @@ function Composer({
             title={tr(tool.key) + (tool.kbd ? `（${isMac ? "⌘" : "Ctrl+"}${tool.kbd}）` : "")}
             aria-label={tr(tool.key)}
           >
-            <Icon name={tool.key.slice(4)} />
+            <Icon name={tool.key.slice(4) as IconName} />
           </button>
         ))}
         <span className="cmp-sep" />
@@ -1526,7 +1582,7 @@ function Composer({
       </div>
       {/* Stopping lives on each agent in the sidebar (and Esc stops all); sending while they work queues. */}
       <button className="send-btn" onClick={submit} disabled={disabled || (!text.trim() && !files.length && !refs.length)} title={busy ? tr("composer.sendQueued") : tr("composer.send")}>
-        ↑
+        <Icon name="up" />
       </button>
     </div>
   );

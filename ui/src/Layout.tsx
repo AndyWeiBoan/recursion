@@ -8,13 +8,16 @@ import { send, useSnapshot } from "./client";
 import { requestKind } from "./picker";
 import { ChatHead, WorkspaceView } from "./WorkspaceView";
 import { zoomLevel } from "./zoom";
-import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, overlay, showBrowser, useBrowserZoom, viewerPath, zoomBrowser } from "./browsers";
+import { browserGo, hideBrowser, moveBrowser, nativeBrowser, normalizeUrl, onBrowserEvent, showBrowser, useBrowserZoom, viewerPath, zoomBrowser } from "./browsers";
 import { useDocHtml } from "./client";
 import { focusTerminal, fitTerminal, mountTerminal, restartTerminal, typePaths } from "./terminals";
 import { takeDrops, useDropOver } from "./drop";
 import { useZoomed } from "./threadsUI";
 import { movable, PanelDragLayer, startPanelDrag, useDraggedPanel } from "./panelDrag";
-import { KIND_LABEL, leaves, type Doc, type Node, type Panel, type PanelKind, type TermInfo, type Window } from "./types";
+import { leaves, type Doc, type Node, type Panel, type TermInfo, type Window } from "./types";
+import { Icon } from "./icons";
+import { describe, InlineEdit, PanelContextMenu, panelNumbers } from "./SessionTree";
+import { closeChecked } from "./closing";
 
 interface Ctx {
   window: Window;
@@ -179,8 +182,9 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const solo = leaves(ctx.window.root).length < 2;
   const lifted = useDraggedPanel() === panel.id;
   const info = ctx.terms[panel.id];
-  const [menu, setMenu] = useState(false);
-  useEffect(() => (menu ? overlay() : undefined), [menu]);
+  // A right-click on the header: the panel's menu (as on its tab and its sidebar row).
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState(false);
   const focus = () => {
     if (!focused) send({ t: "panel_focus", panel: panel.id });
   };
@@ -188,7 +192,10 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
   const doc = docId ? ctx.docs.find((d) => d.id === docId) : undefined;
   // A document, diagram or file shown here came from a chat: a way back to that chat's 產出.
   const { state } = useSnapshot();
-  const can = movable(zoomed, solo, state?.sessions.find((s) => s.id === ctx.session)?.windows.length ?? 1);
+  const session = state?.sessions.find((s) => s.id === ctx.session);
+  const can = movable(zoomed, solo, session?.windows.length ?? 1);
+  // Its icon and name, as in the sidebar and the tabs.
+  const me = describe(panel, (session && state ? panelNumbers(session, state.panels).get(panel.id) : undefined) ?? 1, ctx.docs, ctx.terms);
   const file = panel.kind === "browser" ? viewerPath(panel.url) : null;
   const viewer = panel.kind === "browser" && (docId || file !== null);
   const sourceChat = useMemo(() => {
@@ -214,13 +221,18 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
     <section className={`panel${focused ? " focused" : ""}${can ? " movable" : ""}${lifted ? " lifted" : ""}`} data-panel={panel.id} onMouseDown={focus}>
       <header
         className="panel-head"
+        onContextMenu={(e) => (e.preventDefault(), setMenu({ x: e.clientX, y: e.clientY }))}
         onPointerDown={(e) =>
           startPanelDrag(e, panel.id, solo, can)
         }
       >
-        <button className="kind" onClick={() => setMenu((v) => !v)} title={t("panel.switchKind")}>
-          {(panel.kind === "workspace" && panel.title) || KIND_LABEL[panel.kind]} ▾
-        </button>
+        {/* The tab names a window's only panel already; split, each says which it is. */}
+        {!solo && (
+          <span className={`kind tab-part ic-${me.cls}`} onDoubleClick={() => setRenaming(true)} title={t("common.doubleClickRename")}>
+            <Icon name={me.icon} size={14} />
+            {renaming ? <InlineEdit value={me.label} onSave={(name) => send({ t: "panel_rename", panel: panel.id, name })} onDone={() => setRenaming(false)} /> : me.label}
+          </span>
+        )}
         {panel.kind === "workspace" ? <ChatHead panel={panel.id} /> : <span className="title">{title}</span>}
         {sourceChat && (
           <button
@@ -231,7 +243,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
             }}
             title={t("outputs.backHint")}
           >
-            📎 {t("outputs.title")}
+            <Icon name="outputs" size={14} /> {t("outputs.title")}
           </button>
         )}
         <span className="tools">
@@ -239,32 +251,17 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
             title={t("panel.splitRight") + "（⌘D）"}
             onClick={(e) => requestKind(t("panel.splitRight"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "row", kind }))}
           >
-            ◫
+            <Icon name="splitRight" />
           </button>
           <button
             title={t("panel.splitDown") + "（⌘⇧D）"}
             onClick={(e) => requestKind(t("panel.splitDown"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "panel_split", panel: panel.id, dir: "column", kind }))}
           >
-            ⊟
+            <Icon name="splitDown" />
           </button>
-          <button title={t("common.close") + "（⌘W）"} onClick={() => send({ t: "panel_close", panel: panel.id })}>✕</button>
+          <button title={t("common.close") + "（⌘W）"} onClick={() => closeChecked(`panel:${panel.id}`, [panel.id], () => send({ t: "panel_close", panel: panel.id }))}><Icon name="close" /></button>
         </span>
-        {menu && (
-          <div className="menu" onMouseLeave={() => setMenu(false)}>
-            {(["workspace", "terminal", "browser"] as PanelKind[]).map((k) => (
-              <button
-                key={k}
-                className={k === panel.kind ? "on" : ""}
-                onClick={() => {
-                  setMenu(false);
-                  if (k !== panel.kind) send({ t: "panel_kind", panel: panel.id, kind: k });
-                }}
-              >
-                {KIND_LABEL[k]}
-              </button>
-            ))}
-          </div>
-        )}
+        {menu && <PanelContextMenu p={panel} at={menu} onRename={() => setRenaming(true)} onClose={() => setMenu(null)} />}
       </header>
       <div className="panel-body">
         {dropOver === panel.id && <div className="drop-over">{t(panel.kind === "terminal" ? "drop.paste" : "drop.attach")}</div>}
@@ -381,13 +378,13 @@ function PageZoom({ panel }: { panel: string }) {
   return (
     <span className="br-zoom">
       <button type="button" title={t("browser.zoomOut")} aria-label={t("browser.zoomOut")} onClick={() => zoomBrowser(panel, -1)}>
-        −
+        <Icon name="minus" />
       </button>
       <button type="button" className="br-zoom-pct" title={t("browser.zoomReset")} onClick={() => zoomBrowser(panel, 0)}>
         {Math.round(level * 100)}%
       </button>
       <button type="button" title={t("browser.zoomIn")} aria-label={t("browser.zoomIn")} onClick={() => zoomBrowser(panel, 1)}>
-        ＋
+        <Icon name="add" />
       </button>
     </span>
   );
@@ -473,13 +470,13 @@ function BrowserBody({ panel }: { panel: Panel }) {
     <div className="br">
       <form className="br-bar" onSubmit={go}>
         <button type="button" title={t("browser.back")} disabled={!url} onClick={() => browserGo(panel.id, "back")}>
-          ←
+          <Icon name="back" />
         </button>
         <button type="button" title={t("browser.forward")} disabled={!url} onClick={() => browserGo(panel.id, "forward")}>
           →
         </button>
         <button type="button" title={t("browser.reload")} disabled={!url} onClick={() => browserGo(panel.id, "reload")}>
-          {loading ? "✕" : "↻"}
+          <Icon name={loading ? "close" : "reload"} size={14} />
         </button>
         <input
           value={input}

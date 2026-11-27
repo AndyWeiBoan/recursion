@@ -33,6 +33,27 @@ pub struct Account {
     /// When each window resets (seconds since epoch), e.g. {"five_hour": 1795245000}.
     #[serde(default)]
     pub resets: BTreeMap<String, u64>,
+    /// Logged in, but the provider turned the login down since: it needs logging in again. The
+    /// CLI can't tell (`auth status` only looks at the saved login), so this is what we saw.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expired: Option<Expired>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Expired {
+    /// When it was seen (ms since epoch).
+    pub at: u64,
+    /// "agent" (an agent was refused) or "usage" (the limits request was).
+    pub why: String,
+}
+
+/// What asking the provider for an account's limits gave.
+pub enum Fetched {
+    Limits(BTreeMap<String, f64>, BTreeMap<String, u64>),
+    /// The provider refused the login itself: it was logged out, revoked, or the like.
+    Refused,
+    /// Nothing to go by: no fresh token to ask with, the network, or an answer we don't know.
+    Nothing,
 }
 
 pub fn default_id(kind: AgentKind) -> &'static str {
@@ -148,7 +169,7 @@ impl Accounts {
                 let _ = std::os::unix::fs::symlink(&from, d.join(item));
             }
         }
-        let a = Account { id, kind, name: name.into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() };
+        let a = Account { id, kind, name: name.into(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default(), expired: None };
         self.list.lock().unwrap().push(a.clone());
         self.save();
         Ok(a)
@@ -173,7 +194,7 @@ impl Accounts {
         if let Some(a) = self.get(id) {
             return a;
         }
-        let a = Account { id: id.into(), kind, name: String::new(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default() };
+        let a = Account { id: id.into(), kind, name: String::new(), email: None, plan: None, logged_in: false, usage: Default::default(), usage_at: 0, resets: Default::default(), expired: None };
         self.list.lock().unwrap().push(a.clone());
         self.save();
         a
@@ -191,12 +212,14 @@ impl Accounts {
         Ok(())
     }
 
-    /// Latest limits seen from an agent on this account. Returns whether anything changed.
+    /// Latest limits seen from an agent on this account. Returns whether anything changed. Limits
+    /// only come with a working login, so it is not expired after all.
     pub fn record_usage(&self, id: &str, usage: &BTreeMap<String, f64>, resets: &BTreeMap<String, u64>) -> bool {
+        let cleared = self.clear_expired(id);
         let mut list = self.list.lock().unwrap();
-        let Some(a) = list.iter_mut().find(|a| a.id == id) else { return false };
+        let Some(a) = list.iter_mut().find(|a| a.id == id) else { return cleared };
         if &a.usage == usage && (resets.is_empty() || &a.resets == resets) {
-            return false;
+            return cleared;
         }
         a.usage = usage.clone();
         if !resets.is_empty() {
@@ -206,6 +229,38 @@ impl Accounts {
         drop(list);
         self.save();
         true
+    }
+
+    /// The provider refused this account's login. Returns whether that is news.
+    pub fn mark_expired(&self, id: &str, why: &str) -> bool {
+        let mut list = self.list.lock().unwrap();
+        let Some(a) = list.iter_mut().find(|a| a.id == id && a.logged_in && a.expired.is_none()) else { return false };
+        a.expired = Some(Expired { at: now_ms(), why: why.into() });
+        drop(list);
+        self.save();
+        true
+    }
+
+    /// It works again. Returns whether it was marked.
+    pub fn clear_expired(&self, id: &str) -> bool {
+        let mut list = self.list.lock().unwrap();
+        let Some(a) = list.iter_mut().find(|a| a.id == id && a.expired.is_some()) else { return false };
+        a.expired = None;
+        drop(list);
+        self.save();
+        true
+    }
+
+    /// Is the account marked as needing a new login? A login saved since it was marked (in a
+    /// terminal, or the CLI renewing it) clears the mark. Returns (expired, mark cleared just now).
+    pub fn check_expired(&self, id: &str) -> (bool, bool) {
+        let Some(a) = self.get(id) else { return (false, false) };
+        let Some(e) = a.expired else { return (false, false) };
+        let since = credentials_mtime(a.kind, id).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).is_some_and(|t| t.as_millis() as u64 > e.at);
+        if since {
+            return (false, self.clear_expired(id));
+        }
+        (true, false)
     }
 
     /// Ask the CLI who is logged in on this account. Returns whether anything changed.
@@ -293,13 +348,16 @@ pub fn credentials_mtime(kind: AgentKind, id: &str) -> Option<std::time::SystemT
 /// them. Codex: its app-server's `account/rateLimits/read`. Claude: the endpoint behind Claude
 /// Code's `/usage` (not publicly documented), with the login the CLI already has; the token is only
 /// read, never refreshed, so an expired one just means "no data yet".
-pub async fn fetch_usage(kind: AgentKind, id: &str, path: &str, codex: Option<&str>) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
-    let r = match kind {
-        AgentKind::Claude => claude_usage(id).await,
-        AgentKind::Codex => codex_usage(id, path, codex?).await,
+pub async fn fetch_usage(kind: AgentKind, id: &str, path: &str, codex: Option<&str>) -> Fetched {
+    let r = match (kind, codex) {
+        (AgentKind::Claude, _) => claude_usage(id).await,
+        (AgentKind::Codex, Some(bin)) => codex_usage(id, path, bin).await,
+        (AgentKind::Codex, None) => Fetched::Nothing,
     };
-    if r.is_none() {
-        tracing::warn!(account = id, "could not read usage from the provider");
+    match &r {
+        Fetched::Nothing => tracing::warn!(account = id, "could not read usage from the provider"),
+        Fetched::Refused => tracing::warn!(account = id, "the provider refused the login"),
+        Fetched::Limits(..) => {}
     }
     r
 }
@@ -353,28 +411,30 @@ mod keychain {
     }
 }
 
-async fn claude_usage(id: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
-    let creds = claude_credentials(id)?;
+async fn claude_usage(id: &str) -> Fetched {
+    let Some(creds) = claude_credentials(id) else { return Fetched::Nothing };
     let oauth = &creds["claudeAiOauth"];
-    let token = oauth["accessToken"].as_str()?;
+    let Some(token) = oauth["accessToken"].as_str() else { return Fetched::Nothing };
+    // An expired access token is normal (the CLI renews it when next used): it says nothing.
     if oauth["expiresAt"].as_u64().is_some_and(|t| t <= now_ms()) {
-        return None;
+        return Fetched::Nothing;
     }
-    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build().map_err(|e| tracing::warn!(%e, "http client")).ok()?;
-    let v: serde_json::Value = client
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .bearer_auth(token)
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .send()
-        .await
-        .map_err(|e| tracing::warn!(%e, "claude usage request"))
-        .ok()?
-        .error_for_status()
-        .map_err(|e| tracing::warn!(%e, "claude usage status"))
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build() else { return Fetched::Nothing };
+    let res = match client.get("https://api.anthropic.com/api/oauth/usage").bearer_auth(token).header("anthropic-beta", "oauth-2025-04-20").send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(%e, "claude usage request");
+            return Fetched::Nothing;
+        }
+    };
+    let status = res.status();
+    let Ok(body) = res.text().await else { return Fetched::Nothing };
+    if !status.is_success() {
+        tracing::warn!(%status, body = %body.chars().take(300).collect::<String>(), "claude usage status");
+        // Only the API saying the login itself is bad counts: a still-valid token turned down.
+        return if status == reqwest::StatusCode::UNAUTHORIZED && body.contains("authentication_error") { Fetched::Refused } else { Fetched::Nothing };
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else { return Fetched::Nothing };
     let (mut usage, mut resets) = (BTreeMap::new(), BTreeMap::new());
     for k in ["five_hour", "seven_day"] {
         if let Some(u) = v[k]["utilization"].as_f64() {
@@ -384,10 +444,23 @@ async fn claude_usage(id: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<Strin
             resets.insert(k.to_string(), t);
         }
     }
-    (!usage.is_empty()).then_some((usage, resets))
+    if usage.is_empty() { Fetched::Nothing } else { Fetched::Limits(usage, resets) }
 }
 
-async fn codex_usage(id: &str, path: &str, bin: &str) -> Option<(BTreeMap<String, f64>, BTreeMap<String, u64>)> {
+async fn codex_usage(id: &str, path: &str, bin: &str) -> Fetched {
+    match codex_limits(id, path, bin).await {
+        Some(Ok(l)) => l,
+        Some(Err(text)) if is_auth_error(&text) => Fetched::Refused,
+        Some(Err(text)) => {
+            tracing::warn!(error = %text, "codex rateLimits/read");
+            Fetched::Nothing
+        }
+        None => Fetched::Nothing,
+    }
+}
+
+/// The limits, or the error the app-server answered with.
+async fn codex_limits(id: &str, path: &str, bin: &str) -> Option<Result<Fetched, String>> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut cmd = Command::new(bin);
     cmd.arg("app-server").env("PATH", path).current_dir(dirs::home_dir().unwrap_or_default());
@@ -406,13 +479,20 @@ async fn codex_usage(id: &str, path: &str, bin: &str) -> Option<(BTreeMap<String
         while let Ok(Some(line)) = lines.next_line().await {
             let m: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
             if m["id"] == 2 {
-                return Some(m["result"]["rateLimits"].clone());
+                if !m["error"].is_null() {
+                    return Some(Err(m["error"]["message"].as_str().map(String::from).unwrap_or_else(|| m["error"].to_string())));
+                }
+                return Some(Ok(m["result"]["rateLimits"].clone()));
             }
         }
         None
     };
-    let rl = tokio::time::timeout(std::time::Duration::from_secs(20), ask).await.ok().flatten()?;
+    let rl = tokio::time::timeout(std::time::Duration::from_secs(20), ask).await.ok().flatten();
     let _ = child.kill().await;
+    let rl = match rl? {
+        Ok(rl) => rl,
+        Err(e) => return Some(Err(e)),
+    };
     let (mut usage, mut resets) = (BTreeMap::new(), BTreeMap::new());
     for w in [&rl["primary"], &rl["secondary"]] {
         let Some(pct) = w["usedPercent"].as_f64() else { continue };
@@ -426,7 +506,7 @@ async fn codex_usage(id: &str, path: &str, bin: &str) -> Option<(BTreeMap<String
             resets.insert(name.to_string(), t);
         }
     }
-    (!usage.is_empty()).then_some((usage, resets))
+    Some(Ok(if usage.is_empty() { Fetched::Nothing } else { Fetched::Limits(usage, resets) }))
 }
 
 /// "2026-11-21T07:10:00.61+00:00" → seconds since epoch.
@@ -477,7 +557,7 @@ fn codex_identity(id: &str) -> (Option<String>, Option<String>) {
 /// Does an agent's error mean its login is gone or expired?
 pub fn is_auth_error(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["/login", "invalid api key", "oauth token", "not logged in", "authentication_error", "401 unauthorized", "token has expired", "refresh token", "please log in", "login required"]
+    ["/login", "invalid api key", "oauth token", "not logged in", "authentication_error", "401 unauthorized", "token has expired", "refresh token", "please log in", "login required", "failed to authenticate", "could not be refreshed"]
         .iter()
         .any(|p| t.contains(p))
 }
@@ -485,6 +565,16 @@ pub fn is_auth_error(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_errors_are_recognised() {
+        // What Claude Code says when its login was revoked (seen on 2.1.x).
+        assert!(is_auth_error("Failed to authenticate: OAuth session expired and could not be refreshed"));
+        assert!(is_auth_error("API Error: 401 Unauthorized"));
+        // A network problem is not a login problem.
+        assert!(!is_auth_error("API Error: Connection error."));
+        assert!(!is_auth_error("request timed out"));
+    }
 
     #[test]
     fn default_accounts_have_no_folder() {

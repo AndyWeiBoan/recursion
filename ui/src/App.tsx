@@ -9,15 +9,17 @@ import { TodoCardLayer } from "./TodoCard";
 import { listenZoomKeys, restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
 import { overlay, pruneBrowsers, viewerPath, zoomBrowser } from "./browsers";
-import { usePanelDrag } from "./panelDrag";
-import { SessionTree } from "./SessionTree";
+import { startTabDrag, usePanelDrag } from "./panelDrag";
+import { describe, InlineEdit, PanelContextMenu, panelNumbers, SessionTree } from "./SessionTree";
 import { ago, openSettings, SettingsModal } from "./Settings";
 import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
 import { UsagePanel } from "./Usage";
 import { UpdateNotice } from "./Update";
 import { Onboarding, SetupTerminal } from "./Setup";
 import { closeThreads, useZoomed } from "./threadsUI";
-import { chatsOf, leaves, type Closed, type Session, type State, type TermInfo } from "./types";
+import { chatsOf, leaves, type Closed, type PanelKind, type Session, type State, type TermInfo } from "./types";
+import { Icon } from "./icons";
+import { closeChecked } from "./closing";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
 
@@ -122,7 +124,8 @@ function useShortcuts(toggleSidebar: () => void) {
         requestKind(down ? t("panel.splitDown") : t("panel.splitRight"), null, (kind) => send({ t: "panel_split", panel, dir: down ? "column" : "row", kind }));
       } else if (k === "w" && window) {
         stop();
-        send({ t: "panel_close", panel: window.focus });
+        const panel = window.focus;
+        closeChecked(`panel:${panel}`, [panel], () => send({ t: "panel_close", panel }));
       } else if (/^Digit[1-9]$/.test(e.code)) {
         const w = session.windows[Number(e.code.slice(5)) - 1];
         if (w) {
@@ -153,6 +156,17 @@ export default function App() {
   useEffect(restoreZoom, []);
   useEffect(() => void listenZoomKeys(zoomBrowser), []);
   useEffect(() => void listenForDrops(), []);
+  // The webview's own menu (Back, Forward, Reload) means nothing here: keep it only where it
+  // helps, on text being edited or selected (and in terminals, which have their own handling).
+  useEffect(() => {
+    const own = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest?.("input, textarea, [contenteditable=''], [contenteditable='true'], .xterm") || String(document.getSelection() ?? "")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", own);
+    return () => document.removeEventListener("contextmenu", own);
+  }, []);
   const toggleSidebar = useMemo(() => () => setSidebar((v) => !v), []);
   useShortcuts(toggleSidebar);
   const side = useSidebarWidth();
@@ -181,7 +195,7 @@ export default function App() {
           <SidebarIcon />
         </button>
         <button className="icon-btn" title={`${t("session.new")}（${isMac ? "⌘⇧N" : "Ctrl+Shift+N"}）`} onClick={newSession} aria-label={t("session.new")}>
-          ＋
+          <Icon name="add" />
         </button>
       </div>
       <div className="side-slot" aria-hidden={!sidebar}>
@@ -193,10 +207,12 @@ export default function App() {
       <main className="main">
         {session && window ? (
           <>
-            <Tabs session={session} />
+            <Tabs session={session} state={state!} terms={terms} />
             <LayoutView key={window.id} ctx={{ window, panels: state!.panels, terms, cwd: session.cwd, session: session.id, docs: session.docs ?? [] }} />
             <StatusBar session={session} status={status} />
           </>
+        ) : session ? (
+          <EmptyProject session={session} />
         ) : (
           <Empty status={status} error={error} hasState={!!state} />
         )}
@@ -222,12 +238,9 @@ function loadCollapsed(): Set<string> {
 }
 
 function Sidebar({ state, terms }: { state: State | null; terms: Record<string, TermInfo> }) {
-  const groups = useMemo(() => {
-    const m = new Map<string, Session[]>();
-    state?.sessions.forEach((s) => m.set(s.group, [...(m.get(s.group) ?? []), s]));
-    return [...m.entries()];
-  }, [state]);
-  const [editing, setEditing] = useState<{ id: string; field: "name" | "group" } | null>(null);
+  // A project is a folder: one flat list, no groups.
+  const groups: [string, Session[]][] = [["", state?.sessions ?? []]];
+  const [editing, setEditing] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const toggle = (id: string) =>
@@ -256,13 +269,12 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
       <nav className="sessions">
         {groups.map(([group, list]) => (
           <div key={group} className="group">
-            <div className="group-name">{group}</div>
             {list.map((s) => {
               const on = s.id === state?.active_session;
-              const edit = editing?.id === s.id ? editing.field : null;
+              const edit = editing === s.id;
               return (
                 <div key={s.id} className="sess-block">
-                  <div className={`sess${on ? " on" : ""}`} onClick={() => send({ t: "session_select", session: s.id })} title={s.cwd}>
+                  <div className={`sess${on ? " on" : ""}`} onClick={() => (s.windows.length ? toggle(s.id) : send({ t: "session_select", session: s.id }))}>
                     {s.windows.length > 0 ? (
                       <button
                         className={`sess-fold${collapsed.has(s.id) ? " closed" : ""}`}
@@ -270,21 +282,21 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         aria-expanded={!collapsed.has(s.id)}
                         onClick={(e) => (e.stopPropagation(), toggle(s.id))}
                       >
-                        ›
+                        <Icon name="expand" size={12} />
                       </button>
                     ) : (
                       <span className="sess-fold-space" />
                     )}
-                    <span className="sess-ic">✳</span>
+                    <span className="sess-ic"><Icon name="folder" size={16} /></span>
                     {edit ? (
                       <input
                         autoFocus
                         className="sess-edit"
-                        defaultValue={edit === "name" ? s.name : s.group}
+                        defaultValue={s.name}
                         onClick={(e) => e.stopPropagation()}
                         onBlur={(e) => {
                           const v = e.target.value.trim();
-                          if (v) send(edit === "name" ? { t: "session_rename", session: s.id, name: v } : { t: "session_group", session: s.id, group: v });
+                          if (v) send({ t: "session_rename", session: s.id, name: v });
                           setEditing(null);
                         }}
                         onKeyDown={(e) => {
@@ -293,7 +305,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         }}
                       />
                     ) : (
-                      <span className="sess-name" onDoubleClick={() => setEditing({ id: s.id, field: "name" })}>
+                      <span className="sess-name" onDoubleClick={() => setEditing(s.id)} title={s.cwd}>
                         {s.name}
                       </span>
                     )}
@@ -305,7 +317,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                       }}
                       aria-label={t("common.more")}
                     >
-                      ⋯
+                      <Icon name="more" />
                     </button>
                     {menu === s.id && (
                       <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(null)}>
@@ -321,8 +333,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         >
                           {t("window.new")}…
                         </button>
-                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "name" }))}>{t("common.rename")}</button>
-                        <button onClick={() => (setMenu(null), setEditing({ id: s.id, field: "group" }))}>{t("session.moveGroup")}</button>
+                        <button onClick={() => (setMenu(null), setEditing(s.id))}>{t("common.rename")}</button>
                         <button onClick={() => (setMenu(null), openSessionSettings(s.id))}>{t("scope.sessionMenu")}</button>
                         <button onClick={() => (setMenu(null), send({ t: "session_close", session: s.id }))} title={t("session.closeHint")}>
                           {t("session.close")}
@@ -341,7 +352,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
         <ClosedList closed={state?.closed ?? []} />
         <UsagePanel />
         <button className="side-accounts" onClick={() => openSettings()} title={`${t("settings.title")}（${isMac ? "⌘," : "Ctrl+,"}）`}>
-          <span aria-hidden="true">⚙</span> {t("settings.title")}
+          <Icon name="settings" size={14} /> {t("settings.title")}
           {loggedOut > 0 && <span className="side-warn" title={t("acct.loggedOutCount", { n: loggedOut })}>●</span>}
         </button>
       </div>
@@ -359,7 +370,7 @@ function ClosedList({ closed }: { closed: Closed[] }) {
   return (
     <div className="closed">
       <button className="side-accounts" onClick={() => (setOpen(!open), setConfirm(null))} aria-expanded={open}>
-        <span aria-hidden="true">↺</span> {t("closed.title")}
+        <Icon name="recent" size={14} /> {t("closed.title")}
         <span className="dim">{closed.length}</span>
       </button>
       {open && (
@@ -371,7 +382,7 @@ function ClosedList({ closed }: { closed: Closed[] }) {
             return (
               <div key={c.id} className="closed-row">
                 <button className="closed-open" onClick={() => (setOpen(false), send({ t: "closed_reopen", id: c.id }))} title={t("closed.reopen")}>
-                  <span className="closed-ic">{c.kind === "session" ? "✳" : "💬"}</span>
+                  <span className="closed-ic"><Icon name={c.kind === "session" ? "folder" : "chat"} size={14} /></span>
                   <span className="closed-main">
                     <b>{name}</b>
                     <span className="dim">
@@ -385,7 +396,7 @@ function ClosedList({ closed }: { closed: Closed[] }) {
                   </button>
                 ) : (
                   <button className="closed-del" onClick={() => setConfirm(c.id)} title={t("closed.delete")} aria-label={t("closed.delete")}>
-                    ✕
+                    <Icon name="close" />
                   </button>
                 )}
               </div>
@@ -397,60 +408,64 @@ function ClosedList({ closed }: { closed: Closed[] }) {
   );
 }
 
-function Tabs({ session }: { session: Session }) {
-  const [editing, setEditing] = useState<string | null>(null);
+/** The windows of the session on screen, each told by what it holds: its panels' icons and names
+ * (as in the sidebar). Ctrl/⌘+1…9 still go by position. */
+function Tabs({ session, state, terms }: { session: Session; state: State; terms: Record<string, TermInfo> }) {
   const drag = usePanelDrag();
   const over = drag?.target?.kind === "window" ? drag.target.window : null;
+  const nth = panelNumbers(session, state.panels);
+  // A right-click on a panel in a tab opens its menu; "rename" edits its name right there.
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
   return (
     <div className="tabs" data-tauri-drag-region>
-      {session.windows.map((w, i) => (
-        <div
-          key={w.id}
-          data-window={w.id}
-          className={`tab${w.id === session.active_window ? " on" : ""}${over === w.id ? " drop" : ""}`}
-          onClick={() => send({ t: "window_select", session: session.id, window: w.id })}
-          onDoubleClick={() => setEditing(w.id)}
-          title={t("common.doubleClickRename")}
-        >
-          <span className="tab-n">{i + 1}</span>
-          {editing === w.id ? (
-            <input
-              autoFocus
-              className="tab-edit"
-              defaultValue={w.name}
-              onBlur={(e) => {
-                const v = e.target.value.trim();
-                if (v) send({ t: "window_rename", session: session.id, window: w.id, name: v });
-                setEditing(null);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") setEditing(null);
-              }}
-            />
-          ) : (
-            w.name && w.name !== String(i + 1) && <span className="tab-name">{w.name}</span>
-          )}
-          <button
-            className="tab-x"
-            title={t("window.close")}
-            onClick={(e) => {
-              e.stopPropagation();
-              send({ t: "window_close", session: session.id, window: w.id });
-            }}
+      {menu && state.panels[menu.id] && (
+        <PanelContextMenu p={state.panels[menu.id]} at={menu} onRename={() => setRenaming(menu.id)} onClose={() => setMenu(null)} />
+      )}
+      {session.windows.map((w, i) => {
+        const parts = leaves(w.root)
+          .filter((id) => state.panels[id])
+          .map((id) => ({ id, ...describe(state.panels[id], nth.get(id) ?? 1, session.docs ?? [], terms) }));
+        return (
+          <div
+            key={w.id}
+            data-window={w.id}
+            className={`tab${w.id === session.active_window ? " on" : ""}${over === w.id ? " drop" : ""}`}
+            onClick={() => send({ t: "window_select", session: session.id, window: w.id })}
+            onPointerDown={(e) => w.id !== session.active_window && session.active_window && startTabDrag(e, parts.map((p) => p.id), session.active_window, parts.map((p) => p.label).join(" · "))}
+            title={`${parts.map((p) => p.label).join(" · ")}（${isMac ? "⌘" : "Ctrl+"}${i + 1}）`}
           >
-            ✕
-          </button>
-        </div>
-      ))}
+            {parts.map((p) => (
+              <span key={p.id} className={`tab-part ic-${p.cls}`} onContextMenu={(e) => (e.preventDefault(), e.stopPropagation(), setMenu({ id: p.id, x: e.clientX, y: e.clientY }))}>
+                <Icon name={p.icon} size={14} />
+                {renaming === p.id ? (
+                  <InlineEdit value={p.label} onSave={(name) => send({ t: "panel_rename", panel: p.id, name })} onDone={() => setRenaming(null)} />
+                ) : (
+                  <span className="tab-name">{p.label}</span>
+                )}
+              </span>
+            ))}
+            <button
+              className="tab-x"
+              title={t("window.close")}
+              onClick={(e) => {
+                e.stopPropagation();
+                closeChecked(`window:${w.id}`, parts.map((p) => p.id), () => send({ t: "window_close", session: session.id, window: w.id }));
+              }}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+        );
+      })}
       <button
         className="icon-btn"
         title={`${t("window.new")}（${isMac ? "⌘T" : "Ctrl+Shift+T"}）`}
         onClick={(e) => requestKind(t("window.new"), e.currentTarget.getBoundingClientRect(), (kind) => send({ t: "window_create", session: session.id, kind }))}
       >
-        ＋
+        <Icon name="add" />
       </button>
-      {drag && !drag.solo && <div className={`tab tab-ghost${drag.target?.kind === "new" ? " drop" : ""}`}>＋ {t("panel.ownWindow")}</div>}
+      {drag && !drag.solo && <div className={`tab tab-ghost${drag.target?.kind === "new" ? " drop" : ""}`}><Icon name="add" size={14} /> {t("panel.ownWindow")}</div>}
       <div className="tabs-fill" data-tauri-drag-region />
     </div>
   );
@@ -476,6 +491,27 @@ function StatusBar({ session, status }: { session: Session; status: string }) {
   );
 }
 
+/** A project with nothing open in it (its last window was closed): open something here. */
+function EmptyProject({ session }: { session: Session }) {
+  const open = (kind: PanelKind) => send({ t: "window_create", session: session.id, kind });
+  return (
+    <div className="empty">
+      <div className="tabs" data-tauri-drag-region>
+        <div className="tabs-fill" data-tauri-drag-region />
+      </div>
+      <div className="empty-body">
+        <div className="ws-glyph"><Icon name="terminal" size={40} /></div>
+        <h1>{t("empty.projectTitle", { name: session.name })}</h1>
+        <div className="empty-kinds">
+          <button className="primary" onClick={() => open("workspace")}>{t("kind.workspace")}</button>
+          <button onClick={() => open("terminal")}>{t("kind.terminal")}</button>
+          <button onClick={() => open("browser")}>{t("kind.browser")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Empty({ status, error, hasState }: { status: string; error: string | null; hasState: boolean }) {
   return (
     <div className="empty">
@@ -485,12 +521,12 @@ function Empty({ status, error, hasState }: { status: string; error: string | nu
       <div className="empty-body">
         {!hasState ? (
           <>
-            <div className="ws-glyph">❯_</div>
+            <div className="ws-glyph"><Icon name="terminal" size={40} /></div>
             <p>{status === "error" ? error : t("conn.connecting")}</p>
           </>
         ) : (
           <>
-            <div className="ws-glyph">❯_</div>
+            <div className="ws-glyph"><Icon name="terminal" size={40} /></div>
             <h1>{t("empty.title")}</h1>
             <p className="dim">{t("empty.hint")}</p>
             <button className="primary" onClick={newSession}>

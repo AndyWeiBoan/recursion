@@ -116,7 +116,7 @@ export function FileChip({ panel, path, onRemove }: { panel: string; path: strin
       </button>
       {onRemove && (
         <button className="file-chip-x" onClick={onRemove} aria-label={t("file.remove", { name: base(path) })}>
-          ✕
+          <Icon name="close" />
         </button>
       )}
     </span>
@@ -147,7 +147,7 @@ export function FileBody({ panel, path }: { panel: string; path: string }) {
         </span>
         {file?.text !== undefined && <span className="fv-meta">{t("file.lines", { n: lines })}</span>}
         <button onClick={() => setRev((r) => r + 1)} title={t("browser.reload")} aria-label={t("browser.reload")}>
-          ↻
+          <Icon name="reload" />
         </button>
       </div>
       {file === undefined ? (

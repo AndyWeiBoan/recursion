@@ -7,6 +7,7 @@ import { PERM_MODES, type AgentDefaults, type AgentKind, type ChatSettings, type
 import { Modal } from "./WorkspaceView";
 import { McpChecks } from "./Mcp";
 import { openSettings } from "./Settings";
+import { Icon } from "./icons";
 
 // Which session's settings are open; outside React so the sidebar menu can open them.
 let openId: string | null = null;
@@ -46,7 +47,7 @@ function ModelSelect({ kind, value, onChange }: { kind: AgentKind; value: string
           ))}
       </select>
       <span className="chev" aria-hidden="true">
-        ⌄
+        <Icon name="dropdown" size={14} />
       </span>
     </div>
   );
@@ -104,7 +105,7 @@ function SessionForm({ id, name, cwd: initialCwd, defaults, mcp: initialMcp, onD
             </button>
             {PERM_MODES.map((p) => (
               <button key={p.id} type="button" className={`${mode === p.id ? "on" : ""} m-${p.id}`} onClick={() => setMode(p.id)} title={p.hint}>
-                {p.label}
+                <Icon name={p.id} size={13} /> {p.label}
               </button>
             ))}
           </div>

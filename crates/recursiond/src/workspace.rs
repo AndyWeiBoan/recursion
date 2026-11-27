@@ -69,6 +69,10 @@ pub struct Member {
     pub alias: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// The model the CLI says it is running: the one in `model`, or, with none picked, the CLI's
+    /// own default (which only the CLI knows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_model: Option<String>,
     /// Account id it runs under (see accounts.rs); None = the default account of its kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
@@ -954,7 +958,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() }
     }
 
     #[test]
@@ -1018,7 +1022,7 @@ mod former_tests {
     #[test]
     fn departed_members_keep_their_names() {
         let mut ws = Workspace::default();
-        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() });
+        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default() });
         ws.former.insert("b".into(), FormerMember { alias: "claude".into(), kind: AgentKind::Claude });
         let n = ws.names();
         assert_eq!(n.get("a").map(String::as_str), Some("codex"));

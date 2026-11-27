@@ -1,25 +1,154 @@
-// Line icons for the chat box toolbar and file chips, all drawn on one 24px grid with the same stroke so they
-// read as one set. Paths from Lucide (ISC licence, lucide.dev).
-const PATHS: Record<string, string[]> = {
-  bold: ["M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"],
-  italic: ["M19 4h-9", "M14 20H5", "M15 4 9 20"],
-  strike: ["M16 4H9a3 3 0 0 0-2.83 4", "M14 12a4 4 0 0 1 0 8H6", "M4 12h16"],
-  code: ["m16 18 6-6-6-6", "m8 6-6 6 6 6"],
-  codeBlock: ["M10 9.5 8 12l2 2.5", "m14 9.5 2 2.5-2 2.5", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"],
-  bullets: ["M3 12h.01", "M3 18h.01", "M3 6h.01", "M8 12h13", "M8 18h13", "M8 6h13"],
-  numbers: ["M10 12h11", "M10 18h11", "M10 6h11", "M4 10h2", "M4 6h1v4", "M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"],
-  poll: ["M3 3v16a2 2 0 0 0 2 2h16", "M18 17V9", "M13 17V5", "M8 17v-3"],
-  attach: ["m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"],
-  folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
-  file: ["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4"],
-};
+// Every icon in the app, from one set (Lucide, ISC licence, lucide.dev) with one stroke, so they
+// read as one family. Use them by name; Claude's and Codex's own marks are not icons and stay
+// as they are (see KIND in WorkspaceView).
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  Bold,
+  ChartColumn,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Columns2,
+  Copy,
+  CornerDownRight,
+  CornerUpLeft,
+  Ellipsis,
+  ExternalLink,
+  File,
+  FilePen,
+  Gauge,
+  FileText,
+  Folder,
+  Globe,
+  GripVertical,
+  Hand,
+  History,
+  Image,
+  Info,
+  Italic,
+  KeyRound,
+  Keyboard,
+  Layers,
+  List,
+  ListOrdered,
+  LoaderCircle,
+  LocateFixed,
+  MessageSquare,
+  MessagesSquare,
+  Minus,
+  Moon,
+  NotebookText,
+  PanelLeft,
+  Paperclip,
+  Plug,
+  Plus,
+  Reply,
+  RotateCcw,
+  RotateCw,
+  Rows2,
+  Settings,
+  Square,
+  SquareCheck,
+  SquareCode,
+  SquareTerminal,
+  Strikethrough,
+  Sun,
+  TriangleAlert,
+  User,
+  Workflow,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import claudePng from "./assets/claude.png";
+import openaiPng from "./assets/openai.png";
 
-export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      {(PATHS[name] ?? []).map((d) => (
-        <path key={d} d={d} />
-      ))}
-    </svg>
-  );
+const ICONS = {
+  // the chat box toolbar
+  bold: Bold,
+  italic: Italic,
+  strike: Strikethrough,
+  code: Code,
+  codeBlock: SquareCode,
+  bullets: List,
+  numbers: ListOrdered,
+  poll: ChartColumn,
+  attach: Paperclip,
+  // things
+  folder: Folder,
+  file: File,
+  doc: FileText,
+  diagram: Workflow,
+  page: Globe,
+  todo: SquareCheck,
+  thread: MessageSquare,
+  image: Image,
+  note: NotebookText,
+  outputs: Layers,
+  // panels
+  terminal: SquareTerminal,
+  chat: MessagesSquare,
+  browser: Globe,
+  sidebar: PanelLeft,
+  splitRight: Columns2,
+  splitDown: Rows2,
+  // actions
+  close: X,
+  add: Plus,
+  minus: Minus,
+  more: Ellipsis,
+  grip: GripVertical,
+  copy: Copy,
+  check: Check,
+  reload: RotateCw,
+  rewind: RotateCcw,
+  reply: Reply,
+  bring: CornerUpLeft,
+  quote: CornerDownRight,
+  result: CornerDownRight,
+  open: ExternalLink,
+  find: LocateFixed,
+  back: ArrowLeft,
+  up: ArrowUp,
+  down: ArrowDown,
+  stop: Square,
+  expand: ChevronRight,
+  dropdown: ChevronDown,
+  recent: History,
+  // state
+  busy: LoaderCircle,
+  key: KeyRound,
+  warn: TriangleAlert,
+  light: Sun,
+  dark: Moon,
+  // what an agent may do without asking (PermMode)
+  ask: Hand,
+  edits: FilePen,
+  auto: Zap,
+  // settings
+  usage: Gauge,
+  settings: Settings,
+  user: User,
+  plug: Plug,
+  keyboard: Keyboard,
+  info: Info,
+} satisfies Record<string, LucideIcon>;
+
+export type IconName = keyof typeof ICONS;
+
+/** `busy` spins (the `.spin` of the old ✳). A size in px, or "1em" to follow the text it sits in. */
+export function Icon({ name, size = 16, className }: { name: IconName; size?: number | string; className?: string }) {
+  const C = ICONS[name];
+  return <C size={size} strokeWidth={2} aria-hidden="true" className={`ic${name === "busy" ? " spin" : ""}${className ? ` ${className}` : ""}`} />;
+}
+
+/** The agents' makers' marks as round badges (Claude's, and OpenAI's for Codex), the pictures
+ * the human picked: not Lucide, they stand for who the agent is. */
+const BRANDS = { claude: claudePng, codex: openaiPng };
+
+export function BrandMark({ kind, size = 16, className }: { kind: keyof typeof BRANDS; size?: number; className?: string }) {
+  return <img src={BRANDS[kind]} width={size} height={size} alt="" draggable={false} className={`ic brand${className ? ` ${className}` : ""}`} />;
 }

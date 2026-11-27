@@ -98,6 +98,7 @@ export type Cmd =
   | { t: "window_create"; session: string; kind?: PanelKind }
   | { t: "window_select"; session: string; window: string }
   | { t: "window_rename"; session: string; window: string; name: string }
+  | { t: "panel_rename"; panel: string; name: string }
   | { t: "window_close"; session: string; window: string }
   | { t: "panel_split"; panel: string; dir: Dir; kind?: PanelKind }
   | { t: "panel_move"; panel: string; target: string; side: "left" | "right" | "top" | "bottom" | "center" }
@@ -186,6 +187,8 @@ export interface Member {
   alias: string;
   mode?: PermMode;
   model?: string | null;
+  /** What the CLI says it runs: `model`, or its own default when none was picked. */
+  running_model?: string | null;
   /** Account id; absent = the default account of its kind. */
   account?: string | null;
   cli_session_id?: string | null;
@@ -208,6 +211,8 @@ export interface Account {
   usage_at: number;
   /** When each window resets, seconds since epoch. */
   resets?: Record<string, number>;
+  /** Logged in, but the provider turned the login down since (see accounts.rs). */
+  expired?: { at: number; why: string } | null;
 }
 
 export type PermState = "pending" | "allowed" | "always_allowed" | "denied";
@@ -394,8 +399,3 @@ export function chatsOf(s: Session, state: State): Chat[] {
   return out;
 }
 
-export const KIND_LABEL: Record<PanelKind, string> = {
-  get workspace() { return t("kind.workspace"); },
-  get terminal() { return t("kind.terminal"); },
-  get browser() { return t("kind.browser"); },
-};

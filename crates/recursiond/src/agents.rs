@@ -343,8 +343,11 @@ impl Hub {
         let env = self.env().await;
         let mut changed = false;
         for a in self.accounts.list().into_iter().filter(|a| a.logged_in) {
-            if let Some((usage, resets)) = crate::accounts::fetch_usage(a.kind, &a.id, &env.path, env.codex.as_deref()).await {
-                changed |= self.accounts.record_usage(&a.id, &usage, &resets);
+            changed |= self.accounts.check_expired(&a.id).1;
+            match crate::accounts::fetch_usage(a.kind, &a.id, &env.path, env.codex.as_deref()).await {
+                crate::accounts::Fetched::Limits(usage, resets) => changed |= self.accounts.record_usage(&a.id, &usage, &resets),
+                crate::accounts::Fetched::Refused => changed |= self.accounts.mark_expired(&a.id, "usage"),
+                crate::accounts::Fetched::Nothing => {}
             }
         }
         if changed {
@@ -371,7 +374,9 @@ impl Hub {
 
     /// Is any agent (in a chat that has been opened) using this account?
     pub fn account_in_use(&self, account: &str, chats: &[String]) -> Option<String> {
-        chats.iter().find_map(|p| self.with_ws(p, |ws| ws.members.iter().find(|m| m.account.as_deref() == Some(account)).map(|m| format!("@{}", m.alias))))
+        // An agent on the CLI's own login stores no account: it is on `<kind>-default`.
+        let uses = |m: &Member| self.accounts.resolve(m.kind, m.account.as_deref()) == account;
+        chats.iter().find_map(|p| self.with_ws(p, |ws| ws.members.iter().find(|m| uses(m)).map(|m| format!("@{}", m.alias))))
     }
 
     pub async fn models(&self, kind: AgentKind) -> Result<Vec<ModelOption>, String> {
@@ -608,11 +613,15 @@ impl Hub {
 
     fn system(&self, panel: &str, from: &str, text: impl Into<String>, error: bool) {
         let text = text.into();
-        // A login problem gets a card with a way out instead of a bare error.
+        // A login problem gets a card with a way out instead of a bare error, and the account is
+        // marked for every chat (and the accounts page) to see.
         if error && crate::accounts::is_auth_error(&text) {
             let m = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == from).cloned());
             if let Some(m) = m {
                 let account = self.accounts.resolve(m.kind, m.account.as_deref());
+                if self.accounts.mark_expired(&account, "agent") {
+                    self.emit_accounts();
+                }
                 let name = self.accounts.get(&account).map(|a| a.name).unwrap_or_default();
                 self.push_msg(panel, msg(from, Body::Relogin { account, name, text, resolved: false }, false));
                 return;
@@ -649,7 +658,7 @@ impl Hub {
         }
         let alias = self.check_alias(panel, &alias, None)?;
         let account = (account != crate::accounts::default_id(kind)).then_some(account);
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode };
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
@@ -979,6 +988,22 @@ impl Hub {
         let Some(m) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()) else { return };
         if m.status != MemberStatus::Idle {
             self.rt(panel, |r| r.pending.insert(member.to_string()));
+            return;
+        }
+        // Its account needs a new login: starting it would only fail. It is left out of this
+        // round (it reads what it missed once logged in again), with one card per chat to say so.
+        let account = self.accounts.resolve(m.kind, m.account.as_deref());
+        let (expired, cleared) = self.accounts.check_expired(&account);
+        if cleared {
+            self.emit_accounts();
+        }
+        if expired {
+            let carded = self.with_ws(panel, |ws| ws.messages.iter().any(|x| matches!(&x.body, Body::Relogin { account: a, resolved: false, .. } if *a == account)));
+            if !carded {
+                let name = self.accounts.get(&account).map(|a| a.name).unwrap_or_default();
+                self.push_msg(panel, msg(&m.id, Body::Relogin { account, name, text: tr!("acct.expiredSkip", alias = m.alias), resolved: false }, false));
+            }
+            spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
             return;
         }
         match self.deliver(panel, &m, cwd).await {
@@ -1539,6 +1564,10 @@ impl ClaudeReader {
                 }
             }
             "system" if v["subtype"] == "init" => {
+                if let Some(model) = v["model"].as_str().filter(|s| !s.is_empty()) {
+                    let model = model.to_string();
+                    hub.update_member(&panel, &member, |m| m.running_model = Some(model));
+                }
                 if let Some(sid) = v["session_id"].as_str() {
                     let sid = sid.to_string();
                     hub.update_member(&panel, &member, |m| {
