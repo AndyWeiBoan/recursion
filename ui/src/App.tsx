@@ -9,6 +9,7 @@ import { TodoCardLayer } from "./TodoCard";
 import { AgentInfoLayer } from "./AgentInfo";
 import { AgentSettingsLayer } from "./AgentSettings";
 import { Collapse } from "./Collapse";
+import { startSort } from "./sortDrag";
 import { listenZoomKeys, restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
 import { overlay, pruneBrowsers, viewerPath, zoomBrowser } from "./browsers";
@@ -288,7 +289,15 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
               const edit = editing === s.id;
               return (
                 <div key={s.id} className="sess-block">
-                  <div className={`sess${on ? " on" : ""}`} onClick={() => (s.windows.length ? toggle(s.id) : send({ t: "session_select", session: s.id }))}>
+                  <div
+                    className={`sess${on ? " on" : ""}`}
+                    onClick={() => (s.windows.length ? toggle(s.id) : send({ t: "session_select", session: s.id }))}
+                    // Dragged up or down: the project, with what is open in it, to another place.
+                    onPointerDown={(e) => {
+                      const item = e.currentTarget.closest<HTMLElement>(".sess-block")!;
+                      if (!edit) startSort(e, { item, axis: "y", items: () => [...item.parentElement!.querySelectorAll<HTMLElement>(":scope > .sess-block")], onDrop: (to) => send({ t: "session_move", session: s.id, to }) });
+                    }}
+                  >
                     {s.windows.length > 0 ? (
                       <button
                         className={`sess-fold${collapsed.has(s.id) ? " closed" : ""}`}
@@ -491,7 +500,24 @@ function Tabs({ session, state, terms }: { session: Session; state: State; terms
             data-window={w.id}
             className={`tab${w.id === session.active_window ? " on" : ""}${over === w.id ? " drop" : ""}`}
             onClick={() => send({ t: "window_select", session: session.id, window: w.id })}
-            onPointerDown={(e) => w.id !== session.active_window && session.active_window && startTabDrag(e, parts.map((p) => p.id), session.active_window, parts.map((p) => p.label).join(" · "))}
+            // Along the bar: the window to another place. Down into the layout (another window's
+            // tab): its panels join the window on screen.
+            onPointerDown={(e) => {
+              const bar = e.currentTarget.parentElement!;
+              const down = { button: 0, clientX: e.clientX, clientY: e.clientY, target: e.target } as unknown as React.PointerEvent;
+              const into = w.id !== session.active_window ? session.active_window : null;
+              startSort(e, {
+                item: e.currentTarget,
+                axis: "x",
+                items: () => [...bar.querySelectorAll<HTMLElement>(":scope > .tab[data-window]")],
+                onDrop: (to) => send({ t: "window_move", session: session.id, window: w.id, to }),
+                away: (ev) => {
+                  if (!into || ev.clientY < bar.getBoundingClientRect().bottom + 24) return false;
+                  startTabDrag(down, parts.map((p) => p.id), into, parts.map((p) => p.label).join(" · "));
+                  return true;
+                },
+              });
+            }}
             title={`${parts.map((p) => p.label).join(" · ")}（${isMac ? "⌘" : "Ctrl+"}${i + 1}）`}
           >
             {parts.map((p) => (

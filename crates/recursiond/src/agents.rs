@@ -84,6 +84,8 @@ struct Proc {
     /// The model, effort and mode it was started with: when the human changes them, it starts
     /// again before its next turn (its conversation resumes).
     spec: Spec,
+    /// The Skills it was started with: the same.
+    skills: Vec<String>,
 }
 
 type Spec = (Option<String>, Option<String>, PermMode);
@@ -93,6 +95,8 @@ pub struct Project {
     pub cwd: String,
     pub prompt: String,
     pub picks: Vec<String>,
+    pub skills: Vec<String>,
+    pub rules: Vec<String>,
 }
 fn spec(m: &Member) -> Spec {
     (m.model.clone(), m.effort.clone(), m.mode)
@@ -598,11 +602,28 @@ impl Hub {
     /// for it (the project's, as its chat and then the agent itself changed them).
     pub(crate) fn member_brief(&self, panel: &str, member: &str) -> String {
         let Some(p) = self.project_lookup.get().and_then(|f| f(panel)) else { return String::new() };
-        let picks = self.with_ws(panel, |ws| {
-            let own = ws.members.iter().find(|m| m.id == member).map(|m| m.guides.clone()).unwrap_or_default();
-            crate::workspace::layered(&p.picks, &[&ws.settings.guides, &own])
+        let (picks, rules) = self.with_ws(panel, |ws| {
+            let m = ws.members.iter().find(|m| m.id == member);
+            let (g, r) = m.map(|m| (m.guides.clone(), m.rule_picks.clone())).unwrap_or_default();
+            (crate::workspace::layered(&p.picks, &[&ws.settings.guides, &g]), crate::workspace::layered(&p.rules, &[&ws.settings.rule_picks, &r]))
         });
-        crate::guides::brief(&p.cwd, &p.prompt, &picks)
+        // Rules first, as instructions files are: the prompt, told after, goes above them.
+        let rules = crate::library::rules_brief(&rules);
+        format!("{rules}{}", crate::guides::brief(&p.cwd, &p.prompt, &picks))
+    }
+
+    /// The Skills (of Recursion's library) one agent gets: its project's, as its chat and then
+    /// the agent itself changed them; only those still in the library.
+    pub(crate) fn member_skills(&self, panel: &str, member: &str) -> Vec<String> {
+        let base = self.project_lookup.get().and_then(|f| f(panel)).map(|p| p.skills).unwrap_or_default();
+        let have: Vec<String> = crate::library::list(crate::library::Kind::Skill).into_iter().map(|i| i.name).collect();
+        self.with_ws(panel, |ws| {
+            let own = ws.members.iter().find(|m| m.id == member).map(|m| m.skills.clone()).unwrap_or_default();
+            crate::workspace::layered(&base, &[&ws.settings.skills, &own])
+        })
+        .into_iter()
+        .filter(|s| have.contains(s))
+        .collect()
     }
 
     /// A chat nobody has written in or joined: closing it keeps nothing.
@@ -733,7 +754,7 @@ impl Hub {
         }
         let alias = self.check_alias(panel, &alias, None)?;
         let account = (account != crate::accounts::default_id(kind)).then_some(account);
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode, effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 };
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode, effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), skills: Default::default(), rule_picks: Default::default(), waiting_for: None, replied: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
@@ -882,7 +903,8 @@ impl Hub {
     /// its process again before its next turn (see `Proc::spec`): now if it is idle, after its
     /// turn if it is answering. Its own rules reach it with its next turn.
     #[allow(clippy::too_many_arguments)]
-    pub async fn agent_settings(&self, panel: &str, member: &str, alias: &str, model: Option<String>, effort: Option<String>, prompt: String, mode: PermMode, guides: crate::workspace::Overrides, mcp: crate::workspace::Overrides) -> Result<(), String> {
+    pub async fn agent_settings(&self, panel: &str, member: &str, alias: &str, model: Option<String>, effort: Option<String>, prompt: String, mode: PermMode, uses: crate::workspace::Uses) -> Result<(), String> {
+        let crate::workspace::Uses { guides, mcp, skills, rule_picks } = uses;
         let model = model.filter(|s| !s.is_empty());
         let effort = effort.filter(|s| !s.is_empty());
         let old = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()).ok_or_else(|| tr!("err.noAgent"))?;
@@ -897,6 +919,8 @@ impl Hub {
             m.prompt = prompt.trim().to_string();
             m.guides = guides.clone();
             m.mcp = mcp.clone();
+            m.skills = skills.clone();
+            m.rule_picks = rule_picks.clone();
         });
         if respawn && old.status == MemberStatus::Idle {
             self.kill(panel, member).await;
@@ -917,6 +941,12 @@ impl Hub {
         }
         if mcp != old.mcp {
             what.push(tr!("agent.set.mcp"));
+        }
+        if skills != old.skills {
+            what.push("Skills".to_string());
+        }
+        if rule_picks != old.rule_picks {
+            what.push(tr!("agent.set.rules"));
         }
         if prompt.trim() != old.prompt {
             what.push(tr!(if prompt.trim().is_empty() { "agent.set.promptRemoved" } else { "agent.set.prompt" }));
@@ -997,6 +1027,61 @@ impl Hub {
             Some(cwd) => self.pump(panel, &cwd).await,
             None => self.emit_round(panel),
         }
+    }
+
+    /// An agent to place `to` among its chat's (the order they are shown in; who answers first
+    /// doesn't change). Everyone gets the new order.
+    pub fn move_agent(&self, panel: &str, member: &str, to: usize) {
+        let moved = self.with_ws(panel, |ws| {
+            let i = ws.members.iter().position(|m| m.id == member)?;
+            let m = ws.members.remove(i);
+            ws.members.insert(to.min(ws.members.len()), m);
+            Some(())
+        });
+        if moved.is_some() {
+            self.emit(json!({ "t": "ws_order", "panel": panel, "members": self.with_ws(panel, |ws| ws.members.iter().map(|m| m.id.clone()).collect::<Vec<_>>()) }));
+            self.mark_dirty(panel);
+        }
+    }
+
+    /// A chat's own changes to its project's files, servers, Skills and rules.
+    pub fn chat_overrides(&self, panel: &str) -> Value {
+        self.with_ws(panel, |ws| json!({ "panel": panel, "guides": ws.settings.guides, "mcp": ws.settings.mcp, "skills": ws.settings.skills, "rule_picks": ws.settings.rule_picks }))
+    }
+
+    /// The layer above changed a row for everyone, these too: a chat's (`member` None) or an
+    /// agent's own setting of `names` in `field` goes, so they follow the layer above again.
+    pub fn clear_overrides(&self, panel: &str, member: Option<&str>, field: &str, names: &[String]) -> Result<(), String> {
+        let pick = |o: &mut crate::workspace::Overrides| names.iter().for_each(|n| {
+            o.remove(n);
+        });
+        match member {
+            Some(m) => {
+                let mut ok = true;
+                self.update_member(panel, m, |x| match field {
+                    "guides" => pick(&mut x.guides),
+                    "mcp" => pick(&mut x.mcp),
+                    "skills" => pick(&mut x.skills),
+                    "rule_picks" => pick(&mut x.rule_picks),
+                    _ => ok = false,
+                });
+                if !ok {
+                    return Err(format!("unknown field {field}"));
+                }
+            }
+            None => {
+                let mut s = self.with_ws(panel, |ws| ws.settings.clone());
+                match field {
+                    "guides" => pick(&mut s.guides),
+                    "mcp" => pick(&mut s.mcp),
+                    "skills" => pick(&mut s.skills),
+                    "rule_picks" => pick(&mut s.rule_picks),
+                    _ => return Err(format!("unknown field {field}")),
+                }
+                self.set_chat_settings(panel, s);
+            }
+        }
+        Ok(())
     }
 
     /// A chat's agents as they are now (for keeping removed ones whole, see `restore_agents`).
@@ -1552,7 +1637,7 @@ impl Hub {
         self.rt(panel, |r| r.turn_first.remove(&m.id));
         // The session's MCP servers, or its model, effort or mode changed since it started: start
         // it again (its conversation resumes).
-        let stale = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).is_some_and(|p| p.mcp != self.member_mcp(panel, &m.id) || p.spec != spec(m));
+        let stale = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).is_some_and(|p| p.mcp != self.member_mcp(panel, &m.id) || p.spec != spec(m) || p.skills != self.member_skills(panel, &m.id));
         if stale {
             self.kill(panel, &m.id).await;
         }
@@ -1656,6 +1741,14 @@ impl Hub {
         if let Some(effort) = &m.effort {
             cmd.args(["--effort", effort]);
         }
+        // Skills: the ones picked for it, from Recursion's library, and none of those the human
+        // put in Claude's own folders (what Claude comes with stays).
+        let skills = self.member_skills(panel, &m.id);
+        let plugin = crate::library::agent_skills_dir(&format!("{panel}-{}", m.id), &skills)?;
+        cmd.arg("--plugin-dir").arg(&plugin);
+        let claude_dir = crate::library::claude_dir(crate::accounts::dir(&self.accounts.resolve(AgentKind::Claude, m.account.as_deref())));
+        let off: serde_json::Map<String, Value> = crate::library::claude_own_skills(&claude_dir, cwd).into_iter().map(|n| (n, json!("off"))).collect();
+        cmd.args(["--settings", &json!({ "skillOverrides": off }).to_string()]);
         if let Some(sid) = &m.cli_session_id {
             cmd.args(["--resume", sid]);
             // Rewound: its conversation goes on from this message of it.
@@ -1674,7 +1767,7 @@ impl Hub {
         let stderr = child.stderr.take().unwrap();
         let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let child = Arc::new(tokio::sync::Mutex::new(child));
-        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None, mcp: enabled, spec: spec(m) });
+        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None, mcp: enabled, spec: spec(m), skills });
 
         let base_cost = m.cost_usd;
         let (hub, panel_s, member_s, cwd_s) = (self.clone(), panel.to_string(), m.id.clone(), dir.clone());

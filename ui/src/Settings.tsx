@@ -6,6 +6,8 @@ import { languages, pick, t } from "./i18n";
 import { Modal } from "./WorkspaceView";
 import { UpdateSection, useAppVersion } from "./Update";
 import { McpPane } from "./Mcp";
+import { LibraryPane } from "./Library";
+import { PickTabs } from "./PickList";
 import { Icon, type IconName } from "./icons";
 
 export type SettingsPage = "general" | "accounts" | "mcp" | "keys" | "about";
@@ -20,9 +22,37 @@ const PAGES: { id: SettingsPage; label: string; icon: IconName }[] = [
 // Open/closed lives outside React so the sidebar button and the keyboard shortcut share it.
 let open: SettingsPage | null = null;
 const subs = new Set<() => void>();
-export function openSettings(page: SettingsPage = "general") {
+/** The Agent resources page's tab. */
+export type ResourceTab = "mcp" | "skill" | "rule";
+let resTab: ResourceTab = "mcp";
+export function openSettings(page: SettingsPage = "general", tab?: ResourceTab) {
   open = page;
+  if (tab) resTab = tab;
   subs.forEach((f) => f());
+}
+
+/** MCP servers, Skills and rules for the agents: one page, a tab each, laid out alike. */
+function Resources() {
+  // Outside React like the page, so "manage…" in a project's settings can open it on a tab.
+  const tab = useSyncExternalStore(
+    (f) => (subs.add(f), () => subs.delete(f)),
+    () => resTab,
+  );
+  const pick = (k: ResourceTab) => ((resTab = k), subs.forEach((f) => f()));
+  return (
+    <>
+      <PickTabs
+        tabs={[
+          { id: "mcp", label: "MCP" },
+          { id: "skill", label: "Skills" },
+          { id: "rule", label: t("lib.rules") },
+        ]}
+        on={tab}
+        pick={pick}
+      />
+      <div className="res-tab">{tab === "mcp" ? <McpPane /> : <LibraryPane key={tab} kind={tab} />}</div>
+    </>
+  );
 }
 function closeSettings() {
   open = null;
@@ -201,7 +231,7 @@ export function SettingsModal() {
           <h2>{title}</h2>
           {page === "general" && <General />}
           {page === "accounts" && <AccountsPane />}
-          {page === "mcp" && <McpPane />}
+          {page === "mcp" && <Resources />}
           {page === "keys" && <Keys />}
           {page === "about" && <About />}
         </div>

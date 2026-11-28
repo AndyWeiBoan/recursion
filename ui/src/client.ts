@@ -208,6 +208,18 @@ export async function connect() {
           guideText.set(`${m.session}/${m.path}`, m.text);
           guideSubs.forEach((f) => f());
           break;
+        case "chat_layers":
+          chatLayers.set(m.session, m.chats);
+          librarySubs.forEach((f) => f());
+          break;
+        case "library":
+          libraries.set(m.kind, { items: m.items, found: m.found });
+          librarySubs.forEach((f) => f());
+          break;
+        case "library_text":
+          libraryText.set(`${m.kind}/${m.name ?? ""}/${m.path ?? ""}`, m.text);
+          librarySubs.forEach((f) => f());
+          break;
         case "files_granted":
           grantWaiters.get(m.panel)?.(m.paths);
           grantWaiters.delete(m.panel);
@@ -219,6 +231,14 @@ export async function connect() {
           rosterSet(m.panel, (roster[m.panel] ?? []).filter((x) => x.id !== m.member));
           wsUpdate(m.panel, (w) => ({ ...w, members: w.members.filter((x) => x.id !== m.member) }));
           break;
+        // A chat's agents in a new order (dragged in the sidebar).
+        case "ws_order": {
+          const at = (id: string) => (m.members as string[]).indexOf(id);
+          const sort = (list: Member[]) => [...list].sort((a, b) => at(a.id) - at(b.id));
+          rosterSet(m.panel, sort(roster[m.panel] ?? []));
+          wsUpdate(m.panel, (w) => ({ ...w, members: sort(w.members) }));
+          break;
+        }
       }
     };
     sock.onclose = () => {
@@ -609,6 +629,58 @@ export interface McpFound {
   server: McpServer;
   state: "new" | "same" | "changed";
 }
+// Recursion's Skills and rules (library.rs in the daemon): what is imported, what can be.
+export type LibraryKind = "skill" | "rule";
+export interface LibraryItem {
+  name: string;
+  from: string;
+  at: number;
+  description: string;
+  /** A rule's "only when working on these files". */
+  paths?: string[];
+  /** The original changed since it was imported / is gone. */
+  changed: boolean;
+  missing: boolean;
+}
+export interface LibraryFound {
+  name: string;
+  path: string;
+  vendor: "claude" | "codex" | "cursor";
+  description: string;
+  state: "new" | "same" | "changed";
+}
+const libraries = new Map<LibraryKind, { items: LibraryItem[]; found: LibraryFound[] }>();
+const libraryText = new Map<string, string>();
+const librarySubs = new Set<() => void>();
+const useLibraryStore = <T,>(get: () => T) =>
+  useSyncExternalStore(
+    (f) => (librarySubs.add(f), () => librarySubs.delete(f)),
+    get,
+  );
+/** A chat's own changes to its project's files, servers, Skills and rules. */
+export type ChatLayer = { panel: string; guides?: Record<string, boolean>; mcp?: Record<string, boolean>; skills?: Record<string, boolean>; rule_picks?: Record<string, boolean> };
+const chatLayers = new Map<string, ChatLayer[]>();
+/** Each chat's of a project, for its settings (who of them set a row otherwise). */
+export function useChatLayers(session: string) {
+  useEffect(() => {
+    if (session) send({ t: "chat_layers", session });
+  }, [session]);
+  return useLibraryStore(() => chatLayers.get(session));
+}
+
+/** One library and what can be imported into it, asked for when first used (and on `again`). */
+export function useLibrary(kind: LibraryKind, again = 0) {
+  useEffect(() => send({ t: "library_list", kind }), [kind, again]);
+  return useLibraryStore(() => libraries.get(kind));
+}
+/** One's text, for its preview: in the library (`name`) or found on this computer (`path`). */
+export function useLibraryText(kind: LibraryKind, name: string | null, path: string | null) {
+  useEffect(() => {
+    if (name || path) send({ t: "library_read", kind, name, path });
+  }, [kind, name, path]);
+  return useLibraryStore(() => libraryText.get(`${kind}/${name ?? ""}/${path ?? ""}`));
+}
+
 export interface McpState {
   servers: Record<string, McpServer>;
   status: Record<string, McpStatus>;

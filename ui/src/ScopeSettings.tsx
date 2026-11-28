@@ -5,13 +5,15 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
 import { copyText } from "./clipboard";
-import { send, toast, useAccounts, useGuide, useGuides, useMcp, useSnapshot, useWorkspace, type GuideFile } from "./client";
+import { send, toast, useAccounts, useChatLayers, useGuide, useGuides, useLibrary, useMcp, useSnapshot, useWorkspace, type GuideFile, type LibraryKind } from "./client";
+import { BrandMark } from "./icons";
+import { LibraryCard } from "./Library";
 import { t } from "./i18n";
 import { useCardPlace } from "./TodoCard";
 import { chatsOf, type ChatSettings } from "./types";
 import { Modal, renderMarkdown } from "./WorkspaceView";
 import { StatusDot, statusLine } from "./Mcp";
-import { PickList, PickTabs, layered, type Layer, type Overrides } from "./PickList";
+import { PickList, PickTabs, layered, type Below, type Layer, type Overrides } from "./PickList";
 import { openSettings } from "./Settings";
 import { Icon } from "./icons";
 
@@ -33,7 +35,7 @@ export function SessionSettingsModal() {
   if (!s) return null;
   return (
     <Modal title={t("scope.session")} onClose={() => openSessionSettings(null)}>
-      <SessionForm key={s.id} id={s.id} name={s.name} cwd={s.cwd} prompt={s.prompt ?? ""} mcp={s.mcp ?? []} onDone={() => openSessionSettings(null)} />
+      <SessionForm key={s.id} id={s.id} name={s.name} cwd={s.cwd} prompt={s.prompt ?? ""} mcp={s.mcp ?? []} skills={s.skills ?? []} rules={s.rules ?? []} onDone={() => openSessionSettings(null)} />
     </Modal>
   );
 }
@@ -41,15 +43,29 @@ export function SessionSettingsModal() {
 /** A project's settings: the prompt every agent of it gets, the guidance files in its folder
  * ticked for them (see guides.rs), its MCP servers. Its folder is what the project is, so it
  * isn't edited here; nor are defaults for new agents (the add-agent form remembers the last). */
-function SessionForm({ id, name, cwd, prompt: initialPrompt, mcp: initialMcp, onDone }: { id: string; name: string; cwd: string; prompt: string; mcp: string[]; onDone: () => void }) {
+function SessionForm({ id, name, cwd, prompt: initialPrompt, mcp: initialMcp, skills: initialSkills, rules: initialRules, onDone }: { id: string; name: string; cwd: string; prompt: string; mcp: string[]; skills: string[]; rules: string[]; onDone: () => void }) {
   const [mcp, setMcp] = useState(initialMcp);
   const [prompt, setPrompt] = useState(initialPrompt);
   const guides = useGuides(id);
   const [picks, setPicks] = useState<string[] | null>(null);
   const picked = picks ?? guides?.picks ?? [];
-  const [tab, setTab] = useState<"guides" | "mcp">("guides");
+  const [tab, setTab] = useState<"guides" | "mcp" | "skill" | "rule">("guides");
+  const [skills, setSkills] = useState(initialSkills);
+  const [rules, setRules] = useState(initialRules);
+  // The project's chats, each following it but for what it set itself.
+  const { state } = useSnapshot();
+  const s = state?.sessions.find((x) => x.id === id);
+  const chats = s && state ? chatsOf(s, state) : [];
+  const layers = useChatLayers(id);
+  const [clears, setClears] = useState<Clears>({});
+  const members = chats.map((c) => {
+    const l = layers?.find((x) => x.panel === c.panel);
+    return { key: c.panel, name: c.label, own: { guides: l?.guides, mcp: l?.mcp, skills: l?.skills, rule_picks: l?.rule_picks } };
+  });
+  const below = (f: Field) => belowOf(members, f, clears, setClears, "chats");
   const save = () => {
-    send({ t: "session_settings", session: id, cwd, defaults: {}, mcp, prompt: prompt.trim(), ...(picks ? { guides: picks } : {}) });
+    send({ t: "session_settings", session: id, cwd, defaults: {}, mcp, skills, rules, prompt: prompt.trim(), ...(picks ? { guides: picks } : {}) });
+    sendClears((panel) => ({ panel }), clears);
     onDone();
   };
   return (
@@ -71,14 +87,18 @@ function SessionForm({ id, name, cwd, prompt: initialPrompt, mcp: initialMcp, on
         tabs={[
           { id: "guides", label: t("scope.guidesTab"), n: guides ? picked.filter((p) => guides.found.some((f) => f.path === p)).length : undefined },
           { id: "mcp", label: "MCP", n: mcp.length },
+          { id: "skill", label: "Skills", n: skills.length },
+          { id: "rule", label: t("lib.rules"), n: rules.length },
         ]}
         on={tab}
         pick={setTab}
       />
       {tab === "guides" ? (
-        <GuidePicker session={id} found={guides?.found} picked={picked} onChange={setPicks} />
+        <GuidePicker session={id} found={guides?.found} picked={picked} onChange={setPicks} below={below("guides")} />
+      ) : tab === "mcp" ? (
+        <McpPicker value={mcp} onChange={setMcp} below={below("mcp")} onManage={() => (onDone(), openSettings("mcp", "mcp"))} />
       ) : (
-        <McpPicker value={mcp} onChange={setMcp} onManage={() => (onDone(), openSettings("mcp"))} />
+        <LibraryPicker key={tab} kind={tab} value={tab === "skill" ? skills : rules} onChange={tab === "skill" ? setSkills : setRules} below={below(tab === "skill" ? "skills" : "rule_picks")} onManage={() => (onDone(), openSettings("mcp", tab))} />
       )}
       <button className="add-submit" type="submit">
         {t("scope.save")}
@@ -92,14 +112,38 @@ export function useProjectOf(panel: string) {
   const { state } = useSnapshot();
   const s = state?.sessions.find((x) => state && chatsOf(x, state).some((c) => c.panel === panel));
   const guides = useGuides(s?.id ?? "");
-  return { session: s, found: guides?.found, guides: guides?.picks ?? [], mcp: s?.mcp ?? [] };
+  return { session: s, found: guides?.found, guides: guides?.picks ?? [], mcp: s?.mcp ?? [], skills: s?.skills ?? [], rules: s?.rules ?? [] };
+}
+
+type Field = "guides" | "mcp" | "skills" | "rule_picks";
+/** The reminder's "change them too", kept until the form is saved: member → field → names. */
+type Clears = Record<string, Partial<Record<Field, string[]>>>;
+const without = (o: Overrides | undefined, names: string[] = []) => Object.fromEntries(Object.entries(o ?? {}).filter(([k]) => !names.includes(k)));
+/** The layer below for one field: its members with their own settings (less what is to be
+ *  cleared), and how its rows count them. */
+function belowOf(members: { key: string; name: string; mark?: React.ReactNode; own: Partial<Record<Field, Overrides>> }[], field: Field, clears: Clears, setClears: (c: Clears) => void, unit: "agents" | "chats"): Below {
+  return {
+    members: members.map((m) => ({ key: m.key, name: m.name, mark: m.mark, own: without(m.own[field], clears[m.key]?.[field]) })),
+    count: (n, total) => t(n === total ? `layer.all.${unit}` : n === 0 ? `layer.none.${unit}` : `layer.some.${unit}`, { n, total }),
+    noun: t(`layer.noun.${unit}`),
+    clear: (id, keys) => {
+      const next = { ...clears };
+      for (const k of keys) next[k] = { ...next[k], [field]: [...(next[k]?.[field] ?? []), id] };
+      setClears(next);
+    },
+  };
+}
+/** The cleared settings, sent when the form is saved. */
+function sendClears(panelOf: (key: string) => { panel: string; member?: string }, clears: Clears) {
+  for (const [key, fields] of Object.entries(clears))
+    for (const [field, names] of Object.entries(fields)) if (names?.length) send({ t: "layer_clear", ...panelOf(key), field: field as Field, names });
 }
 
 /** Where a row of a chat's or an agent's list comes from, when that layer didn't change it. */
 export const fromLayer = (chat?: Overrides) => (id: string) => (chat && id in chat ? t("layer.chat") : t("layer.project"));
 
 /** The guidance files found in the folder, to tick for the agents and preview. */
-export function GuidePicker({ session, found, picked, onChange, layer }: { session: string; found?: GuideFile[]; picked?: string[]; onChange?: (p: string[]) => void; layer?: Layer }) {
+export function GuidePicker({ session, found, picked, onChange, layer, below }: { session: string; found?: GuideFile[]; picked?: string[]; onChange?: (p: string[]) => void; layer?: Layer; below?: Below }) {
   const [open, setOpen] = useState<string | null>(null);
   // Still looking: the same room, so nothing jumps when the list arrives.
   if (!found)
@@ -116,6 +160,7 @@ export function GuidePicker({ session, found, picked, onChange, layer }: { sessi
         picked={picked}
         onChange={onChange}
         layer={layer}
+        below={below}
         onOpen={setOpen}
         search={t("scope.guidesSearch")}
         empty={t("scope.guidesNone")}
@@ -126,8 +171,36 @@ export function GuidePicker({ session, found, picked, onChange, layer }: { sessi
   );
 }
 
+/** Recursion's Skills or rules, to tick for the agents (a project's, or over the layer above). */
+export function LibraryPicker({ kind, value, onChange, layer, below, onManage }: { kind: LibraryKind; value?: string[]; onChange?: (v: string[]) => void; layer?: Layer; below?: Below; onManage: () => void }) {
+  const lib = useLibrary(kind);
+  const [open, setOpen] = useState<string | null>(null);
+  const items = lib?.items ?? [];
+  return (
+    <div className="field">
+      <PickList
+        items={items.map((i) => ({ id: i.name, label: i.name, meta: i.paths?.length ? t("lib.onlyFor", { paths: i.paths.join(", ") }) : i.description }))}
+        picked={value}
+        onChange={onChange}
+        layer={layer}
+        below={below}
+        onOpen={setOpen}
+        search={t("lib.search", { noun: kind === "skill" ? "Skills" : t("lib.rules") })}
+        empty={t("lib.pickNone", { noun: kind === "skill" ? "Skills" : t("lib.rules") })}
+        action={
+          <button type="button" className="picks-action" onClick={onManage}>
+            {t("lib.manage")}
+          </button>
+        }
+      />
+      <span className="field-hint pick-hint">{t(kind === "skill" ? (layer ? "lib.skillPickLayer" : "lib.skillPick") : layer ? "lib.rulePickLayer" : "lib.rulePick")}</span>
+      {open && <LibraryCard kind={kind} name={open} path={null} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
 /** The human's MCP servers, to tick for this project's agents. */
-export function McpPicker({ value, onChange, onManage, layer }: { value?: string[]; onChange?: (v: string[]) => void; onManage: () => void; layer?: Layer }) {
+export function McpPicker({ value, onChange, onManage, layer, below }: { value?: string[]; onChange?: (v: string[]) => void; onManage: () => void; layer?: Layer; below?: Below }) {
   const m = useMcp();
   const names = Object.keys(m?.servers ?? {});
   return (
@@ -137,6 +210,7 @@ export function McpPicker({ value, onChange, onManage, layer }: { value?: string
         picked={value}
         onChange={onChange}
         layer={layer}
+        below={below}
         search={t("mcp.search")}
         empty={t("mcp.noneYet")}
         action={
@@ -191,10 +265,16 @@ export function ChatSettingsForm({ panel, onDone }: { panel: string; onDone: () 
   const [limit, setLimit] = useState<number | null>(cur.usage_limit ?? null);
   const [guides, setGuides] = useState<Overrides>(cur.guides ?? {});
   const [mcp, setMcp] = useState<Overrides>(cur.mcp ?? {});
-  const [tab, setTab] = useState<"guides" | "mcp" | "usage">("guides");
+  const [tab, setTab] = useState<"guides" | "mcp" | "skill" | "rule" | "usage">("guides");
+  const [skills, setSkills] = useState<Overrides>(cur.skills ?? {});
+  const [rulePicks, setRulePicks] = useState<Overrides>(cur.rule_picks ?? {});
   const project = useProjectOf(panel);
   const from = fromLayer();
   const accounts = useAccounts();
+  // Its agents, each following the chat but for what it set itself.
+  const [clears, setClears] = useState<Clears>({});
+  const agents = (ws?.members ?? []).map((m) => ({ key: m.id, name: `@${m.alias}`, mark: <BrandMark kind={m.kind} size={14} />, own: { guides: m.guides, mcp: m.mcp, skills: m.skills, rule_picks: m.rule_picks } }));
+  const below = (f: Field) => belowOf(agents, f, clears, setClears, "agents");
   // How much of their windows the accounts this chat's agents run under have used, for the limit's hint.
   const used = [...new Set((ws?.members ?? []).map((m) => m.account ?? `${m.kind}-default`))]
     .map((id) => accounts.find((a) => a.id === id))
@@ -202,7 +282,8 @@ export function ChatSettingsForm({ panel, onDone }: { panel: string; onDone: () 
     .map((a) => `${a.kind === "claude" ? "Claude" : "Codex"}${a.id.endsWith("-default") ? "" : `（${a.name || a.email}）`} ${Object.entries(a.usage).map(([k, u]) => `${k === "five_hour" ? t("usage.5h") : k === "seven_day" ? t("usage.7d") : k} ${Math.round(u * 100)}%`).join(" · ")}`)
     .filter((x) => /%/.test(x));
   const save = () => {
-    send({ t: "ws_settings", panel, settings: { name: name.trim(), rules: rules.trim(), usage_limit: limit ?? undefined, guides, mcp } });
+    send({ t: "ws_settings", panel, settings: { name: name.trim(), rules: rules.trim(), usage_limit: limit ?? undefined, guides, mcp, skills, rule_picks: rulePicks } });
+    sendClears((member) => ({ panel, member }), clears);
     onDone();
   };
   return (
@@ -223,15 +304,21 @@ export function ChatSettingsForm({ panel, onDone }: { panel: string; onDone: () 
           tabs={[
             { id: "guides", label: t("scope.guidesTab"), n: project.found ? layered(project.guides, [guides]).filter((p) => project.found!.some((f) => f.path === p)).length : undefined },
             { id: "mcp", label: "MCP", n: layered(project.mcp, [mcp]).length },
+            { id: "skill", label: "Skills", n: layered(project.skills, [skills]).length },
+            { id: "rule", label: t("lib.rules"), n: layered(project.rules, [rulePicks]).length },
             { id: "usage", label: t("scope.usageLimit") },
           ]}
           on={tab}
           pick={setTab}
         />
         {tab === "guides" ? (
-          <GuidePicker session={project.session?.id ?? ""} found={project.found} layer={{ base: project.guides, from, own: guides, onOwn: setGuides }} />
+          <GuidePicker session={project.session?.id ?? ""} found={project.found} layer={{ base: project.guides, from, own: guides, onOwn: setGuides }} below={below("guides")} />
         ) : tab === "mcp" ? (
-          <McpPicker layer={{ base: project.mcp, from, own: mcp, onOwn: setMcp }} onManage={() => (onDone(), openSettings("mcp"))} />
+          <McpPicker layer={{ base: project.mcp, from, own: mcp, onOwn: setMcp }} below={below("mcp")} onManage={() => (onDone(), openSettings("mcp", "mcp"))} />
+        ) : tab === "skill" ? (
+          <LibraryPicker key="skill" kind="skill" layer={{ base: project.skills, from, own: skills, onOwn: setSkills }} below={below("skills")} onManage={() => (onDone(), openSettings("mcp", "skill"))} />
+        ) : tab === "rule" ? (
+          <LibraryPicker key="rule" kind="rule" layer={{ base: project.rules, from, own: rulePicks, onOwn: setRulePicks }} below={below("rule_picks")} onManage={() => (onDone(), openSettings("mcp", "rule"))} />
         ) : (
           <div className="field">
             <div className="mode-seg" role="radiogroup" aria-label={t("scope.usageLimit")} style={{ gridTemplateColumns: `repeat(${LIMITS.length}, 1fr)` }}>

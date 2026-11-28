@@ -29,9 +29,12 @@ export interface ChatSettings {
   rules: string;
   /** An agent whose account used this much (percent) of a usage window sits out; absent = no limit. */
   usage_limit?: number;
-  /** This chat's changes to its project's instructions files and MCP servers (on/off by name). */
+  /** This chat's changes to its project's instructions files, MCP servers, Skills and rules (on/off by name). */
   guides?: Record<string, boolean>;
   mcp?: Record<string, boolean>;
+  skills?: Record<string, boolean>;
+  /** The library's rules (`rules` is the chat's own text). */
+  rule_picks?: Record<string, boolean>;
 }
 
 export interface Window {
@@ -56,6 +59,9 @@ export interface Session {
   prompt?: string;
   /** Guidance files ticked for the agents; absent = not chosen yet (the daemon's defaults). */
   guides?: string[] | null;
+  /** Skills and rules of Recursion's library its agents get. */
+  skills?: string[];
+  rules?: string[];
 }
 
 /** An HTML document an agent wrote for the session; browser panels show it at `doc:<id>`. */
@@ -126,7 +132,13 @@ export type Cmd =
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
   | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
   | { t: "set_lang"; lang: string | null }
-  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults; mcp?: string[]; prompt?: string; guides?: string[] }
+  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults; mcp?: string[]; prompt?: string; guides?: string[]; skills?: string[]; rules?: string[] }
+  | { t: "library_list"; kind: "skill" | "rule" }
+  | { t: "chat_layers"; session: string }
+  | { t: "layer_clear"; panel: string; member?: string; field: "guides" | "mcp" | "skills" | "rule_picks"; names: string[] }
+  | { t: "library_import"; kind: "skill" | "rule"; paths: string[] }
+  | { t: "library_remove"; kind: "skill" | "rule"; name: string }
+  | { t: "library_read"; kind: "skill" | "rule"; name: string | null; path: string | null }
   | { t: "guides_list"; session: string }
   | { t: "agent_info"; panel: string; member: string }
   | { t: "guide_read"; session: string; path: string }
@@ -148,7 +160,11 @@ export type Cmd =
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
   | { t: "ws_remove_all_agents"; panel: string }
-  | { t: "ws_agent_settings"; panel: string; member: string; alias: string; model: string | null; effort: string | null; prompt: string; mode: PermMode; guides: Record<string, boolean>; mcp: Record<string, boolean> }
+  | { t: "session_move"; session: string; to: number }
+  | { t: "window_move"; session: string; window: string; to: number }
+  | { t: "panel_order"; window: string; panels: string[] }
+  | { t: "ws_move_agent"; panel: string; member: string; to: number }
+  | { t: "ws_agent_settings"; panel: string; member: string; alias: string; model: string | null; effort: string | null; prompt: string; mode: PermMode; guides: Record<string, boolean>; mcp: Record<string, boolean>; skills: Record<string, boolean>; rule_picks: Record<string, boolean> }
   | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[]; refs?: OutputRef[] }
   | { t: "files_list"; panel: string }
   | { t: "file_get"; panel: string; path: string }
@@ -208,9 +224,11 @@ export interface Member {
   running_effort?: string | null;
   /** The human's rules for this agent alone. */
   prompt?: string;
-  /** Its own changes to its chat's instructions files and MCP servers. */
+  /** Its own changes to its chat's instructions files, MCP servers, Skills and rules. */
   guides?: Record<string, boolean>;
   mcp?: Record<string, boolean>;
+  skills?: Record<string, boolean>;
+  rule_picks?: Record<string, boolean>;
   /** While waiting for the human's permission: what for. */
   waiting_for?: string | null;
   /** The `seq` of its latest reply (see seen.ts). */

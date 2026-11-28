@@ -3,13 +3,14 @@ import { overlay, viewerPath } from "./browsers";
 import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { accountName, requestAddAgent, requestChatSettings, send, useAccounts, useRoster } from "./client";
+import { accountName, requestAddAgent, requestChatSettings, send, useAccounts, useModels, useRoster } from "./client";
 import { Avatar, isRunning, modelLabel, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon, type IconName } from "./icons";
 import { openAgentInfo } from "./AgentInfo";
-import { openAgentSettings } from "./AgentSettings";
+import { effortsFor, openAgentSettings, saveAgent } from "./AgentSettings";
 import { Collapse } from "./Collapse";
+import { startSort } from "./sortDrag";
 import { closeChecked } from "./closing";
 
 function k(n: number) {
@@ -51,7 +52,16 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
   const busy = m.status !== "idle";
   const running = isRunning(m);
   return (
-    <div className={`tree-agent st-${m.status}${busy ? " busy" : ""}`} onClick={() => send({ t: "panel_focus", panel })} title={STATUS_LABEL[m.status]}>
+    <div
+      className={`tree-agent st-${m.status}${busy ? " busy" : ""}`}
+      onClick={() => send({ t: "panel_focus", panel })}
+      // Up or down among its chat's agents.
+      onPointerDown={(e) => {
+        const item = e.currentTarget;
+        startSort(e, { item, axis: "y", items: () => [...item.parentElement!.querySelectorAll<HTMLElement>(":scope > .tree-agent")], onDrop: (to) => send({ t: "ws_move_agent", panel, member: m.id, to }) });
+      }}
+      title={STATUS_LABEL[m.status]}
+    >
       <Avatar m={m} size={16} running={running} />
       <span className="tree-agent-main">
         <span className="tree-agent-name">
@@ -121,12 +131,14 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
             {t("agent.compact")}
           </button>
           <div className="menu-sep" />
-          <span className="menu-label">{t("perm.title")}</span>
-          {PERM_MODES.map((p) => (
-            <button key={p.id} className={`menu-check${(m.mode ?? "edits") === p.id ? " on" : ""}`} title={p.hint} onClick={() => (setMenu(false), send({ t: "ws_set_mode", panel, member: m.id, mode: p.id }))}>
-              <Icon name={p.id} size={13} /> {p.label}
-            </button>
-          ))}
+          <EffortMenu panel={panel} m={m} done={() => setMenu(false)} />
+          <SubMenu label={t("perm.title")}>
+            {PERM_MODES.map((p) => (
+              <button key={p.id} className={`menu-check${(m.mode ?? "edits") === p.id ? " on" : ""}`} title={p.hint} onClick={() => (setMenu(false), saveAgent(panel, m, { mode: p.id }))}>
+                <Icon name={p.id} size={13} /> {p.label}
+              </button>
+            ))}
+          </SubMenu>
           <div className="menu-sep" />
           <button className="danger" onClick={() => (setMenu(false), send({ t: "ws_remove_agent", panel, member: m.id }))}>
             {t("agent.remove", { alias: m.alias })}
@@ -326,6 +338,7 @@ function PanelRow({
   members,
   folded,
   onFold,
+  onDrag,
 }: {
   p: Panel;
   n: number;
@@ -336,15 +349,18 @@ function PanelRow({
   members: Member[];
   folded: boolean;
   onFold: () => void;
+  /** Pressed on its row: maybe the start of a drag (see SessionTree). */
+  onDrag: (e: React.PointerEvent, item: HTMLElement) => void;
 }) {
   const d = describe(p, n, docs, terms);
   const [editing, setEditing] = useState(false);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   return (
-    <>
+    <div className="tree-item">
       {at && <PanelContextMenu p={p} at={at} onRename={() => setEditing(true)} onClose={() => setAt(null)} />}
       <div
         className="tree-row"
+        onPointerDown={(e) => !editing && onDrag(e, e.currentTarget.parentElement!)}
         // A chat with agents: the first click shows it (unfolding it), the next ones fold it.
         onClick={() => {
           if (shown && members.length) return onFold();
@@ -389,14 +405,68 @@ function PanelRow({
           </div>
         </Collapse>
       )}
-    </>
+    </div>
+  );
+}
+
+/** A menu item that opens its own menu beside it, on hover or click (inside the menu, so moving
+ *  into it doesn't close the menu). It opens upward when there is no room below. */
+function SubMenu({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="submenu-wrap" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button className={`submenu-btn${open ? " on" : ""}`} onClick={() => setOpen(true)} aria-expanded={open}>
+        {label}
+        <Icon name="expand" size={13} />
+      </button>
+      {open && (
+        <div
+          className="menu submenu"
+          ref={(el) => {
+            if (el && el.getBoundingClientRect().bottom > window.innerHeight - 8) el.classList.add("up");
+          }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** An agent's effort, from its menu: the levels its model takes, its default one marked. */
+function EffortMenu({ panel, m, done }: { panel: string; m: Member; done: () => void }) {
+  const list = useModels(m.kind);
+  const { efforts, def } = effortsFor(m, list.models, m.model ?? "");
+  if (!list.loading && !efforts.length) return null;
+  const shown = m.effort || def;
+  return (
+    <SubMenu label={t("agent.effort")}>
+      {list.loading && <span className="menu-label">{t("agent.modelsLoading", { kind: m.kind === "claude" ? "Claude" : "Codex" })}</span>}
+      {efforts.map((e) => (
+        // The default level picks "default": it follows the CLI if that changes.
+        <button key={e} className={`menu-check effort-item${shown === e ? " on" : ""}`} onClick={() => (done(), saveAgent(panel, m, { effort: e === def ? null : e }))}>
+          {e}
+          {e === def && <span className="effort-def">{t("agent.defaultEffort")}</span>}
+        </button>
+      ))}
+    </SubMenu>
   );
 }
 
 /** One window (a tab): its panels, set apart from the next window by a line. The one on screen
  * (of the session on screen: every session has an active window) is lit as a whole. Windows have no names or menu here: their panels do. */
-function WindowGroup({ on, children }: { on: boolean; children: React.ReactNode }) {
-  return <div className={`tree-win${on ? " on" : ""}`}>{children}</div>;
+function WindowGroup({ on, grip, children }: { on: boolean; grip?: (e: React.PointerEvent, item: HTMLElement) => void; children: React.ReactNode }) {
+  return (
+    <div className={`tree-win${on ? " on" : ""}`}>
+      {/* A window of several panels is dragged by this (its panels' rows reorder them). */}
+      {grip && (
+        <span className="tree-win-grip" onPointerDown={(e) => grip(e, e.currentTarget.parentElement!)} title={t("tree.dragWindow")} aria-hidden>
+          <Icon name="grip" size={12} />
+        </span>
+      )}
+      {children}
+    </div>
+  );
 }
 
 /** "⋯" at the end of a row, opening the menu `children` draws (given a way to close it). */
@@ -457,17 +527,38 @@ export function SessionTree({ session, state, terms, roster }: { session: Sessio
   // Chats whose agent list is folded away, kept across restarts like folded sessions.
   const [folded, fold] = useFolded(FOLDED_KEY);
   const nth = panelNumbers(session, state.panels);
+  // Windows go up and down among the project's; a window's panels only among themselves.
+  const dragWindow = (w: string) => (e: React.PointerEvent, item: HTMLElement) =>
+    startSort(e, { item, axis: "y", items: () => [...item.parentElement!.querySelectorAll<HTMLElement>(":scope > .tree-win")], onDrop: (to) => send({ t: "window_move", session: session.id, window: w, to }) });
   return (
     <div className="tree">
-      {session.windows.map((w) => (
-        <WindowGroup key={w.id} on={session.id === state.active_session && w.id === session.active_window}>
-          {leaves(w.root)
-            .filter((id) => state.panels[id])
-            .map((id) => (
-              <PanelRow key={id} p={state.panels[id]} n={nth.get(id) ?? 1} shown={session.id === state.active_session && w.id === session.active_window && w.focus === id} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
-            ))}
-        </WindowGroup>
-      ))}
+      {session.windows.map((w) => {
+        const ids = leaves(w.root);
+        const solo = ids.length === 1;
+        const dragPanel = (id: string) => (e: React.PointerEvent, item: HTMLElement) => {
+          if (solo) return dragWindow(w.id)(e, item.closest<HTMLElement>(".tree-win")!);
+          if (ids.some((x) => !state.panels[x])) return;
+          startSort(e, {
+            item,
+            axis: "y",
+            items: () => [...item.parentElement!.querySelectorAll<HTMLElement>(":scope > .tree-item")],
+            onDrop: (to) => {
+              const order = ids.filter((x) => x !== id);
+              order.splice(to, 0, id);
+              send({ t: "panel_order", window: w.id, panels: order });
+            },
+          });
+        };
+        return (
+          <WindowGroup key={w.id} on={session.id === state.active_session && w.id === session.active_window} grip={solo ? undefined : dragWindow(w.id)}>
+            {ids
+              .filter((id) => state.panels[id])
+              .map((id) => (
+                <PanelRow key={id} p={state.panels[id]} n={nth.get(id) ?? 1} shown={session.id === state.active_session && w.id === session.active_window && w.focus === id} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} onDrag={dragPanel(id)} />
+              ))}
+          </WindowGroup>
+        );
+      })}
     </div>
   );
 }

@@ -257,8 +257,8 @@ export function Modal({ title, onClose, children, escape = true }: { title: stri
   useEffect(() => {
     const restore = overlay(); // native browser panels would draw on top of it
     const onKey = (e: KeyboardEvent) => {
-      // A card floating above it (a todo's, a guidance file's) takes Esc first.
-      if (e.key === "Escape" && esc.current && !document.querySelector(".todo-card")) {
+      // A card floating above it (a todo's, a guidance file's) or an import's confirmation takes Esc first.
+      if (e.key === "Escape" && esc.current && !document.querySelector(".todo-card, .lib-confirm-scrim")) {
         e.stopPropagation();
         close.current();
       }

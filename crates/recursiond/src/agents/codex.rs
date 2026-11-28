@@ -125,9 +125,21 @@ impl Hub {
         let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         let enabled = self.member_mcp(panel, &m.id);
+        // Skills: the ones picked for it (a folder given after `initialize`), and none of those
+        // the human put in Codex's own folders (what Codex comes with stays).
+        let skills = self.member_skills(panel, &m.id);
+        let skills_dir = crate::library::agent_skills_dir(&format!("{panel}-{}", m.id), &skills)?;
+        let codex_dir = crate::library::codex_dir(crate::accounts::dir(&self.accounts.resolve(AgentKind::Codex, m.account.as_deref())));
+        let own = crate::library::codex_own_skills(&codex_dir, cwd);
         let mut cmd = Command::new(bin);
         // Guidance files reach it from Recursion, only those the human ticked (guides.rs).
-        cmd.args(["-c", crate::guides::CODEX_NO_DOCS, "app-server"]).current_dir(&dir).env("PATH", &env.path);
+        cmd.args(["-c", crate::guides::CODEX_NO_DOCS]);
+        if !own.is_empty() {
+            // By path: an imported Skill of the same name stays on. (TOML takes JSON's strings.)
+            let off: Vec<String> = own.iter().map(|p| format!("{{path={},enabled=false}}", serde_json::to_string(&p.to_string_lossy()).unwrap_or_default())).collect();
+            cmd.args(["-c", &format!("skills.config=[{}]", off.join(","))]);
+        }
+        cmd.arg("app-server").current_dir(&dir).env("PATH", &env.path);
         self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
@@ -140,7 +152,7 @@ impl Hub {
         let rpc = Arc::new(Rpc::new());
         self.procs.lock().unwrap().insert(
             (panel.to_string(), m.id.clone()),
-            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()), mcp: enabled.clone(), spec: super::spec(m) },
+            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()), mcp: enabled.clone(), spec: super::spec(m), skills: skills.clone() },
         );
 
         let err_buf = Arc::new(Mutex::new(String::new()));
@@ -192,6 +204,7 @@ impl Hub {
         rpc.call(self, panel, &m.id, "initialize", json!({ "clientInfo": { "name": "recursion", "title": "Recursion", "version": env!("CARGO_PKG_VERSION") }, "capabilities": null }))
             .await?;
         self.write(panel, &m.id, json!({ "jsonrpc": "2.0", "method": "initialized" })).await?;
+        rpc.call(self, panel, &m.id, "skills/extraRoots/set", json!({ "extraRoots": [skills_dir.join("skills")] })).await?;
         let (approval, sandbox) = m.mode.codex();
         // Recursion's own server and the ones the session turned on; Codex's own others are switched off.
         let mut mcp = self.mcps.codex_config(&enabled, crate::accounts::dir(&self.accounts.resolve(AgentKind::Codex, m.account.as_deref())));
@@ -552,7 +565,7 @@ mod issue_regressions {
         let child = Arc::new(tokio::sync::Mutex::new(child));
         let rpc = Arc::new(Rpc::new());
         *rpc.thread_id.lock().unwrap() = Some("test-thread".into());
-        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()), mcp: vec![], spec: crate::agents::spec(&member) });
+        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()), mcp: vec![], spec: crate::agents::spec(&member), skills: vec![] });
         let responder = tokio::spawn(async move {
             loop {
                 let id = rpc.pending.lock().unwrap().keys().next().copied();

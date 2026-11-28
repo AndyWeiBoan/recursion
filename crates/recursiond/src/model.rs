@@ -87,6 +87,11 @@ pub struct Session {
     /// own AGENTS.md and CLAUDE.md (and the human's own files), as the CLIs would read them.
     #[serde(default)]
     pub guides: Option<Vec<String>>,
+    /// Skills and rules of Recursion's library (library.rs) this project's agents get.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
 }
 
 /// Starting values for agents added in a session; empty fields keep the form's own defaults.
@@ -211,6 +216,18 @@ impl Node {
         match self {
             Node::Leaf { panel } => out.push(panel.clone()),
             Node::Split { children, .. } => children.iter().for_each(|c| c.leaves(out)),
+        }
+    }
+
+    /// The same splits with the panels put in its leaves in `order` (the same panels, in order).
+    fn refill(&mut self, order: &mut std::slice::Iter<'_, String>) {
+        match self {
+            Node::Leaf { panel } => {
+                if let Some(p) = order.next() {
+                    *panel = p.clone();
+                }
+            }
+            Node::Split { children, .. } => children.iter_mut().for_each(|c| c.refill(order)),
         }
     }
 
@@ -380,6 +397,8 @@ impl State {
             mcp: vec![],
             prompt: String::new(),
             guides: None,
+            skills: vec![],
+            rules: vec![],
         };
         self.sessions.push(session);
         self.active_session = Some(id.clone());
@@ -443,7 +462,7 @@ impl State {
                     Some(s) => s.id.clone(),
                     None => {
                         let id = new_id();
-                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default(), mcp: vec![], prompt: String::new(), guides: None });
+                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default(), mcp: vec![], prompt: String::new(), guides: None, skills: vec![], rules: vec![] });
                         id
                     }
                 };
@@ -556,6 +575,51 @@ impl State {
     }
 
     /// Move a panel next to another one in the same window (`side` of it), or swap the two (`Center`).
+    /// The chats of a session, in its windows' order.
+    pub fn chats_of(&self, session: &str) -> Vec<String> {
+        let Some(s) = self.sessions.iter().find(|s| s.id == session) else { return vec![] };
+        let mut out = vec![];
+        for w in &s.windows {
+            let mut l = vec![];
+            w.root.leaves(&mut l);
+            out.extend(l.into_iter().filter(|p| self.panels.get(p).is_some_and(|x| x.kind == PanelKind::Workspace)));
+        }
+        out
+    }
+
+    /// A project to place `to` in the list (the sidebar's order).
+    pub fn move_session(&mut self, id: &str, to: usize) -> Res<()> {
+        let i = self.sessions.iter().position(|s| s.id == id).ok_or(ModelError::NotFound("session"))?;
+        let s = self.sessions.remove(i);
+        self.sessions.insert(to.min(self.sessions.len()), s);
+        Ok(())
+    }
+
+    /// A window to place `to` among its project's (the tabs' order, and the sidebar's).
+    pub fn move_window(&mut self, session: &str, window: &str, to: usize) -> Res<()> {
+        let s = self.session_mut(session)?;
+        let i = s.windows.iter().position(|w| w.id == window).ok_or(ModelError::NotFound("window"))?;
+        let w = s.windows.remove(i);
+        s.windows.insert(to.min(s.windows.len()), w);
+        Ok(())
+    }
+
+    /// A window's panels in another order, its splits as they are: each place in the layout gets
+    /// the next panel of `order`, which must be the same panels.
+    pub fn order_panels(&mut self, window: &str, order: &[String]) -> Res<()> {
+        let w = self.sessions.iter_mut().flat_map(|s| s.windows.iter_mut()).find(|w| w.id == window).ok_or(ModelError::NotFound("window"))?;
+        let mut now = vec![];
+        w.root.leaves(&mut now);
+        let (mut a, mut b) = (now.clone(), order.to_vec());
+        a.sort();
+        b.sort();
+        if a != b {
+            return Err(ModelError::NotFound("panel"));
+        }
+        w.root.refill(&mut order.iter());
+        Ok(())
+    }
+
     pub fn move_panel(&mut self, panel: &str, target: &str, side: Side) -> Res<()> {
         let (si, wi) = self.locate_panel(panel)?;
         let w = &mut self.sessions[si].windows[wi];
@@ -770,6 +834,19 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panels_reordered_keep_the_splits() {
+        let leaf = |p: &str| Node::Leaf { panel: p.into() };
+        let mut root = Node::Split { id: "s".into(), dir: Dir::Row, children: vec![leaf("a"), Node::Split { id: "t".into(), dir: Dir::Column, children: vec![leaf("b"), leaf("c")], sizes: vec![0.3, 0.7] }], sizes: vec![0.5, 0.5] };
+        root.refill(&mut ["c".to_string(), "a".to_string(), "b".to_string()].iter());
+        let mut out = vec![];
+        root.leaves(&mut out);
+        assert_eq!(out, ["c", "a", "b"]);
+        let Node::Split { children, sizes, .. } = &root else { panic!() };
+        assert_eq!(sizes, &vec![0.5, 0.5]);
+        assert!(matches!(&children[1], Node::Split { sizes, .. } if sizes == &vec![0.3, 0.7]));
+    }
 
     fn one_session() -> (State, String) {
         let mut st = State::default();

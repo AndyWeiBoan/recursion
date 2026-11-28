@@ -10,6 +10,7 @@ mod diagram;
 mod docs;
 mod files;
 mod guides;
+mod library;
 mod i18n;
 mod mcp;
 mod model;
@@ -93,7 +94,18 @@ enum In {
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
     /// A session's project folder and the defaults for agents added to it.
-    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults, #[serde(default)] mcp: Option<Vec<String>>, #[serde(default)] prompt: Option<String>, #[serde(default)] guides: Option<Vec<String>> },
+    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults, #[serde(default)] mcp: Option<Vec<String>>, #[serde(default)] prompt: Option<String>, #[serde(default)] guides: Option<Vec<String>>, #[serde(default)] skills: Option<Vec<String>>, #[serde(default)] rules: Option<Vec<String>> },
+    /// Each chat's own changes to its project's files, servers, Skills and rules (for the project's settings).
+    ChatLayers { session: String },
+    /// The layer above changed a row for everyone, these too: a chat's own setting (no `member`)
+    /// or an agent's of `names` in `field` goes.
+    LayerClear { panel: String, #[serde(default)] member: Option<String>, field: String, names: Vec<String> },
+    /// Recursion's Skills or rules (library.rs): what is in it, and what can be imported.
+    LibraryList { kind: library::Kind },
+    LibraryImport { kind: library::Kind, paths: Vec<String> },
+    LibraryRemove { kind: library::Kind, name: String },
+    /// One's text, for its preview: in the library (`name`) or found on this computer (`path`).
+    LibraryRead { kind: library::Kind, #[serde(default)] name: Option<String>, #[serde(default)] path: Option<String> },
     /// What one agent works with, for its info card (see agents/info.rs).
     AgentInfo { panel: String, member: String },
     /// The guidance files found in a session's folder, and which are ticked (see guides.rs).
@@ -119,6 +131,11 @@ enum In {
     PanelSplit { panel: String, dir: Dir, kind: Option<PanelKind> },
     PanelClose { panel: String },
     PanelMove { panel: String, target: String, side: model::Side },
+    /// Order by dragging in the sidebar or the tab bar: a project, a window, a window's panels, a chat's agents.
+    SessionMove { session: String, to: usize },
+    WindowMove { session: String, window: String, to: usize },
+    PanelOrder { window: String, panels: Vec<String> },
+    WsMoveAgent { panel: String, member: String, to: usize },
     PanelToWindow { panel: String, window: Option<String> },
     PanelFocus { panel: String },
     /// Name a panel in the sidebar ("" = back to its default, e.g. "Chat 2").
@@ -141,7 +158,7 @@ enum In {
     /// Every agent out of the chat at once; they can come back together from the closed list.
     WsRemoveAllAgents { panel: String },
     WsRenameAgent { panel: String, member: String, alias: String },
-    WsAgentSettings { panel: String, member: String, alias: String, model: Option<String>, effort: Option<String>, #[serde(default)] prompt: String, mode: workspace::PermMode, #[serde(default)] guides: workspace::Overrides, #[serde(default)] mcp: workspace::Overrides },
+    WsAgentSettings { panel: String, member: String, alias: String, model: Option<String>, effort: Option<String>, #[serde(default)] prompt: String, mode: workspace::PermMode, #[serde(default)] guides: workspace::Overrides, #[serde(default)] mcp: workspace::Overrides, #[serde(default)] skills: workspace::Overrides, #[serde(default)] rule_picks: workspace::Overrides },
     WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
     /// Start the chat again from the human's message `msg`: it and everything after are deleted,
     /// the agents' conversations go back to before it, and `text` is sent in its place.
@@ -435,7 +452,7 @@ impl App {
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
-            SessionSettings { session, cwd, defaults, mcp, prompt, guides } => {
+            SessionSettings { session, cwd, defaults, mcp, prompt, guides, skills, rules } => {
                 let cwd = cwd.trim().to_string();
                 if !std::path::Path::new(&cwd).is_dir() {
                     return Err(i18n::tr!("session.err.noFolder", path = cwd));
@@ -451,6 +468,12 @@ impl App {
                     }
                     if let Some(g) = guides {
                         s.guides = Some(g);
+                    }
+                    if let Some(k) = skills {
+                        s.skills = k;
+                    }
+                    if let Some(r) = rules {
+                        s.rules = r;
                     }
                 }
                 if let Some(names) = mcp {
@@ -474,6 +497,39 @@ impl App {
                 .await
                 .map_err(|e| e.to_string())?;
                 reply = Some(serde_json::json!({ "t": "guides", "session": session, "found": found.0, "picks": found.1 }).to_string());
+                changed = false;
+            }
+            ChatLayers { session } => {
+                let chats = self.state.lock().unwrap().chats_of(&session);
+                let list: Vec<serde_json::Value> = chats.iter().map(|p| self.hub.chat_overrides(p)).collect();
+                reply = Some(serde_json::json!({ "t": "chat_layers", "session": session, "chats": list }).to_string());
+                changed = false;
+            }
+            LayerClear { panel, member, field, names } => {
+                self.hub.clear_overrides(&panel, member.as_deref(), &field, &names)?;
+                changed = false;
+            }
+            LibraryList { kind } => {
+                let projects: Vec<String> = self.state.lock().unwrap().sessions.iter().map(|s| s.cwd.clone()).collect();
+                let (items, found) = tokio::task::spawn_blocking(move || (library::list(kind), library::scan(kind, &projects))).await.map_err(|e| e.to_string())?;
+                reply = Some(serde_json::json!({ "t": "library", "kind": kind, "items": items, "found": found }).to_string());
+                changed = false;
+            }
+            LibraryImport { kind, paths } => {
+                let projects: Vec<String> = self.state.lock().unwrap().sessions.iter().map(|s| s.cwd.clone()).collect();
+                library::import(kind, &paths)?;
+                self.hub.broadcast(serde_json::json!({ "t": "library", "kind": kind, "items": library::list(kind), "found": library::scan(kind, &projects) }));
+                changed = false;
+            }
+            LibraryRemove { kind, name } => {
+                let projects: Vec<String> = self.state.lock().unwrap().sessions.iter().map(|s| s.cwd.clone()).collect();
+                library::remove(kind, &name)?;
+                self.hub.broadcast(serde_json::json!({ "t": "library", "kind": kind, "items": library::list(kind), "found": library::scan(kind, &projects) }));
+                changed = false;
+            }
+            LibraryRead { kind, name, path } => {
+                let text = library::read(kind, name.as_deref(), path.as_deref()).ok_or_else(|| i18n::tr!("err.noFile"))?;
+                reply = Some(serde_json::json!({ "t": "library_text", "kind": kind, "name": name, "path": path, "text": text }).to_string());
                 changed = false;
             }
             GuideRead { session, path } => {
@@ -515,6 +571,13 @@ impl App {
                 self.close_panels(&removed, chats).await;
             }
             PanelMove { panel, target, side } => self.state.lock().unwrap().move_panel(&panel, &target, side).map_err(e)?,
+            SessionMove { session, to } => self.state.lock().unwrap().move_session(&session, to).map_err(e)?,
+            WindowMove { session, window, to } => self.state.lock().unwrap().move_window(&session, &window, to).map_err(e)?,
+            PanelOrder { window, panels } => self.state.lock().unwrap().order_panels(&window, &panels).map_err(e)?,
+            WsMoveAgent { panel, member, to } => {
+                self.hub.move_agent(&panel, &member, to);
+                changed = false;
+            }
             PanelToWindow { panel, window } => {
                 self.state.lock().unwrap().panel_to_window(&panel, window.as_deref()).map_err(e)?;
             }
@@ -773,8 +836,8 @@ impl App {
                 self.hub.set_mode(&panel, &member, mode).await?;
                 changed = false;
             }
-            WsAgentSettings { panel, member, alias, model, effort, prompt, mode, guides, mcp } => {
-                self.hub.agent_settings(&panel, &member, &alias, model, effort, prompt, mode, guides, mcp).await?;
+            WsAgentSettings { panel, member, alias, model, effort, prompt, mode, guides, mcp, skills, rule_picks } => {
+                self.hub.agent_settings(&panel, &member, &alias, model, effort, prompt, mode, workspace::Uses { guides, mcp, skills, rule_picks }).await?;
                 changed = false;
             }
             WsRenameAgent { panel, member, alias } => {
@@ -1136,7 +1199,7 @@ async fn main() -> anyhow::Result<()> {
         a2.upgrade().unwrap().hub.set_project_lookup(move |panel| {
             let s = a2.upgrade().and_then(|a| a.state.lock().unwrap().session_of_panel(panel).cloned())?;
             let picks = s.guides.clone().unwrap_or_else(|| guides::default_picks(&guides::scan(&s.cwd)));
-            Some(agents::Project { cwd: s.cwd, prompt: s.prompt, picks })
+            Some(agents::Project { cwd: s.cwd, prompt: s.prompt, picks, skills: s.skills, rules: s.rules })
         });
     }
 

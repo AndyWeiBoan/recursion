@@ -2,7 +2,9 @@
 // sight (the rest scroll), a tick per row and, where there is something to read, a preview.
 // Used for a project's guidance files and MCP servers; Rules, Skills and roles will use it too.
 // Below the project (a chat, an agent) a row follows the layer above unless that layer changed it:
-// then it says so, and can go back (`layer`).
+// then it says so, and can go back (`layer`). Above the agents (a project, a chat) a row can fold
+// out who of the layer below has it and why (`below`): this layer decides for all of them, but
+// one that set the row itself keeps its own, unless the human says otherwise when changing it.
 import { useState } from "react";
 import { t } from "./i18n";
 import { Icon } from "./icons";
@@ -33,13 +35,34 @@ export function layered(base: string[], layers: (Overrides | undefined)[]): stri
 
 /** Below the top layer: what the layer above gives (`base`), where each of those comes from,
  *  and this layer's own changes. */
-export type Layer = { base: string[]; from: (id: string) => string; own: Overrides; onOwn: (o: Overrides) => void };
+export type Layer = {
+  base: string[];
+  from: (id: string) => string;
+  own: Overrides;
+  onOwn: (o: Overrides) => void;
+};
+
+/** The layer below this one (a project's chats, a chat's agents): each follows this layer, but
+ *  for the rows it set itself. */
+export type Below = {
+  members: { key: string; name: string; mark?: React.ReactNode; own: Overrides }[];
+  /** "all agents", "2/3 agents"… */
+  count: (n: number, total: number) => string;
+  /** Who is told: "@claude", "Chat 2"… joined. */
+  noun: string;
+  /** The reminder's "change them too": these members' own setting of `id` goes. */
+  clear: (id: string, keys: string[]) => void;
+};
 
 /** `action`: a button for the list's own page (e.g. managing MCP servers), beside the filter.
  *  Always the same height, empty or not, so switching tabs doesn't move what is below.
  *  With `layer`, what is on comes from it, and `picked` / `onChange` are not used. */
-export function PickList({ items, picked = [], onChange, onOpen, search, empty, action, layer }: { items: PickItem[]; picked?: string[]; onChange?: (p: string[]) => void; onOpen?: (id: string) => void; search: string; empty: React.ReactNode; action?: React.ReactNode; layer?: Layer }) {
+export function PickList({ items, picked = [], onChange, onOpen, search, empty, action, layer, below }: { items: PickItem[]; picked?: string[]; onChange?: (p: string[]) => void; onOpen?: (id: string) => void; search: string; empty: React.ReactNode; action?: React.ReactNode; layer?: Layer; below?: Below }) {
   const [q, setQ] = useState("");
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  // A change that some of the layer below set otherwise: asked about under its row.
+  const [asking, setAsking] = useState<{ id: string; on: boolean } | null>(null);
+  const folds = !!below?.members.length;
   if (!items.length)
     return (
       <div className="picks picks-none">
@@ -59,6 +82,20 @@ export function PickList({ items, picked = [], onChange, onOpen, search, empty, 
     const { [id]: _, ...rest } = layer!.own;
     layer!.onOwn(rest);
   };
+  // Members below that set `id` themselves, otherwise than `on`.
+  const odd = (id: string, on: boolean) => (below?.members ?? []).filter((m) => m.own[id] !== undefined && m.own[id] !== on);
+  const tick = (id: string, on: boolean) => {
+    if (odd(id, on).length) {
+      setAsking({ id, on });
+      setOpen((s) => new Set(s).add(id));
+    } else toggle(id, on);
+  };
+  const fold = (id: string) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      if (!n.delete(id)) n.add(id);
+      return n;
+    });
   return (
     <div className="picks">
       <div className="picks-tools">
@@ -74,9 +111,18 @@ export function PickList({ items, picked = [], onChange, onOpen, search, empty, 
           const on = isOn(f.id);
           const own = !!layer && f.id in layer.own;
           const cut = f.label.lastIndexOf("/") + 1;
+          const has = (below?.members ?? []).filter((m) => m.own[f.id] ?? on);
+          const total = below?.members.length ?? 0;
+          const ask = asking?.id === f.id ? asking : null;
           return (
-            <div key={f.id} className={`pick-row${on ? " on" : ""}${layer && !own ? " inherited" : ""}`} role="listitem">
-              <input type="checkbox" checked={on} onChange={(e) => toggle(f.id, e.target.checked)} aria-label={f.label} />
+            <div key={f.id} className="pick-item" role="listitem">
+            <div className={`pick-row${on ? " on" : ""}${layer && !own ? " inherited" : ""}${folds ? " folds" : ""}`}>
+              {folds && (
+                <button type="button" className={`pick-fold${open.has(f.id) ? " open" : ""}`} onClick={() => fold(f.id)} aria-expanded={open.has(f.id)} aria-label={t("layer.who")}>
+                  <Icon name="expand" size={12} />
+                </button>
+              )}
+              <input type="checkbox" checked={on} onChange={(e) => tick(f.id, e.target.checked)} aria-label={f.label} />
               <span className="pick-name">
                 {f.lead}
                 {onOpen ? (
@@ -100,7 +146,11 @@ export function PickList({ items, picked = [], onChange, onOpen, search, empty, 
                   ) : (
                     <span className="pick-src">{layer.from(f.id)}</span>
                   ))}
-                {f.meta}
+                {folds ? (
+                  <span className={`pick-count${has.length && has.length < total ? " some" : ""}`}>{below!.count(has.length, total)}</span>
+                ) : (
+                  f.meta
+                )}
               </span>
               {onOpen ? (
                 <button type="button" className="pick-eye" onClick={() => onOpen(f.id)} aria-label={t("pick.preview", { name: f.label })}>
@@ -109,6 +159,52 @@ export function PickList({ items, picked = [], onChange, onOpen, search, empty, 
               ) : (
                 <span />
               )}
+            </div>
+            {ask && (
+              <div className="pick-ask">
+                {(() => {
+                  // At most three names, then how many in all: the list below has every one.
+                  const names = odd(f.id, ask.on).map((m) => m.name);
+                  const who = names.slice(0, 3).join(t("common.listSep")) + (names.length > 3 ? t("layer.andMore", { n: names.length, noun: below!.noun }) : "");
+                  return <span title={names.join(t("common.listSep"))}>{t(ask.on ? "layer.askOn" : "layer.askOff", { name: f.label, who })}</span>;
+                })()}
+                <span className="pick-ask-acts">
+                  <button type="button" className="primary" onClick={() => (toggle(f.id, ask.on), setAsking(null))}>
+                    {t("layer.onlyOthers", { noun: below!.noun })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      toggle(f.id, ask.on);
+                      below!.clear(f.id, odd(f.id, ask.on).map((m) => m.key));
+                      setAsking(null);
+                    }}
+                  >
+                    {t("layer.allToo")}
+                  </button>
+                  <button type="button" className="ghost" onClick={() => setAsking(null)}>
+                    {t("common.cancel")}
+                  </button>
+                </span>
+              </div>
+            )}
+            {folds && open.has(f.id) && (
+              <div className="pick-who">
+                {below!.members.map((m) => {
+                  const mine = m.own[f.id];
+                  const yes = mine ?? on;
+                  return (
+                    <div key={m.key} className={`pick-who-row${yes ? " yes" : ""}`}>
+                      <span className="pick-who-mark">{m.mark}</span>
+                      <span>
+                        {m.name} <span className={`pick-why${mine !== undefined ? " own" : ""}`}>{mine === undefined ? t("layer.follows") : t(mine ? "layer.ownOn" : "layer.ownOff")}</span>
+                      </span>
+                      <span className="pick-has">{t(yes ? "layer.has" : "layer.hasNot")}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             </div>
           );
         })}

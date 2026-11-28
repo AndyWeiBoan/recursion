@@ -106,11 +106,15 @@ pub struct Member {
     /// Rules the human gave this agent alone: above the chat's rules and the project's.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prompt: String,
-    /// Its own changes to the chat's instructions files and MCP servers (see `Overrides`).
+    /// Its own changes to the chat's instructions files, MCP servers, Skills and rules (see `Overrides`).
     #[serde(default, skip_serializing_if = "Overrides::is_empty")]
     pub guides: Overrides,
     #[serde(default, skip_serializing_if = "Overrides::is_empty")]
     pub mcp: Overrides,
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub skills: Overrides,
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub rule_picks: Overrides,
     /// While it waits for the human's permission: what for (the request's summary), for the
     /// sidebar's Agents list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,6 +379,20 @@ pub struct ChatSettings {
     pub guides: Overrides,
     #[serde(default, skip_serializing_if = "Overrides::is_empty")]
     pub mcp: Overrides,
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub skills: Overrides,
+    /// The library's rules (not `rules`, the chat's own text above).
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub rule_picks: Overrides,
+}
+
+/// What one agent changed of its chat's: instructions files, MCP servers, Skills, rules.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Uses {
+    pub guides: Overrides,
+    pub mcp: Overrides,
+    pub skills: Overrides,
+    pub rule_picks: Overrides,
 }
 
 /// A layer's changes to the one above it: on or off by name; what isn't named follows the layer
@@ -1019,7 +1037,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), skills: Default::default(), rule_picks: Default::default(), waiting_for: None, replied: 0 }
     }
 
     #[test]
@@ -1083,7 +1101,7 @@ mod former_tests {
     #[test]
     fn departed_members_keep_their_names() {
         let mut ws = Workspace::default();
-        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 });
+        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), skills: Default::default(), rule_picks: Default::default(), waiting_for: None, replied: 0 });
         ws.former.insert("b".into(), FormerMember { alias: "claude".into(), kind: AgentKind::Claude });
         let n = ws.names();
         assert_eq!(n.get("a").map(String::as_str), Some("codex"));
