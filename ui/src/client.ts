@@ -369,6 +369,10 @@ export interface ModelOption {
   value: string;
   label: string;
   description: string;
+  /** The efforts it takes, in its CLI's words (empty: none). */
+  efforts: string[];
+  /** The one it runs with when none is picked, when the CLI says (Codex does, Claude doesn't). */
+  default_effort?: string | null;
 }
 export interface ModelList {
   models: ModelOption[];
@@ -551,7 +555,9 @@ const useGuideStore = <T,>(get: () => T) =>
   );
 /** The files found in the session's folder and which are ticked; looked up afresh on open. */
 export function useGuides(session: string) {
-  useEffect(() => send({ t: "guides_list", session }), [session]);
+  useEffect(() => {
+    if (session) send({ t: "guides_list", session });
+  }, [session]);
   return useGuideStore(() => guideLists.get(session));
 }
 /** One of them, for its preview card. */

@@ -81,6 +81,21 @@ struct Proc {
     codex: Option<Arc<codex::Rpc>>,
     /// The session's MCP servers it was started with: when they change, it starts again.
     mcp: Vec<String>,
+    /// The model, effort and mode it was started with: when the human changes them, it starts
+    /// again before its next turn (its conversation resumes).
+    spec: Spec,
+}
+
+type Spec = (Option<String>, Option<String>, PermMode);
+
+/// A chat's project as its agents see it: where it is, its prompt, the instructions files it ticked.
+pub struct Project {
+    pub cwd: String,
+    pub prompt: String,
+    pub picks: Vec<String>,
+}
+fn spec(m: &Member) -> Spec {
+    (m.model.clone(), m.effort.clone(), m.mode)
 }
 
 struct PendingPerm {
@@ -131,6 +146,10 @@ struct Runtime {
     cli_info: HashMap<String, Value>,
     /// What each member was last told about the project (see `project_lookup`).
     project_seen: HashMap<String, String>,
+    /// Members sitting out for the chat's usage limit (told once each time).
+    limited: HashSet<String>,
+    /// Each member's own rules as it was last told them.
+    agent_seen: HashMap<String, String>,
     /// The todo list as each member last read it; it gets the list again when it changed.
     todos_seen: HashMap<String, String>,
     /// Members compacting their conversation → the chat's folder, to deliver what waited meanwhile.
@@ -249,7 +268,7 @@ pub struct Hub {
     /// A chat's session → the MCP servers it turned on (set by the app, which has the sessions).
     mcp_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
     /// A chat → what its agents are told about its project (guides.rs `brief`), set by the app.
-    project_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
+    project_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Option<Project> + Send + Sync>>,
 }
 
 fn mid() -> String {
@@ -418,6 +437,31 @@ impl Hub {
         }
     }
 
+    /// Claude doesn't say what effort it runs with; its conversation log does, on each answer.
+    /// Read after every turn, so the settings show which level "default" is for its model.
+    fn claude_effort(&self, panel: &str, member: &str, sid: &str) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Some(account) = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.account.clone())) else { return };
+        let id = self.accounts.resolve(AgentKind::Claude, account.as_deref());
+        let dir = crate::accounts::dir(&id)
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
+        let Ok(projects) = std::fs::read_dir(dir.join("projects")) else { return };
+        let Some(log) = projects.flatten().map(|d| d.path().join(format!("{sid}.jsonl"))).find(|p| p.is_file()) else { return };
+        let Ok(mut f) = std::fs::File::open(&log) else { return };
+        // The end is enough: the latest answers are there.
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(256 * 1024)));
+        let mut tail = String::new();
+        let _ = f.take(256 * 1024).read_to_string(&mut tail);
+        let effort = tail.lines().rev().filter(|l| l.contains("\"type\":\"assistant\"")).find_map(|l| serde_json::from_str::<Value>(l).ok().and_then(|v| v["effort"].as_str().map(str::to_string)));
+        if let Some(e) = effort {
+            if self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.running_effort.as_deref() != Some(&e))).unwrap_or(false) {
+                self.update_member(panel, member, |m| m.running_effort = Some(e));
+            }
+        }
+    }
+
     pub fn set_port(&self, port: u16) {
         self.port.store(port, std::sync::atomic::Ordering::Relaxed);
     }
@@ -536,13 +580,29 @@ impl Hub {
         let _ = self.mcp_lookup.set(Box::new(f));
     }
 
-    pub fn set_project_lookup(&self, f: impl Fn(&str) -> Option<String> + Send + Sync + 'static) {
+    pub fn set_project_lookup(&self, f: impl Fn(&str) -> Option<Project> + Send + Sync + 'static) {
         let _ = self.project_lookup.set(Box::new(f));
     }
 
-    /// The MCP servers (of the human's) a chat's agents get: what its session turned on.
-    pub(crate) fn session_mcp(&self, panel: &str) -> Vec<String> {
-        self.mcp_lookup.get().map(|f| f(panel)).unwrap_or_default()
+    /// The MCP servers (of the human's) one agent gets: what its project turned on, as its chat
+    /// and then the agent itself changed that.
+    pub(crate) fn member_mcp(&self, panel: &str, member: &str) -> Vec<String> {
+        let base = self.mcp_lookup.get().map(|f| f(panel)).unwrap_or_default();
+        self.with_ws(panel, |ws| {
+            let own = ws.members.iter().find(|m| m.id == member).map(|m| m.mcp.clone()).unwrap_or_default();
+            crate::workspace::layered(&base, &[&ws.settings.mcp, &own])
+        })
+    }
+
+    /// What one agent is told about its project: the prompt and the instructions files ticked
+    /// for it (the project's, as its chat and then the agent itself changed them).
+    pub(crate) fn member_brief(&self, panel: &str, member: &str) -> String {
+        let Some(p) = self.project_lookup.get().and_then(|f| f(panel)) else { return String::new() };
+        let picks = self.with_ws(panel, |ws| {
+            let own = ws.members.iter().find(|m| m.id == member).map(|m| m.guides.clone()).unwrap_or_default();
+            crate::workspace::layered(&p.picks, &[&ws.settings.guides, &own])
+        });
+        crate::guides::brief(&p.cwd, &p.prompt, &picks)
     }
 
     /// A chat nobody has written in or joined: closing it keeps nothing.
@@ -673,7 +733,7 @@ impl Hub {
         }
         let alias = self.check_alias(panel, &alias, None)?;
         let account = (account != crate::accounts::default_id(kind)).then_some(account);
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode, waiting_for: None, replied: 0 };
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode, effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
@@ -725,12 +785,12 @@ impl Hub {
         crate::files::resolve(cwd, path)
     }
 
-    /// The chat's name, rules and budget. New rules reach each agent with its next message.
+    /// The chat's name, rules and usage limit. New rules reach each agent with its next message.
     pub fn set_chat_settings(&self, panel: &str, settings: crate::workspace::ChatSettings) {
         let mut settings = settings;
         settings.name = settings.name.trim().to_string();
         settings.rules = settings.rules.trim().to_string();
-        settings.budget_usd = settings.budget_usd.filter(|b| *b > 0.0);
+        settings.usage_limit = settings.usage_limit.filter(|p| (1..=100).contains(p));
         let changed_rules = self.with_ws(panel, |ws| {
             let changed = ws.settings.rules != settings.rules;
             ws.settings = settings.clone();
@@ -818,6 +878,56 @@ impl Hub {
         Ok(())
     }
 
+    /// Everything the agent's settings dialog sets, at once. A new model, effort or mode starts
+    /// its process again before its next turn (see `Proc::spec`): now if it is idle, after its
+    /// turn if it is answering. Its own rules reach it with its next turn.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn agent_settings(&self, panel: &str, member: &str, alias: &str, model: Option<String>, effort: Option<String>, prompt: String, mode: PermMode, guides: crate::workspace::Overrides, mcp: crate::workspace::Overrides) -> Result<(), String> {
+        let model = model.filter(|s| !s.is_empty());
+        let effort = effort.filter(|s| !s.is_empty());
+        let old = self.with_ws(panel, |ws| ws.members.iter().find(|m| m.id == member).cloned()).ok_or_else(|| tr!("err.noAgent"))?;
+        if alias.trim().trim_start_matches('@') != old.alias {
+            self.rename_agent(panel, member, alias).await?;
+        }
+        let respawn = (model.clone(), effort.clone(), mode) != spec(&old);
+        self.update_member(panel, member, |m| {
+            m.model = model.clone();
+            m.effort = effort.clone();
+            m.mode = mode;
+            m.prompt = prompt.trim().to_string();
+            m.guides = guides.clone();
+            m.mcp = mcp.clone();
+        });
+        if respawn && old.status == MemberStatus::Idle {
+            self.kill(panel, member).await;
+        }
+        // One line for the whole change.
+        let mut what = vec![];
+        if model != old.model {
+            what.push(model.as_ref().map(|x| tr!("agent.set.model", model = x)).unwrap_or_else(|| tr!("agent.set.modelDefault")));
+        }
+        if effort != old.effort {
+            what.push(effort.as_ref().map(|x| tr!("agent.set.effort", effort = x)).unwrap_or_else(|| tr!("agent.set.effortDefault")));
+        }
+        if mode != old.mode {
+            what.push(tr!("agent.set.mode", mode = mode.label()));
+        }
+        if guides != old.guides {
+            what.push(tr!("agent.set.guides"));
+        }
+        if mcp != old.mcp {
+            what.push(tr!("agent.set.mcp"));
+        }
+        if prompt.trim() != old.prompt {
+            what.push(tr!(if prompt.trim().is_empty() { "agent.set.promptRemoved" } else { "agent.set.prompt" }));
+        }
+        if !what.is_empty() {
+            let alias = self.alias_of(panel, member).unwrap_or(old.alias);
+            self.system(panel, "system", tr!("agent.settingsChanged", alias = alias, what = what.join(&tr!("common.listSep"))), false);
+        }
+        Ok(())
+    }
+
     /// Normalize a proposed alias and make sure it is usable in this chat (`except`: the member being renamed).
     fn check_alias(&self, panel: &str, alias: &str, except: Option<&str>) -> Result<String, String> {
         let alias = alias.trim().trim_start_matches('@').to_string();
@@ -889,6 +999,57 @@ impl Hub {
         }
     }
 
+    /// A chat's agents as they are now (for keeping removed ones whole, see `restore_agents`).
+    pub fn members_of(&self, panel: &str) -> Vec<Member> {
+        self.with_ws(panel, |ws| ws.members.clone())
+    }
+
+    /// The chat's name as set, for the closed list.
+    pub fn chat_name(&self, panel: &str) -> String {
+        self.with_ws(panel, |ws| ws.settings.name.clone())
+    }
+
+    /// Removed agents back in their chat, as they were: same id, settings and conversation (it
+    /// resumes on their next turn, which also brings them what was said while they were gone).
+    /// A name taken meanwhile gets a number.
+    pub fn restore_agents(&self, panel: &str, members: Vec<Member>) -> Result<(), String> {
+        for mut m in members {
+            if self.with_ws(panel, |ws| ws.members.iter().any(|x| x.id == m.id)) {
+                continue;
+            }
+            let was = m.alias.clone();
+            let mut n = 2;
+            while self.check_alias(panel, &m.alias, None).is_err() {
+                m.alias = format!("{was}{n}");
+                n += 1;
+            }
+            m.status = MemberStatus::Idle;
+            m.waiting_for = None;
+            self.with_ws(panel, |ws| {
+                ws.former.remove(&m.id);
+                ws.members.push(m.clone());
+            });
+            self.rt(panel, |r| r.roster_version += 1);
+            self.emit(json!({ "t": "ws_member", "panel": panel, "member": m }));
+            let text = if m.alias == was { tr!("agent.back", alias = m.alias) } else { tr!("agent.backRenamed", old = was, alias = m.alias) };
+            self.system(panel, &m.id, text, false);
+        }
+        self.mark_dirty(panel);
+        Ok(())
+    }
+
+    /// The first usage window (5 hours, the week) an account has used `limit` percent of, and how
+    /// much, as last reported; a window past its reset counts as fresh.
+    fn over_limit(&self, account: &str, limit: u8) -> Option<(String, u32)> {
+        let a = self.accounts.get(account)?;
+        let now = now_ms() / 1000;
+        a.usage
+            .iter()
+            .filter(|(k, _)| a.resets.get(*k).is_none_or(|r| *r > now))
+            .find(|(_, u)| **u * 100.0 >= limit as f64)
+            .map(|(k, u)| (k.clone(), (u * 100.0).round() as u32))
+    }
+
     fn emit_round(&self, panel: &str) {
         self.emit(self.round_state(panel));
     }
@@ -913,13 +1074,6 @@ impl Hub {
         let members: Vec<Member> = self.with_ws(panel, |ws| ws.members.clone());
         if members.is_empty() {
             return Err(tr!("err.noAgents"));
-        }
-        // Over budget: hold the message rather than spend more.
-        if let Some(budget) = self.with_ws(panel, |ws| ws.settings.budget_usd) {
-            let spent: f64 = members.iter().map(|m| m.cost_usd).sum();
-            if spent >= budget {
-                return Err(tr!("chat.err.budget", spent = format!("{spent:.2}"), budget = format!("{budget:.2}")));
-            }
         }
         let targeted = mentions(&text, &members, None);
         let all = targeted.is_empty() || targeted.len() == members.len();
@@ -1017,6 +1171,17 @@ impl Hub {
             if !carded {
                 let name = self.accounts.get(&account).map(|a| a.name).unwrap_or_default();
                 self.push_msg(panel, msg(&m.id, Body::Relogin { account, name, text: tr!("acct.expiredSkip", alias = m.alias), resolved: false }, false));
+            }
+            spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
+            return;
+        }
+        // Its account is past the chat's usage limit: it sits out (and reads what it missed once
+        // the window resets), saying so once each time it gets there.
+        let over = self.with_ws(panel, |ws| ws.settings.usage_limit).and_then(|limit| self.over_limit(&account, limit).map(|w| (limit, w)));
+        let was = self.rt(panel, |r| if over.is_some() { !r.limited.insert(member.to_string()) } else { !r.limited.remove(member) });
+        if let Some((limit, (window, pct))) = over {
+            if !was {
+                self.system(panel, &m.id, tr!("chat.usageSkip", alias = m.alias, window = tr!(&format!("limit.{window}")), pct = pct, limit = limit), false);
             }
             spawn_member_done(self.clone(), panel.to_string(), member.to_string(), cwd.to_string());
             return;
@@ -1335,7 +1500,7 @@ impl Hub {
         }
         // The project's prompt and chosen guidance files: again whenever they changed since this
         // agent last got them (read now, so an edited file reaches it on its next turn).
-        let project = self.project_lookup.get().and_then(|f| f(panel)).unwrap_or_default();
+        let project = self.member_brief(panel, &m.id);
         let pseen = self.rt(panel, |r| r.project_seen.get(&m.id).cloned());
         if pseen.as_ref() != Some(&project) {
             if !project.is_empty() {
@@ -1354,6 +1519,17 @@ impl Hub {
                 text.push_str("[Recursion] The human removed this chat's rules.\n");
             }
             self.rt(panel, |r| r.rules_seen.insert(m.id.clone(), rver));
+        }
+        // Its own rules, from its settings: last, as they win over the chat's and the project's.
+        let aseen = self.rt(panel, |r| r.agent_seen.get(&m.id).cloned());
+        let own = m.prompt.trim().to_string();
+        if aseen.as_deref() != Some(own.as_str()) && !(own.is_empty() && aseen.is_none()) {
+            if own.is_empty() {
+                text.push_str("[Recursion] The human removed your own rules.\n");
+            } else {
+                text.push_str(&format!("[Recursion] Rules the human set for you alone (they replace any earlier ones; above this chat's rules and the project's, follow them):\n{own}\n"));
+            }
+            self.rt(panel, |r| r.agent_seen.insert(m.id.clone(), own.clone()));
         }
         let todos = self.todo_text(panel);
         let tseen = self.rt(panel, |r| r.todos_seen.get(&m.id).cloned());
@@ -1374,8 +1550,9 @@ impl Hub {
         text.push_str(&batch.join("\n\n"));
 
         self.rt(panel, |r| r.turn_first.remove(&m.id));
-        // The session's MCP servers changed since it started: start it again (its conversation resumes).
-        let stale = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).is_some_and(|p| p.mcp != self.session_mcp(panel));
+        // The session's MCP servers, or its model, effort or mode changed since it started: start
+        // it again (its conversation resumes).
+        let stale = self.procs.lock().unwrap().get(&(panel.to_string(), m.id.clone())).is_some_and(|p| p.mcp != self.member_mcp(panel, &m.id) || p.spec != spec(m));
         if stale {
             self.kill(panel, &m.id).await;
         }
@@ -1394,6 +1571,10 @@ impl Hub {
                 match &tseen {
                     Some(v) => r.todos_seen.insert(m.id.clone(), v.clone()),
                     None => r.todos_seen.remove(&m.id),
+                };
+                match &aseen {
+                    Some(v) => r.agent_seen.insert(m.id.clone(), v.clone()),
+                    None => r.agent_seen.remove(&m.id),
                 };
             })
         };
@@ -1455,14 +1636,25 @@ impl Hub {
             .args(["--append-system-prompt", &prompt]);
         // Recursion's own server and the ones the session turned on, nothing else the CLI has set
         // up. In a file only the human can read: the servers' keys must not show up in `ps`.
-        let enabled = self.session_mcp(panel);
+        let enabled = self.member_mcp(panel, &m.id);
         let mut servers = self.mcps.claude_config(&enabled);
         servers.insert("recursion".into(), json!({ "type": "http", "url": self.mcp_url(panel, &m.id) }));
         let config = crate::mcp::write_run_config(&format!("{panel}-{}", m.id), &json!({ "mcpServers": servers }))?;
         cmd.args(["--mcp-config", &config, "--strict-mcp-config", "--allowedTools"]);
         cmd.args(servers.keys().map(|n| format!("mcp__{n}")));
-        if let Some(model) = &m.model {
-            cmd.args(["--model", model]);
+        match (&m.model, &m.cli_session_id) {
+            (Some(model), _) => {
+                cmd.args(["--model", model]);
+            }
+            // A resumed conversation keeps the model it last ran with: back to the default has
+            // to say so (its effort, on the other hand, starts from the default every time).
+            (None, Some(_)) => {
+                cmd.args(["--model", "default"]);
+            }
+            (None, None) => {}
+        }
+        if let Some(effort) = &m.effort {
+            cmd.args(["--effort", effort]);
         }
         if let Some(sid) = &m.cli_session_id {
             cmd.args(["--resume", sid]);
@@ -1482,7 +1674,7 @@ impl Hub {
         let stderr = child.stderr.take().unwrap();
         let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let child = Arc::new(tokio::sync::Mutex::new(child));
-        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None, mcp: enabled });
+        self.procs.lock().unwrap().insert((panel.to_string(), m.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: None, mcp: enabled, spec: spec(m) });
 
         let base_cost = m.cost_usd;
         let (hub, panel_s, member_s, cwd_s) = (self.clone(), panel.to_string(), m.id.clone(), dir.clone());
@@ -1800,6 +1992,9 @@ impl ClaudeReader {
                     return;
                 }
                 hub.finish_turn(&panel, &member, (usage.input + usage.output > 0).then_some(usage));
+                if let Some(sid) = v["session_id"].as_str() {
+                    hub.claude_effort(&panel, &member, sid);
+                }
                 if let Some(uuid) = self.last_uuid.take() {
                     hub.turn_point(&panel, &member, uuid);
                 }

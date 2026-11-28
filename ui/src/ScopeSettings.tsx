@@ -1,16 +1,17 @@
 // Settings for one project (its prompt, guidance files and MCP servers) and for one chat (its name,
-// standing rules for the agents, and a spending limit).
+// standing rules for the agents, a usage limit, and its changes to the project's files and
+// servers). An agent's own changes are in AgentSettings.tsx; project → chat → agent, nearest wins.
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { overlay } from "./browsers";
 import { copyText } from "./clipboard";
-import { send, toast, useGuide, useGuides, useMcp, useSnapshot, useWorkspace, type GuideFile } from "./client";
+import { send, toast, useAccounts, useGuide, useGuides, useMcp, useSnapshot, useWorkspace, type GuideFile } from "./client";
 import { t } from "./i18n";
 import { useCardPlace } from "./TodoCard";
-import type { ChatSettings } from "./types";
+import { chatsOf, type ChatSettings } from "./types";
 import { Modal, renderMarkdown } from "./WorkspaceView";
 import { StatusDot, statusLine } from "./Mcp";
-import { PickList, PickTabs } from "./PickList";
+import { PickList, PickTabs, layered, type Layer, type Overrides } from "./PickList";
 import { openSettings } from "./Settings";
 import { Icon } from "./icons";
 
@@ -86,8 +87,19 @@ function SessionForm({ id, name, cwd, prompt: initialPrompt, mcp: initialMcp, on
   );
 }
 
+/** What a chat's agents start from: its project's ticked files and servers, and the files found. */
+export function useProjectOf(panel: string) {
+  const { state } = useSnapshot();
+  const s = state?.sessions.find((x) => state && chatsOf(x, state).some((c) => c.panel === panel));
+  const guides = useGuides(s?.id ?? "");
+  return { session: s, found: guides?.found, guides: guides?.picks ?? [], mcp: s?.mcp ?? [] };
+}
+
+/** Where a row of a chat's or an agent's list comes from, when that layer didn't change it. */
+export const fromLayer = (chat?: Overrides) => (id: string) => (chat && id in chat ? t("layer.chat") : t("layer.project"));
+
 /** The guidance files found in the folder, to tick for the agents and preview. */
-function GuidePicker({ session, found, picked, onChange }: { session: string; found?: GuideFile[]; picked: string[]; onChange: (p: string[]) => void }) {
+export function GuidePicker({ session, found, picked, onChange, layer }: { session: string; found?: GuideFile[]; picked?: string[]; onChange?: (p: string[]) => void; layer?: Layer }) {
   const [open, setOpen] = useState<string | null>(null);
   // Still looking: the same room, so nothing jumps when the list arrives.
   if (!found)
@@ -103,18 +115,19 @@ function GuidePicker({ session, found, picked, onChange }: { session: string; fo
         items={found.map((f) => ({ id: f.path, label: f.path, meta: t("scope.guideLines", { n: f.lines }) }))}
         picked={picked}
         onChange={onChange}
+        layer={layer}
         onOpen={setOpen}
         search={t("scope.guidesSearch")}
         empty={t("scope.guidesNone")}
       />
-      <span className="field-hint pick-hint">{found.length > 0 ? t("scope.guidesHint") : ""}</span>
+      <span className="field-hint pick-hint">{found.length > 0 ? t(layer ? "layer.guidesHint" : "scope.guidesHint") : ""}</span>
       {open && <GuideCard session={session} path={open} onClose={() => setOpen(null)} />}
     </div>
   );
 }
 
 /** The human's MCP servers, to tick for this project's agents. */
-function McpPicker({ value, onChange, onManage }: { value: string[]; onChange: (v: string[]) => void; onManage: () => void }) {
+export function McpPicker({ value, onChange, onManage, layer }: { value?: string[]; onChange?: (v: string[]) => void; onManage: () => void; layer?: Layer }) {
   const m = useMcp();
   const names = Object.keys(m?.servers ?? {});
   return (
@@ -123,6 +136,7 @@ function McpPicker({ value, onChange, onManage }: { value: string[]; onChange: (
         items={names.map((n) => ({ id: n, label: n, lead: <StatusDot status={m!.status[n]} />, meta: statusLine(m!.status[n]) }))}
         picked={value}
         onChange={onChange}
+        layer={layer}
         search={t("mcp.search")}
         empty={t("mcp.noneYet")}
         action={
@@ -131,7 +145,7 @@ function McpPicker({ value, onChange, onManage }: { value: string[]; onChange: (
           </button>
         }
       />
-      <span className="field-hint pick-hint">{t("mcp.sessionHint")}</span>
+      <span className="field-hint pick-hint">{t(layer ? "layer.mcpHint" : "mcp.sessionHint")}</span>
     </div>
   );
 }
@@ -167,18 +181,28 @@ function GuideCard({ session, path, onClose }: { session: string; path: string; 
   );
 }
 
-/** A chat's settings: its name, the rules every agent gets, and the spending limit. */
+/** A chat's settings: its name, the rules every agent gets, the usage limit, and its changes
+ *  to the project's instructions files and MCP servers. */
 export function ChatSettingsForm({ panel, onDone }: { panel: string; onDone: () => void }) {
   const ws = useWorkspace(panel);
   const cur: ChatSettings = ws?.settings ?? { name: "", rules: "" };
   const [name, setName] = useState(cur.name);
   const [rules, setRules] = useState(cur.rules);
-  const [budget, setBudget] = useState(cur.budget_usd ? String(cur.budget_usd) : "");
-  const spent = (ws?.members ?? []).reduce((s, m) => s + (m.cost_usd || 0), 0);
-  const value = Number(budget);
-  const bad = budget.trim() !== "" && !(value > 0);
+  const [limit, setLimit] = useState<number | null>(cur.usage_limit ?? null);
+  const [guides, setGuides] = useState<Overrides>(cur.guides ?? {});
+  const [mcp, setMcp] = useState<Overrides>(cur.mcp ?? {});
+  const [tab, setTab] = useState<"guides" | "mcp" | "usage">("guides");
+  const project = useProjectOf(panel);
+  const from = fromLayer();
+  const accounts = useAccounts();
+  // How much of their windows the accounts this chat's agents run under have used, for the limit's hint.
+  const used = [...new Set((ws?.members ?? []).map((m) => m.account ?? `${m.kind}-default`))]
+    .map((id) => accounts.find((a) => a.id === id))
+    .filter((a): a is NonNullable<typeof a> => !!a)
+    .map((a) => `${a.kind === "claude" ? "Claude" : "Codex"}${a.id.endsWith("-default") ? "" : `（${a.name || a.email}）`} ${Object.entries(a.usage).map(([k, u]) => `${k === "five_hour" ? t("usage.5h") : k === "seven_day" ? t("usage.7d") : k} ${Math.round(u * 100)}%`).join(" · ")}`)
+    .filter((x) => /%/.test(x));
   const save = () => {
-    send({ t: "ws_settings", panel, settings: { name: name.trim(), rules: rules.trim(), budget_usd: budget.trim() ? value : undefined } });
+    send({ t: "ws_settings", panel, settings: { name: name.trim(), rules: rules.trim(), usage_limit: limit ?? undefined, guides, mcp } });
     onDone();
   };
   return (
@@ -190,20 +214,51 @@ export function ChatSettingsForm({ panel, onDone }: { panel: string; onDone: () 
       </label>
       <label className="field">
         <span>{t("scope.rules")}</span>
-        <textarea value={rules} onChange={(e) => setRules(e.target.value)} rows={6} placeholder={t("scope.rulesPlaceholder")} />
+        <textarea value={rules} onChange={(e) => setRules(e.target.value)} rows={4} placeholder={t("scope.rulesPlaceholder")} />
         <span className="field-hint">{t("scope.rulesHint")}</span>
       </label>
-      <label className="field">
-        <span>{t("scope.budget")}</span>
-        <div className="scope-row">
-          <span className="scope-dollar">$</span>
-          <input value={budget} onChange={(e) => setBudget(e.target.value)} inputMode="decimal" placeholder={t("scope.noLimit")} />
-        </div>
-        <span className={`field-hint${bad ? " warn" : ""}`}>{bad ? t("scope.budgetBad") : t("scope.budgetHint", { spent: spent.toFixed(2) })}</span>
-      </label>
-      <button className="add-submit" type="submit" disabled={bad}>
+      {/* What the agents may use and how much of their accounts, one tab each, in a box of one height. */}
+      <div className="scope-tabbox">
+        <PickTabs
+          tabs={[
+            { id: "guides", label: t("scope.guidesTab"), n: project.found ? layered(project.guides, [guides]).filter((p) => project.found!.some((f) => f.path === p)).length : undefined },
+            { id: "mcp", label: "MCP", n: layered(project.mcp, [mcp]).length },
+            { id: "usage", label: t("scope.usageLimit") },
+          ]}
+          on={tab}
+          pick={setTab}
+        />
+        {tab === "guides" ? (
+          <GuidePicker session={project.session?.id ?? ""} found={project.found} layer={{ base: project.guides, from, own: guides, onOwn: setGuides }} />
+        ) : tab === "mcp" ? (
+          <McpPicker layer={{ base: project.mcp, from, own: mcp, onOwn: setMcp }} onManage={() => (onDone(), openSettings("mcp"))} />
+        ) : (
+          <div className="field">
+            <div className="mode-seg" role="radiogroup" aria-label={t("scope.usageLimit")} style={{ gridTemplateColumns: `repeat(${LIMITS.length}, 1fr)` }}>
+              {LIMITS.map((p) => (
+                <button key={p ?? "none"} type="button" role="radio" aria-checked={limit === p} className={limit === p ? "on" : ""} onClick={() => setLimit(p)}>
+                  {p === null ? t("scope.noLimit") : `${p}%`}
+                </button>
+              ))}
+            </div>
+            <span className="field-hint">
+              {t("scope.usageHint")}
+              {used.length > 0 && (
+                <>
+                  <br />
+                  {t("scope.usageNow", { list: used.join("；") })}
+                </>
+              )}
+            </span>
+          </div>
+        )}
+      </div>
+      <button className="add-submit" type="submit">
         {t("scope.save")}
       </button>
     </form>
   );
 }
+
+/** The usage limits a chat can pick: none, or a share of an account's windows. */
+const LIMITS: (number | null)[] = [null, 50, 70, 80, 90];

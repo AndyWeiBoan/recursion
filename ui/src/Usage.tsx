@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { send, useAccounts } from "./client";
 import { openSettings } from "./Settings";
 import type { Account } from "./types";
+import { Collapse } from "./Collapse";
 import { BrandMark, Icon } from "./icons";
 
 const KEY = "recursion.usageOpen";
@@ -92,35 +93,38 @@ export function UsagePanel() {
           </button>
         )}
       </div>
-      {open &&
-        shown.map((a) => (
-          <button key={a.id} className="usage-acct" onClick={() => openSettings("accounts")} title={t("usage.openAccounts", { who: a.email ?? t("acct.notLoggedIn") })}>
-            <span className="usage-name">
-              <BrandMark kind={a.kind} size={12} />
-              {label(a)}
-            </span>
-            {a.email && a.email !== a.name && <span className="usage-email">{a.email}</span>}
-            {!hasData(a) && <span className="usage-none">{a.logged_in ? t("usage.unavailable") : t("acct.notLoggedIn")}</span>}
-            {hasData(a) && a.logged_in && a.expired && <span className="usage-none"><Icon name="key" size={12} /> {t("usage.stale")}</span>}
-            {WINDOWS.filter(([k]) => a.usage[k] !== undefined).map(([k, name]) => {
-              const v = Math.min(1, a.usage[k]);
-              return (
-                <span key={k} className="usage-line" title={resetIn(a.resets?.[k]) ? t("usage.resetsIn", { when: resetIn(a.resets?.[k]) }) : undefined}>
-                  <span className="usage-win">{t(name)}</span>
-                  <span className="ctx-bar">
-                    <i className={`ctx-fill ${level(v)}`} style={{ width: `${v * 100}%` }} />
-                  </span>
-                  <span className="usage-num">{Math.round(v * 100)}%</span>
-                </span>
-              );
-            })}
-            {a.usage_at > 0 && (
-              <span className="usage-at" title={new Date(a.usage_at).toLocaleString()}>
-                {t("usage.updated", { when: ago(a.usage_at) })}
+      <Collapse open={open}>
+        <div className="usage-accts">
+          {shown.map((a) => (
+            <button key={a.id} className="usage-acct" onClick={() => openSettings("accounts")} title={t("usage.openAccounts", { who: a.email ?? t("acct.notLoggedIn") })}>
+              <span className="usage-name">
+                <BrandMark kind={a.kind} size={12} />
+                {label(a)}
               </span>
-            )}
-          </button>
-        ))}
+              {a.email && a.email !== a.name && <span className="usage-email">{a.email}</span>}
+              {!hasData(a) && <span className="usage-none">{a.logged_in ? t("usage.unavailable") : t("acct.notLoggedIn")}</span>}
+              {hasData(a) && a.logged_in && a.expired && <span className="usage-none"><Icon name="key" size={12} /> {t("usage.stale")}</span>}
+              {WINDOWS.filter(([k]) => a.usage[k] !== undefined).map(([k, name]) => {
+                const v = Math.min(1, a.usage[k]);
+                return (
+                  <span key={k} className="usage-line" title={resetIn(a.resets?.[k]) ? t("usage.resetsIn", { when: resetIn(a.resets?.[k]) }) : undefined}>
+                    <span className="usage-win">{t(name)}</span>
+                    <span className="ctx-bar">
+                      <i className={`ctx-fill ${level(v)}`} style={{ width: `${v * 100}%` }} />
+                    </span>
+                    <span className="usage-num">{Math.round(v * 100)}%</span>
+                  </span>
+                );
+              })}
+              {a.usage_at > 0 && (
+                <span className="usage-at" title={new Date(a.usage_at).toLocaleString()}>
+                  {t("usage.updated", { when: ago(a.usage_at) })}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      </Collapse>
     </div>
   );
 }

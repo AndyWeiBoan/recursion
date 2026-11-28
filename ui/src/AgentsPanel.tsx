@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { send } from "./client";
 import { t } from "./i18n";
+import { Collapse } from "./Collapse";
 import { Icon } from "./icons";
 import { markSeen, seenBaseline, useSeen } from "./seen";
 import type { Chat, Member, State } from "./types";
@@ -77,13 +78,13 @@ export function AgentsPanel({ state, chats, roster }: { state: State; chats: Rec
         <Icon name="agents" size={14} /> {t("agents.title")}
         <span className="dim">{all.length}</span>
       </button>
-      {open && (
+      <Collapse open={open} className="agents-fold">
         <div className="agents-list">
           {group(t("agents.waiting"), waiting, "wait")}
           {group(t("agents.running"), running, "run")}
           {group(t("agents.idle"), idle, "idle")}
         </div>
-      )}
+      </Collapse>
     </section>
   );
 }

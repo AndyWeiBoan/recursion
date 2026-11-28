@@ -96,6 +96,21 @@ pub struct Member {
     pub seen: u64,
     #[serde(default)]
     pub mode: PermMode,
+    /// How hard it thinks, in its CLI's own words (Claude's `--effort`, Codex's reasoning
+    /// effort); None = the CLI's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The effort its CLI says it ran its latest turn with (what "default" is, when `effort` is None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_effort: Option<String>,
+    /// Rules the human gave this agent alone: above the chat's rules and the project's.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
+    /// Its own changes to the chat's instructions files and MCP servers (see `Overrides`).
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub guides: Overrides,
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub mcp: Overrides,
     /// While it waits for the human's permission: what for (the request's summary), for the
     /// sidebar's Agents list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -350,9 +365,37 @@ pub struct ChatSettings {
     /// Standing instructions for every agent in this chat.
     #[serde(default)]
     pub rules: String,
-    /// Stop taking messages once the agents' known spend reaches this (USD).
+    /// An agent whose account has used this much (percent) of a usage window (5 hours, the week)
+    /// sits out until the window resets; the others go on. None = no limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
+    pub usage_limit: Option<u8>,
+    /// Instructions files and MCP servers turned on (true) or off (false) for this chat, over
+    /// what its project has; absent = as the project has it (see `Overrides`).
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub guides: Overrides,
+    #[serde(default, skip_serializing_if = "Overrides::is_empty")]
+    pub mcp: Overrides,
+}
+
+/// A layer's changes to the one above it: on or off by name; what isn't named follows the layer
+/// above. Project → chat → agent, the nearest wins.
+pub type Overrides = std::collections::BTreeMap<String, bool>;
+
+/// `base` (the top layer's list) with each layer's changes applied, nearest last. Keeps `base`'s
+/// order; what a layer turns on comes after.
+pub fn layered(base: &[String], layers: &[&Overrides]) -> Vec<String> {
+    let mut out: Vec<String> = base.to_vec();
+    for l in layers {
+        for (name, on) in l.iter() {
+            let has = out.contains(name);
+            if *on && !has {
+                out.push(name.clone());
+            } else if !*on && has {
+                out.retain(|x| x != name);
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -874,6 +917,16 @@ pub fn tool_result_text(content: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn layers_nearest_wins() {
+        let base = vec!["github".to_string(), "linear".to_string()];
+        let chat: Overrides = [("postgres".to_string(), true), ("linear".to_string(), false)].into();
+        let agent: Overrides = [("linear".to_string(), true), ("github".to_string(), false)].into();
+        assert_eq!(layered(&base, &[&chat]), vec!["github", "postgres"]);
+        assert_eq!(layered(&base, &[&chat, &agent]), vec!["postgres", "linear"]);
+        assert_eq!(layered(&base, &[&Overrides::new()]), base);
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -966,7 +1019,7 @@ mod mention_tests {
     use super::*;
 
     fn m(id: &str, alias: &str) -> Member {
-        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), waiting_for: None, replied: 0 }
+        Member { id: id.into(), kind: AgentKind::Claude, alias: alias.into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 }
     }
 
     #[test]
@@ -1030,7 +1083,7 @@ mod former_tests {
     #[test]
     fn departed_members_keep_their_names() {
         let mut ws = Workspace::default();
-        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), waiting_for: None, replied: 0 });
+        ws.members.push(Member { id: "a".into(), kind: AgentKind::Codex, alias: "codex".into(), model: None, running_model: None, account: None, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode: PermMode::default(), effort: None, running_effort: None, prompt: String::new(), guides: Default::default(), mcp: Default::default(), waiting_for: None, replied: 0 });
         ws.former.insert("b".into(), FormerMember { alias: "claude".into(), kind: AgentKind::Claude });
         let n = ws.names();
         assert_eq!(n.get("a").map(String::as_str), Some("codex"));

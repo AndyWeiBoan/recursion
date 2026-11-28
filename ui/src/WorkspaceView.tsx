@@ -310,7 +310,6 @@ export function ChatHead({ panel }: { panel: string }) {
     </Modal>
   );
   if (empty) return <span className="title">{settings}</span>;
-  const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
   // As the 產出 list counts them: no pages the agents opened, and the pictures the human attached.
   const pictures = ws.messages.reduce((n, m) => n + (m.from === "you" ? (m.files ?? []).filter(isImagePath).length : 0), 0);
   const outputs = pictures + [ws.threads, (ws.artifacts ?? []).filter((a) => a.kind !== "page"), ws.polls].reduce((n, l) => n + (l ?? []).filter((x) => !x.removed).length, 0);
@@ -345,13 +344,6 @@ export function ChatHead({ panel }: { panel: string }) {
         <Modal title={tr("agent.new")} onClose={() => setAdding(false)}>
           <AddAgent panel={panel} onDone={() => setAdding(false)} />
         </Modal>
-      )}
-      {/* What it cost only means something against a budget: on a subscription nothing is billed. */}
-      {cost > 0 && !!ws.settings?.budget_usd && (
-        <span className={`chat-cost${ws.settings?.budget_usd && cost >= ws.settings.budget_usd ? " over" : ""}`} title={tr("chat.costHint") + (ws.settings?.budget_usd ? ` · ${tr("scope.budget")} $${ws.settings.budget_usd.toFixed(2)}` : "")}>
-          ${cost.toFixed(2)}
-          {ws.settings?.budget_usd ? <span className="dim"> / ${ws.settings.budget_usd.toFixed(2)}</span> : null}
-        </span>
       )}
       <button
         className={`chat-outputs icon-only${ui.open ? " on" : ""}`}

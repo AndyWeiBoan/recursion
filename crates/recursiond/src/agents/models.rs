@@ -17,6 +17,15 @@ pub struct ModelOption {
     pub value: String,
     pub label: String,
     pub description: String,
+    /// The efforts it takes, in the CLI's own words (empty: it takes none).
+    pub efforts: Vec<String>,
+    /// The one it runs with when none is picked, when the CLI says (Codex does; Claude doesn't,
+    /// so its agents' `running_effort` tells).
+    pub default_effort: Option<String>,
+}
+
+fn strings(v: &Value) -> Vec<String> {
+    v.as_array().into_iter().flatten().filter_map(|x| x.as_str().or(x["reasoningEffort"].as_str()).map(str::to_string)).collect()
 }
 
 /// Start `cmd`, write `input` lines, and return the first stdout JSON line `pick` accepts.
@@ -66,6 +75,8 @@ pub async fn list(env: &AgentEnv, kind: AgentKind) -> Result<Vec<ModelOption>, S
                         value: if value == "default" { String::new() } else { value.to_string() },
                         label: m["displayName"].as_str().unwrap_or(value).to_string(),
                         description: m["description"].as_str().unwrap_or("").to_string(),
+                        efforts: strings(&m["supportedEffortLevels"]),
+                        default_effort: None,
                     })
                 })
                 .collect())
@@ -85,13 +96,22 @@ pub async fn list(env: &AgentEnv, kind: AgentKind) -> Result<Vec<ModelOption>, S
             }
             let all: Vec<&Value> = r["result"]["data"].as_array().into_iter().flatten().filter(|m| m["hidden"] != true).collect();
             // Codex has no "default" alias: no model = whatever ~/.codex/config.toml says.
-            let mut out = vec![ModelOption { value: String::new(), label: tr!("agent.defaultModel"), description: tr!("models.codexDefault") }];
+            let def = all.iter().find(|m| m["isDefault"] == true);
+            let mut out = vec![ModelOption {
+                value: String::new(),
+                label: tr!("agent.defaultModel"),
+                description: tr!("models.codexDefault"),
+                efforts: def.map(|m| strings(&m["supportedReasoningEfforts"])).unwrap_or_default(),
+                default_effort: def.and_then(|m| m["defaultReasoningEffort"].as_str()).map(str::to_string),
+            }];
             out.extend(all.iter().filter_map(|m| {
                 let value = m["model"].as_str().or(m["id"].as_str())?;
                 Some(ModelOption {
                     value: value.to_string(),
                     label: m["displayName"].as_str().unwrap_or(value).to_string(),
                     description: m["description"].as_str().unwrap_or("").to_string(),
+                    efforts: strings(&m["supportedReasoningEfforts"]),
+                    default_effort: m["defaultReasoningEffort"].as_str().map(str::to_string),
                 })
             }));
             Ok(out)

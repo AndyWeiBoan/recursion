@@ -7,6 +7,8 @@ import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { TodoCardLayer } from "./TodoCard";
 import { AgentInfoLayer } from "./AgentInfo";
+import { AgentSettingsLayer } from "./AgentSettings";
+import { Collapse } from "./Collapse";
 import { listenZoomKeys, restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
 import { overlay, pruneBrowsers, viewerPath, zoomBrowser } from "./browsers";
@@ -18,8 +20,8 @@ import { UsagePanel } from "./Usage";
 import { UpdateNotice } from "./Update";
 import { Onboarding, SetupTerminal } from "./Setup";
 import { closeThreads, useZoomed } from "./threadsUI";
-import { chatsOf, leaves, type PanelKind, type Session, type State, type TermInfo } from "./types";
-import { Icon } from "./icons";
+import { chatsOf, leaves, type Closed, type PanelKind, type Session, type State, type TermInfo } from "./types";
+import { BrandMark, Icon } from "./icons";
 import { closeChecked } from "./closing";
 import { AgentsPanel } from "./AgentsPanel";
 
@@ -230,6 +232,7 @@ export default function App() {
       <Toast />
       <TodoCardLayer />
       <AgentInfoLayer />
+      <AgentSettingsLayer />
       <UpdateNotice />
       <Onboarding />
       <SetupTerminal />
@@ -353,7 +356,11 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                       </FloatMenu>
                     )}
                   </div>
-                  {state && !collapsed.has(s.id) && <SessionTree session={s} state={state} terms={terms} roster={roster} />}
+                  {state && (
+                    <Collapse open={!collapsed.has(s.id)}>
+                      <SessionTree session={s} state={state} terms={terms} roster={roster} />
+                    </Collapse>
+                  )}
                 </div>
               );
             })}
@@ -377,6 +384,39 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
 /** What was closed, to open again or delete for good. */
 /** What was closed, to open again or delete for good: an icon at the right end of the tab bar
  * (one for the whole app), its count on it, the list in a menu under it. */
+/** Agents removed from a chat, in the closed list: back into it with a click, while it is open. */
+function ClosedAgents({ c, onOpen, confirm, setConfirm }: { c: Extract<Closed, { kind: "agents" }>; onOpen: () => void; confirm: string | null; setConfirm: (id: string | null) => void }) {
+  const { state } = useSnapshot();
+  const chat = state?.sessions.flatMap((s) => chatsOf(s, state)).find((x) => x.panel === c.panel);
+  const where = chat ? chat.label : t("closed.chatClosed", { name: c.chat_name || t("kind.workspace") });
+  return (
+    <div className={`closed-row${chat ? "" : " off"}`}>
+      <button className="closed-open" disabled={!chat} onClick={() => (onOpen(), send({ t: "closed_reopen", id: c.id }))} title={chat ? t("closed.reopen") : t("closed.err.chatClosed")}>
+        <span className="closed-ic closed-faces">
+          {c.members.map((m) => (
+            <BrandMark key={m.id} kind={m.kind} size={15} />
+          ))}
+        </span>
+        <span className="closed-main">
+          <b>{c.members.map((m) => `@${m.alias}`).join(t("common.listSep"))}</b>
+          <span className="dim">
+            {where} · {ago(c.at)}
+          </span>
+        </span>
+      </button>
+      {confirm === c.id ? (
+        <button className="danger closed-del" onClick={() => (setConfirm(null), send({ t: "closed_delete", id: c.id }))}>
+          {t("closed.confirmDelete")}
+        </button>
+      ) : (
+        <button className="closed-del" onClick={() => setConfirm(c.id)} title={t("closed.delete")} aria-label={t("closed.delete")}>
+          <Icon name="close" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ClosedButton() {
   const closed = useSnapshot().state?.closed ?? [];
   const [at, setAt] = useState<HTMLElement | null>(null);
@@ -394,6 +434,7 @@ function ClosedButton() {
           <div className="closed-menu">
             <div className="menu-label">{t("closed.hint")}</div>
             {[...closed].reverse().map((c) => {
+              if (c.kind === "agents") return <ClosedAgents key={c.id} c={c} onOpen={close} confirm={confirm} setConfirm={setConfirm} />;
               const name = c.kind === "session" ? c.session.name : c.panel.title || t("kind.workspace");
               const where = c.kind === "session" ? c.session.cwd.replace(/^\/(Users|home)\/[^/]+/, "~") : c.session_name;
               return (
@@ -518,7 +559,6 @@ function EmptyProject({ session }: { session: Session }) {
       <div className="tabs" data-tauri-drag-region>
         <div className="tabs-fill" data-tauri-drag-region />
         <ClosedButton />
-      <ClosedButton />
       </div>
       <div className="empty-body">
         <div className="ws-glyph"><Icon name="terminal" size={40} /></div>
@@ -539,7 +579,6 @@ function Empty({ status, error, hasState }: { status: string; error: string | nu
       <div className="tabs" data-tauri-drag-region>
         <div className="tabs-fill" data-tauri-drag-region />
         <ClosedButton />
-      <ClosedButton />
       </div>
       <div className="empty-body">
         {!hasState ? (

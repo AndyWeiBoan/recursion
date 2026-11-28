@@ -3,11 +3,13 @@ import { overlay, viewerPath } from "./browsers";
 import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { accountName, requestAddAgent, requestChatSettings, send, useAccounts } from "./client";
+import { accountName, requestAddAgent, requestChatSettings, send, useAccounts, useRoster } from "./client";
 import { Avatar, isRunning, modelLabel, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon, type IconName } from "./icons";
 import { openAgentInfo } from "./AgentInfo";
+import { openAgentSettings } from "./AgentSettings";
+import { Collapse } from "./Collapse";
 import { closeChecked } from "./closing";
 
 function k(n: number) {
@@ -113,6 +115,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       {menu && (
         <FloatMenu anchor={more.current} onClose={() => setMenu(false)}>
           <button onClick={() => (setMenu(false), openAgentInfo({ panel, member: m.id }))}>{t("info.open")}</button>
+          <button onClick={() => (setMenu(false), openAgentSettings({ panel, member: m.id }))}>{t("agent.settings")}</button>
           <button onClick={() => (setMenu(false), setEditing(true))}>{t("common.rename")}</button>
           <button disabled={!m.cli_session_id} title={t("agent.compactHint")} onClick={() => (setMenu(false), send({ t: "ws_compact", panel, member: m.id }))}>
             {t("agent.compact")}
@@ -254,11 +257,18 @@ export function FloatMenu({ anchor, onClose, children }: { anchor: HTMLElement |
 
 /** A panel's menu: the same from its ⋯, from a right-click on its sidebar row, and on its tab. */
 function PanelMenuItems({ p, close, onRename }: { p: Panel; close: () => void; onRename: () => void }) {
+  const agents = useRoster(p.id)[p.id]?.length ?? 0;
   return (
     <>
       {p.kind === "workspace" && <button onClick={() => (close(), requestAddAgent(p.id))}>{t("agent.addToChat")}</button>}
       {p.kind === "workspace" && <button onClick={() => (close(), requestChatSettings(p.id))}>{t("scope.chat")}…</button>}
       <button onClick={() => (close(), onRename())}>{t("common.rename")}</button>
+      {/* They can come back from the recently closed list. */}
+      {p.kind === "workspace" && (
+        <button className="danger" disabled={!agents} onClick={() => (close(), send({ t: "ws_remove_all_agents", panel: p.id }))}>
+          {t("chat.removeAll")}
+        </button>
+      )}
       <button className="danger" onClick={() => closeChecked(`panel:${p.id}`, [p.id], () => (close(), send({ t: "panel_close", panel: p.id })))}>
         {t("common.close")}
       </button>
@@ -370,12 +380,14 @@ function PanelRow({
           </RowMenu>
         )}
       </div>
-      {members.length > 0 && !folded && (
-        <div className="tree-agents">
-          {members.map((m) => (
-            <AgentRow key={m.id} m={m} panel={p.id} />
-          ))}
-        </div>
+      {members.length > 0 && (
+        <Collapse open={!folded}>
+          <div className="tree-agents">
+            {members.map((m) => (
+              <AgentRow key={m.id} m={m} panel={p.id} />
+            ))}
+          </div>
+        </Collapse>
       )}
     </>
   );

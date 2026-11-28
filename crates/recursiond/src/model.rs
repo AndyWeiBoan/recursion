@@ -164,6 +164,9 @@ pub enum ClosedWhat {
     Session { session: Session, panels: Vec<Panel> },
     /// A chat closed on its own, and the session it was in (which may be gone by now).
     Chat { panel: Panel, session: String, session_name: String, cwd: String },
+    /// Agents removed from a chat (one, or all at once), whole: they go back into it, their
+    /// conversations resumed. `chat_name`: what the chat was called, for when it is closed.
+    Agents { panel: String, chat_name: String, members: Vec<crate::workspace::Member> },
 }
 
 /// Where opening a closed session put its docs, when they have to move: they live in a folder
@@ -410,8 +413,9 @@ impl State {
     }
 
     /// Open a closed session or chat again and make it the active one.
+    /// Removed agents go back by the chat (see `Hub::restore_agents`), not here.
     pub fn reopen(&mut self, id: &str) -> Res<Reopened> {
-        let idx = self.closed.iter().position(|c| c.id == id).ok_or(ModelError::NotFound("closed"))?;
+        let idx = self.closed.iter().position(|c| c.id == id && !matches!(c.what, ClosedWhat::Agents { .. })).ok_or(ModelError::NotFound("closed"))?;
         let c = self.closed.remove(idx);
         let mut docs_from = None;
         match c.what {
@@ -451,6 +455,7 @@ impl State {
                 s.windows.push(w);
                 self.active_session = Some(sid);
             }
+            ClosedWhat::Agents { .. } => {}
         }
         Ok(Reopened { docs_from })
     }

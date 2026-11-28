@@ -80,6 +80,7 @@ function Body({ m, info }: { m: Member; info: NonNullable<ReturnType<typeof useA
     system: t("info.part.system"),
     project: t("info.part.project"),
     rules: t("info.part.rules"),
+    agent: t("info.part.agent"),
     members: t("info.part.members"),
     todos: t("info.part.todos"),
   };

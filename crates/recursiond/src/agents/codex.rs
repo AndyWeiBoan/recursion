@@ -40,6 +40,28 @@ impl Rpc {
         Ok(resp["result"].clone())
     }
 
+    /// What Codex runs when nothing is picked: its config's model and effort, else the catalog's
+    /// default model and that model's default effort. `model`: the one picked, if any.
+    pub async fn defaults(&self, hub: &Hub, panel: &str, member: &str, model: Option<&str>) -> (Option<String>, Option<String>) {
+        let cfg = self.call(hub, panel, member, "config/read", json!({})).await.unwrap_or_default();
+        let str_of = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+        let mut name = model.map(str::to_string).or_else(|| str_of(&cfg["config"]["model"]));
+        let mut effort = str_of(&cfg["config"]["model_reasoning_effort"]);
+        if name.is_none() || effort.is_none() {
+            let list = self.call(hub, panel, member, "model/list", json!({})).await.unwrap_or_default();
+            let all = list["data"].as_array().cloned().unwrap_or_default();
+            let pick = match &name {
+                Some(n) => all.iter().find(|x| x["model"].as_str() == Some(n) || x["id"].as_str() == Some(n)),
+                None => all.iter().find(|x| x["isDefault"] == true),
+            };
+            if let Some(x) = pick {
+                name = name.or_else(|| str_of(&x["model"]).or_else(|| str_of(&x["id"])));
+                effort = effort.or_else(|| str_of(&x["defaultReasoningEffort"]));
+            }
+        }
+        (if model.is_some() { None } else { name }, effort)
+    }
+
     /// Asks Codex to summarise the thread; it runs as a turn and ends with `turn/completed`.
     pub async fn compact(&self, hub: &Hub, panel: &str, member: &str) -> Result<(), String> {
         let thread = self.thread_id.lock().unwrap().clone().ok_or("Codex thread not started yet")?;
@@ -102,7 +124,7 @@ impl Hub {
         let env = self.env().await;
         let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
-        let enabled = self.session_mcp(panel);
+        let enabled = self.member_mcp(panel, &m.id);
         let mut cmd = Command::new(bin);
         // Guidance files reach it from Recursion, only those the human ticked (guides.rs).
         cmd.args(["-c", crate::guides::CODEX_NO_DOCS, "app-server"]).current_dir(&dir).env("PATH", &env.path);
@@ -118,7 +140,7 @@ impl Hub {
         let rpc = Arc::new(Rpc::new());
         self.procs.lock().unwrap().insert(
             (panel.to_string(), m.id.clone()),
-            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()), mcp: enabled.clone() },
+            Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation, codex: Some(rpc.clone()), mcp: enabled.clone(), spec: super::spec(m) },
         );
 
         let err_buf = Arc::new(Mutex::new(String::new()));
@@ -184,9 +206,23 @@ impl Hub {
         if let Some(model) = &m.model {
             params["model"] = json!(model);
         }
+        if let Some(effort) = &m.effort {
+            params["config"]["model_reasoning_effort"] = json!(effort);
+        }
         let result = match &m.cli_session_id {
             Some(tid) => {
                 let mut p = params.clone();
+                // A thread keeps the model and effort it last ran with: back to "default" has
+                // to name what the default is.
+                if m.model.is_none() || m.effort.is_none() {
+                    let (model, effort) = rpc.defaults(self, panel, &m.id, m.model.as_deref()).await;
+                    if let (None, Some(model)) = (&m.model, model) {
+                        p["model"] = json!(model);
+                    }
+                    if let (None, Some(effort)) = (&m.effort, effort) {
+                        p["config"]["model_reasoning_effort"] = json!(effort);
+                    }
+                }
                 p["threadId"] = json!(tid);
                 p["excludeTurns"] = json!(true);
                 match rpc.call(self, panel, &m.id, "thread/resume", p).await {
@@ -201,7 +237,11 @@ impl Hub {
         self.codex_started(panel, &m.id, &result, enabled.clone());
         if let Some(model) = result["model"].as_str().filter(|s| !s.is_empty()) {
             let model = model.to_string();
-            self.update_member(panel, &m.id, |m| m.running_model = Some(model));
+            let effort = result["reasoningEffort"].as_str().map(str::to_string);
+            self.update_member(panel, &m.id, |m| {
+                m.running_model = Some(model);
+                m.running_effort = effort;
+            });
         }
         // Rewound: drop the turns from that one on. If Codex can't, it starts a new thread
         // and is fed the chat again.
@@ -512,7 +552,7 @@ mod issue_regressions {
         let child = Arc::new(tokio::sync::Mutex::new(child));
         let rpc = Arc::new(Rpc::new());
         *rpc.thread_id.lock().unwrap() = Some("test-thread".into());
-        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()), mcp: vec![] });
+        hub.procs.lock().unwrap().insert((panel.clone(), member.id.clone()), Proc { stdin: Arc::new(tokio::sync::Mutex::new(stdin)), child: child.clone(), generation: 1, codex: Some(rpc.clone()), mcp: vec![], spec: crate::agents::spec(&member) });
         let responder = tokio::spawn(async move {
             loop {
                 let id = rpc.pending.lock().unwrap().keys().next().copied();

@@ -1,4 +1,4 @@
-//! What one agent works with, for its info card: what Recursion tells it (its rules, the
+//! What one agent works with, for its info card: what Recursion tells it (Recursion's rules, the human's rules for it alone, the
 //! project's prompt and instructions files, the chat's rules, what each message carries) and what
 //! its CLI said it has when it started — Claude reports its tools, MCP servers, skills,
 //! subagents and plugins; Codex its model and sandbox. The CLIs' own built-in prompts are not
@@ -45,7 +45,7 @@ impl Hub {
             (ws.settings.rules.clone(), roster)
         });
         let account = self.accounts.resolve(m.kind, m.account.as_deref());
-        let project = self.project_lookup.get().and_then(|f| f(panel)).unwrap_or_default();
+        let project = self.member_brief(panel, member);
         let todos = self.todo_text(panel);
         let cli = self.rt(panel, |r| r.cli_info.get(member).cloned());
         Some(json!({
@@ -56,12 +56,13 @@ impl Hub {
             "account": self.accounts.get(&account).map(|a| a.name).unwrap_or(account),
             "running": cli.is_some(),
             "cli": cli,
-            "mcp": self.session_mcp(panel),
+            "mcp": self.member_mcp(panel, member),
             // In the order it reads them; empty parts are left for the card to say so.
             "parts": [
                 { "id": "system", "text": group_prompt(&m.alias), "how": if m.kind == AgentKind::Claude { "append-system-prompt" } else { "developerInstructions" } },
                 { "id": "project", "text": project },
                 { "id": "rules", "text": rules },
+                { "id": "agent", "text": m.prompt },
                 { "id": "members", "text": format!("[Recursion] Members of this chat: {roster}. You are @{}.", m.alias) },
                 { "id": "todos", "text": todos },
             ],

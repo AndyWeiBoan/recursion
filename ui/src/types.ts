@@ -27,7 +27,11 @@ export interface AgentDefaults {
 export interface ChatSettings {
   name: string;
   rules: string;
-  budget_usd?: number;
+  /** An agent whose account used this much (percent) of a usage window sits out; absent = no limit. */
+  usage_limit?: number;
+  /** This chat's changes to its project's instructions files and MCP servers (on/off by name). */
+  guides?: Record<string, boolean>;
+  mcp?: Record<string, boolean>;
 }
 
 export interface Window {
@@ -79,6 +83,8 @@ export interface State {
 export type Closed = { id: string; at: number } & (
   | { kind: "session"; session: Session; panels: Panel[] }
   | { kind: "chat"; panel: Panel; session: string; session_name: string; cwd: string }
+  /** Agents removed from a chat, to put back into it (while it is open). */
+  | { kind: "agents"; panel: string; chat_name: string; members: Member[] }
 );
 
 export interface TermInfo {
@@ -141,6 +147,8 @@ export type Cmd =
   | { t: "account_remove"; account: string }
   | { t: "ws_remove_agent"; panel: string; member: string }
   | { t: "ws_rename_agent"; panel: string; member: string; alias: string }
+  | { t: "ws_remove_all_agents"; panel: string }
+  | { t: "ws_agent_settings"; panel: string; member: string; alias: string; model: string | null; effort: string | null; prompt: string; mode: PermMode; guides: Record<string, boolean>; mcp: Record<string, boolean> }
   | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[]; refs?: OutputRef[] }
   | { t: "files_list"; panel: string }
   | { t: "file_get"; panel: string; path: string }
@@ -194,6 +202,15 @@ export interface Member {
   alias: string;
   mode?: PermMode;
   model?: string | null;
+  /** How hard it thinks, in its CLI's words; absent = the CLI's default. */
+  effort?: string | null;
+  /** The effort its CLI says it last ran with. */
+  running_effort?: string | null;
+  /** The human's rules for this agent alone. */
+  prompt?: string;
+  /** Its own changes to its chat's instructions files and MCP servers. */
+  guides?: Record<string, boolean>;
+  mcp?: Record<string, boolean>;
   /** While waiting for the human's permission: what for. */
   waiting_for?: string | null;
   /** The `seq` of its latest reply (see seen.ts). */

@@ -109,7 +109,7 @@ enum In {
     McpImport { picks: Vec<(String, String)> },
     /// Connect to a server and list its tools.
     McpTest { name: String },
-    /// A chat's name, rules and budget.
+    /// A chat's name, rules and usage limit.
     WsSettings { panel: String, settings: workspace::ChatSettings },
     SessionSelect { session: String },
     WindowCreate { session: String, kind: Option<PanelKind> },
@@ -138,7 +138,10 @@ enum In {
     /// The human's language; `None` follows the system.
     SetLang { lang: Option<String> },
     WsRemoveAgent { panel: String, member: String },
+    /// Every agent out of the chat at once; they can come back together from the closed list.
+    WsRemoveAllAgents { panel: String },
     WsRenameAgent { panel: String, member: String, alias: String },
+    WsAgentSettings { panel: String, member: String, alias: String, model: Option<String>, effort: Option<String>, #[serde(default)] prompt: String, mode: workspace::PermMode, #[serde(default)] guides: workspace::Overrides, #[serde(default)] mcp: workspace::Overrides },
     WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
     /// Start the chat again from the human's message `msg`: it and everything after are deleted,
     /// the agents' conversations go back to before it, and `text` is sent in its place.
@@ -276,6 +279,17 @@ impl App {
         }
     }
 
+    /// Agents just removed from a chat go on the closed list, to be put back from there.
+    fn keep_removed(&self, panel: &str, members: Vec<workspace::Member>) {
+        if members.is_empty() {
+            return;
+        }
+        let chat_name = self.hub.chat_name(panel);
+        let chat_name = if chat_name.is_empty() { self.state.lock().unwrap().panels.get(panel).map(|p| p.title.clone()).unwrap_or_default() } else { chat_name };
+        let at = workspace::now_ms();
+        self.state.lock().unwrap().closed.push(model::Closed { id: model::new_id(), at, what: model::ClosedWhat::Agents { panel: panel.to_string(), chat_name, members } });
+    }
+
     /// Closed panels: chats with something in them go to the closed list, empty ones are deleted.
     async fn close_panels(&self, panels: &[String], chats: Vec<model::Closed>) {
         self.stop_panels(panels).await;
@@ -388,9 +402,22 @@ impl App {
                 self.stop_panels(&removed).await;
             }
             ClosedReopen { id } => {
-                let r = self.state.lock().unwrap().reopen(&id).map_err(e)?;
-                if let Some((from, to)) = r.docs_from {
-                    docs::move_session(&from, &to);
+                // Removed agents: back into their chat, if it is open.
+                let agents = self.state.lock().unwrap().closed.iter().find(|c| c.id == id).and_then(|c| match &c.what {
+                    model::ClosedWhat::Agents { panel, members, .. } => Some((panel.clone(), members.clone())),
+                    _ => None,
+                });
+                if let Some((panel, members)) = agents {
+                    if !self.state.lock().unwrap().panels.contains_key(&panel) {
+                        return Err(tr!("closed.err.chatClosed"));
+                    }
+                    self.hub.restore_agents(&panel, members)?;
+                    self.state.lock().unwrap().forget(&id).map_err(e)?;
+                } else {
+                    let r = self.state.lock().unwrap().reopen(&id).map_err(e)?;
+                    if let Some((from, to)) = r.docs_from {
+                        docs::move_session(&from, &to);
+                    }
                 }
             }
             ClosedDelete { id } => {
@@ -403,6 +430,7 @@ impl App {
                         docs::delete_session(&session.id);
                     }
                     model::ClosedWhat::Chat { panel, .. } => self.hub.close_panel(&panel.id, true).await,
+                    model::ClosedWhat::Agents { .. } => {}
                 }
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
@@ -745,14 +773,27 @@ impl App {
                 self.hub.set_mode(&panel, &member, mode).await?;
                 changed = false;
             }
+            WsAgentSettings { panel, member, alias, model, effort, prompt, mode, guides, mcp } => {
+                self.hub.agent_settings(&panel, &member, &alias, model, effort, prompt, mode, guides, mcp).await?;
+                changed = false;
+            }
             WsRenameAgent { panel, member, alias } => {
                 self.hub.rename_agent(&panel, &member, &alias).await?;
                 changed = false;
             }
             WsRemoveAgent { panel, member } => {
+                let gone: Vec<_> = self.hub.members_of(&panel).into_iter().filter(|m| m.id == member).collect();
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel);
                 self.hub.remove_agent(&panel, &member, cwd).await;
-                changed = false;
+                self.keep_removed(&panel, gone);
+            }
+            WsRemoveAllAgents { panel } => {
+                let gone = self.hub.members_of(&panel);
+                let cwd = self.state.lock().unwrap().panel_cwd(&panel);
+                for m in &gone {
+                    self.hub.remove_agent(&panel, &m.id, cwd.clone()).await;
+                }
+                self.keep_removed(&panel, gone);
             }
             WsSend { panel, text, reply_to, files, refs } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
@@ -1095,7 +1136,7 @@ async fn main() -> anyhow::Result<()> {
         a2.upgrade().unwrap().hub.set_project_lookup(move |panel| {
             let s = a2.upgrade().and_then(|a| a.state.lock().unwrap().session_of_panel(panel).cloned())?;
             let picks = s.guides.clone().unwrap_or_else(|| guides::default_picks(&guides::scan(&s.cwd)));
-            Some(guides::brief(&s.cwd, &s.prompt, &picks))
+            Some(agents::Project { cwd: s.cwd, prompt: s.prompt, picks })
         });
     }
 
