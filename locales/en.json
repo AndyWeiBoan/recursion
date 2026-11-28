@@ -105,7 +105,7 @@
   "info.codexLess": "Codex doesn't report its tools, skills or plugins; only its model, approval and sandbox.",
   "agents.title": "Agents",
   "agents.waiting": "Blocked",
-  "agents.running": "Working",
+  "agents.running": "Running",
   "agents.idle": "Idle",
   "agents.approve": "Approve?",
   "agents.new": "New reply",
