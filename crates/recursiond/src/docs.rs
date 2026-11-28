@@ -69,6 +69,7 @@ fn doc_tools() -> Value {
             "description": "Save an HTML document to this chat's session and show it to the human as a card that opens in its own panel. \
 Use it for anything long or visual: reports, big tables, comparisons, diagrams (inline SVG, or Mermaid from a CDN), dashboards, \
 interactive explainers. Write one complete, self-contained HTML page; scripts and CDN libraries are allowed. \
+Not for handing over a file (a CSV, a spreadsheet, a PDF): save the file in the project and call `file_share` instead. \
 Pass `id` to replace an existing document (same card, updated content) instead of creating a new one. \
 The page can talk back: `recursion.reply(data)` sends `data` (string or JSON) to you as the human's next message, \
 so send only what the human chose or entered (e.g. {\"database\": \"SQLite\"}), not your own text; you answer after it arrives. \
@@ -113,6 +114,20 @@ For architecture, workflow or sequence diagrams use diagram_write instead.",
             "name": "doc_list",
             "description": "List the documents in this session: id, title, last author.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "file_share",
+            "description": "Give the human a file of the project (a CSV, a spreadsheet, a PDF, a picture, any file you made or found): \
+it goes into the chat's materials as a card, and opens in the app's own viewer (a CSV as a table they can sort, with its raw text a click away). \
+Save the file in the project first, then share its path. Use this rather than writing a document that only shows or wraps a file's contents.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file's path, relative to the project folder (or absolute inside it)" },
+                    "title": { "type": "string", "description": "What to call it on the card; the file's name if left out" }
+                },
+                "required": ["path"]
+            }
         }
     ])
 }
@@ -136,6 +151,18 @@ impl App {
             return match self.hub.poll_tool(panel, member, name, args) {
                 Ok(t) => text(t, false),
                 Err(e) => text(e, true),
+            };
+        }
+        if name == "file_share" {
+            let path = args["path"].as_str().unwrap_or("").trim().to_string();
+            return match self.usable_file(panel, &path) {
+                Some(full) if full.is_file() => {
+                    let title = args["title"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string).unwrap_or_else(|| full.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone()));
+                    self.hub.record_artifact(panel, crate::workspace::ArtifactKind::File, &path, &title, member);
+                    text(format!("Shared `{path}` in the chat's materials as \"{title}\"."), false)
+                }
+                Some(_) => text(format!("`{path}` is not a file."), true),
+                None => text(format!("`{path}` is not a file of this project (or one the human gave this chat)."), true),
             };
         }
         let Some(session) = self.state.lock().unwrap().session_of_panel(panel).map(|s| s.id.clone()) else {
@@ -189,6 +216,11 @@ impl App {
                 let html = from_file.as_deref().unwrap_or_else(|| args["html"].as_str().unwrap_or(""));
                 if title.is_empty() || html.trim().is_empty() {
                     return text("`title` and either `html` or `file` are required.", true);
+                }
+                // A document named like a data file is a file being handed over: that is file_share's.
+                let ext = title.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+                if matches!(ext.as_str(), "csv" | "tsv" | "xlsx" | "xls" | "pdf" | "json" | "txt" | "parquet") {
+                    return text(format!("Not saved: \"{title}\" is a file, not a document. Save the file in the project and call `file_share` with its path; the human opens it in the app's own viewer (a CSV as a sortable table)."), true);
                 }
                 if html.len() > MAX_HTML {
                     return text(format!("Document too large ({} bytes, max {MAX_HTML}).", html.len()), true);
@@ -337,7 +369,7 @@ impl App {
             other => return Err(format!("Unknown document action: {other}")),
         };
         let via = crate::workspace::DocVia { doc: d.id.clone(), title: d.title.clone(), data: data.to_string() };
-        self.hub.send(&d.chat, text, cwd, Some(via), None, vec![], vec![]).await
+        self.hub.send(&d.chat, text, cwd, Some(via), None, vec![], vec![], vec![]).await
     }
 }
 

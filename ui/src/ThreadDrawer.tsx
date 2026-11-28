@@ -101,13 +101,17 @@ const KINDS: { id: ArtifactFilter; label: string }[] = [
   // The chat's todo list took the place of pages the agents opened (nearly always empty).
   { id: "todo", get label() { return tr("todo.title"); } },
   { id: "poll", get label() { return tr("outputs.polls"); } },
-  { id: "image", get label() { return tr("outputs.images"); } },
 ];
-const ICON = { thread: "thread", doc: "doc", diagram: "diagram", page: "page" } as const;
+/** Within Docs: files (the agents' pages among them) and pictures, or one of the two. */
+type DocsOf = "all" | "file" | "image";
+/** What a file is, on its row: the agents' pages say so, other files by their extension. */
+const fileTag = (path: string) => (path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toUpperCase() : tr("kind.file"));
+const ICON = { thread: "thread", doc: "doc", diagram: "diagram", page: "page", file: "file" } as const;
 const KIND_WORD = {
   get doc() { return tr("kind.doc"); },
   get page() { return tr("kind.page"); },
   get diagram() { return tr("kind.diagram"); },
+  get file() { return tr("kind.file"); },
 };
 
 /** `@claude` → agent, `#n` → threads only, anything else → fuzzy over the title, address and kind. */
@@ -131,7 +135,7 @@ function host(url: string) {
   }
 }
 
-type Item = { kind: "thread"; at: number; t: Thread } | { kind: Artifact["kind"]; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll } | { kind: "image"; at: number; path: string; msg: string };
+type Item = { kind: "thread"; at: number; t: Thread } | { kind: Artifact["kind"]; at: number; a: Artifact } | { kind: "poll"; at: number; p: Poll } | { kind: "image" | "attached"; at: number; path: string; msg: string };
 
 /** `#n` → poll number, `@x` → nobody (polls have no author), else fuzzy over 投票, question, options. */
 function pollMatches(p: Poll, query: string) {
@@ -152,14 +156,21 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
   const threads = useMemo(() => (ws.threads ?? []).filter((t) => !t.removed), [ws.threads]);
   const artifacts = useMemo(() => (ws.artifacts ?? []).filter((a) => !a.removed && a.kind !== "page"), [ws.artifacts]);
   const polls = useMemo(() => (ws.polls ?? []).filter((p) => !p.removed), [ws.polls]);
-  // Pictures the human attached to messages in this chat.
+  // Pictures and other files the human attached to messages in this chat.
   const images = useMemo(() => ws.messages.flatMap((m) => (m.from === "you" ? (m.files ?? []).filter(isImagePath).map((path) => ({ path, msg: m.id, at: m.ts })) : [])), [ws.messages]);
+  const attached = useMemo(() => ws.messages.flatMap((m) => (m.from === "you" ? (m.files ?? []).filter((f) => !isImagePath(f)).map((path) => ({ path, msg: m.id, at: m.ts })) : [])), [ws.messages]);
   const anchor = ui.msg ? ws.messages.find((m) => m.id === ui.msg) : undefined;
-  // A message's 💬 badge asks for its threads only.
-  const filter = anchor ? "thread" : ui.filter;
+  // A message's 💬 badge asks for its threads only. Pictures are among the Docs now.
+  const filter = anchor ? "thread" : ui.filter === "image" ? "doc" : ui.filter;
+  const [docsOf, setDocsOf] = useState<DocsOf>("all");
+  // In the Docs tab, whether this kind is shown (its chip, or all of them).
+  const inDocs = (k: string) => filter === "doc" && (k === "image" ? docsOf !== "file" : (k === "doc" || k === "file") && docsOf !== "image");
+  const docs = artifacts.filter((a) => a.kind === "doc");
+  const files = artifacts.filter((a) => a.kind === "file");
+  const nFiles = files.length + attached.length;
   const count = (k: ArtifactFilter) =>
     k === "all"
-      ? threads.length + artifacts.length + polls.length + images.length
+      ? threads.length + artifacts.length + polls.length + images.length + attached.length
       : k === "thread"
         ? threads.length
         : k === "poll"
@@ -168,24 +179,28 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
             ? images.length
             : k === "todo"
               ? (ws.todo_lists ?? []).length
-              : artifacts.filter((a) => a.kind === k).length;
+              : k === "doc"
+                ? docs.length + nFiles + images.length
+                : artifacts.filter((a) => a.kind === k).length;
   const shown = useMemo(() => {
     const items: Item[] = [];
     if (filter === "all" || filter === "thread")
       for (const t of threads) if ((!ui.msg || t.msg === ui.msg) && matches(t, ui.query, byId.get(t.agent)?.alias ?? "")) items.push({ kind: "thread", at: t.updated, t });
     if (!anchor)
       for (const a of artifacts)
-        if ((filter === "all" || filter === a.kind) && artifactMatches(a, ui.query, byId.get(a.by)?.alias ?? "")) items.push({ kind: a.kind, at: a.updated, a });
+        if ((filter === "all" || (filter === "doc" ? inDocs(a.kind) : filter === a.kind)) && artifactMatches(a, ui.query, byId.get(a.by)?.alias ?? "")) items.push({ kind: a.kind, at: a.updated, a });
     if (!anchor && (filter === "all" || filter === "poll"))
       for (const p of polls) if (pollMatches(p, ui.query)) items.push({ kind: "poll", at: p.closed ?? p.created, p });
-    if (!anchor && (filter === "all" || filter === "image"))
+    if (!anchor && (filter === "all" || inDocs("image")))
       for (const im of images) if (imageMatches(im.path, ui.query)) items.push({ kind: "image", ...im });
+    if (!anchor && (filter === "all" || inDocs("file")))
+      for (const f of attached) if (imageMatches(f.path, ui.query)) items.push({ kind: "attached", ...f });
     return items.sort((x, y) => y.at - x.at);
-  }, [threads, artifacts, polls, images, filter, anchor, ui.msg, ui.query, byId]);
+  }, [threads, artifacts, polls, images, attached, filter, docsOf, anchor, ui.msg, ui.query, byId]);
   const empty = {
     all: tr("outputs.emptyAll"),
     thread: tr("outputs.emptyThreads"),
-    doc: tr("outputs.emptyDocs"),
+    doc: docsOf === "image" ? tr("outputs.emptyImages") : tr("outputs.emptyFiles"),
     diagram: tr("outputs.emptyDiagrams"),
     todo: tr("todo.empty"),
     poll: tr("outputs.emptyPolls"),
@@ -224,14 +239,31 @@ function OutputList({ panel, ws, byId, ui }: { panel: string; ws: Workspace; byI
           spellCheck={false}
         />
       </div>
+      {/* Docs holds the documents and the pictures: a chip each, with how many. */}
+      {filter === "doc" && (
+        <div className="td-chips" role="radiogroup" aria-label={tr("outputs.docs")}>
+          {(
+            [
+              ["all", tr("outputs.all"), docs.length + nFiles + images.length],
+              ["file", tr("outputs.chipFiles"), docs.length + nFiles],
+              ["image", tr("outputs.images"), images.length],
+            ] as [DocsOf, string, number][]
+          ).map(([id, label, n]) => (
+            <button key={id} type="button" role="radio" aria-checked={docsOf === id} className={docsOf === id ? "on" : ""} onClick={() => setDocsOf(id)}>
+              {label}
+              <span className="dim">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="td-list">
         {shown.map((it) =>
           it.kind === "thread" ? (
             <ThreadRow key={it.t.id} panel={panel} t={it.t} who={byId.get(it.t.agent)} />
           ) : it.kind === "poll" ? (
             <PollRow key={it.p.id} panel={panel} p={it.p} />
-          ) : it.kind === "image" ? (
-            <ImageRow key={`${it.msg}/${it.path}`} panel={panel} path={it.path} msg={it.msg} at={it.at} />
+          ) : "path" in it ? (
+            <ImageRow key={`${it.msg}/${it.path}`} panel={panel} path={it.path} msg={it.msg} at={it.at} file={it.kind === "attached"} />
           ) : (
             <ArtifactRow key={it.a.id} panel={panel} a={it.a} who={byId.get(it.a.by)} />
           ),
@@ -365,19 +397,27 @@ function imageMatches(path: string, query: string) {
     .every((tok) => !tok.startsWith("@") && !/^#\d+$/.test(tok) && fuzzy(tok, hay));
 }
 
-function ImageRow({ panel, path, msg, at }: { panel: string; path: string; msg: string; at: number }) {
+/** A picture (or, `file`, another file) the human attached to a message. */
+function ImageRow({ panel, path, msg, at, file }: { panel: string; path: string; msg: string; at: number; file?: boolean }) {
   return (
-    <div className="td-row" onPointerDown={(e) => startRefDrag(e, panel, { image: path }, path.split("/").pop() ?? path)}>
-      <button className="td-open td-image" onClick={() => (send({ t: "file_open", panel, path }), unzoom())} title={tr("outputs.openImage")}>
-        <ImageThumb panel={panel} path={path} size={56} />
+    <div className="td-row" onPointerDown={(e) => !file && startRefDrag(e, panel, { image: path }, path.split("/").pop() ?? path)}>
+      <button className="td-open td-image" onClick={() => (send({ t: "file_open", panel, path }), unzoom())} title={file ? tr("outputs.openFile") : tr("outputs.openImage")}>
+        {file ? (
+          <span className="td-num">
+            <span className="td-icon"><Icon name="file" size={14} /></span>
+          </span>
+        ) : (
+          <ImageThumb panel={panel} path={path} size={30} />
+        )}
         <span className="td-main">
           <span className="td-quote">{path.split("/").pop()}</span>
           <span className="td-meta">
+            <span className="td-tag">{file ? fileTag(path) : tr("outputs.image")}</span>
             {tr("common.you")} · {time(at)}
           </span>
         </span>
       </button>
-      <QuoteButton panel={panel} p={{ image: path }} />
+      {!file && <QuoteButton panel={panel} p={{ image: path }} />}
       <button className="td-goto" onClick={() => showInChat(msg)} title={tr("outputs.findMessage")} aria-label={tr("outputs.findMessage")}>
         <Icon name="open" />
       </button>
@@ -402,6 +442,7 @@ function ArtifactRow({ panel, a, who }: { panel: string; a: Artifact; who?: Memb
         <span className="td-main">
           <span className="td-quote">{title}</span>
           <span className="td-meta">
+            {a.kind !== "page" && <span className="td-tag">{a.kind === "doc" ? tr("outputs.tagPage") : a.kind === "file" ? fileTag(a.target) : KIND_WORD[a.kind]}</span>}
             @{who?.alias ?? tr("agent.gone")} · {a.kind === "page" ? `${host(a.target)} · ` : ""}
             {time(a.updated)}
           </span>

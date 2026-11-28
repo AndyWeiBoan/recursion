@@ -165,7 +165,7 @@ export type Cmd =
   | { t: "panel_order"; window: string; panels: string[] }
   | { t: "ws_move_agent"; panel: string; member: string; to: number }
   | { t: "ws_agent_settings"; panel: string; member: string; alias: string; model: string | null; effort: string | null; prompt: string; mode: PermMode; guides: Record<string, boolean>; mcp: Record<string, boolean>; skills: Record<string, boolean>; rule_picks: Record<string, boolean> }
-  | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[]; refs?: OutputRef[] }
+  | { t: "ws_send"; panel: string; text: string; reply_to?: string; files?: string[]; refs?: OutputRef[]; asks?: Ask[] }
   | { t: "files_list"; panel: string }
   | { t: "file_get"; panel: string; path: string }
   | { t: "file_open"; panel: string; path: string }
@@ -281,7 +281,7 @@ export interface DocVia {
 /** The message a human message answers, as it read when sent. `from` is "you" or a member id. */
 /** One of the chat's outputs a human message points at. */
 export interface OutputRef {
-  kind: "doc" | "diagram" | "page" | "poll" | "todo" | "thread";
+  kind: "doc" | "diagram" | "page" | "file" | "poll" | "todo" | "thread";
   /** The artifact's, poll's, thread's or todo list's id. */
   id: string;
   /** A todo item's id, when it is one item of the list. */
@@ -296,7 +296,10 @@ export interface ReplyRef {
   text: string;
 }
 
-export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; files?: string[]; refs?: OutputRef[]; usage?: TurnUsage } & (
+/** What the human asked the agents to make of a message (the composer's menu). */
+export type Ask = "doc" | "todo";
+
+export type Msg = { id: string; ts: number; from: string; seq: number; to?: string[]; streaming: boolean; turn?: boolean; via?: DocVia; from_thread?: { thread: string; num: number }; reply_to?: ReplyRef; files?: string[]; refs?: OutputRef[]; asks?: Ask[]; usage?: TurnUsage } & (
   | { kind: "text"; text: string }
   | { kind: "tool"; tool_use_id: string; name: string; summary: string; detail: string; result?: string | null; is_error: boolean }
   | { kind: "permission"; request_id: string; tool: string; summary: string; detail: string; state: PermState }
@@ -413,8 +416,8 @@ export interface Workspace {
 
 export interface Artifact {
   id: string;
-  kind: "doc" | "page" | "diagram";
-  /** Doc id, or the page's url. */
+  kind: "doc" | "page" | "diagram" | "file";
+  /** Doc id, the page's url, or the file's path. */
   target: string;
   title: string;
   /** Member id of the agent that made it. */

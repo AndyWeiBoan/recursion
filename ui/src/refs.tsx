@@ -26,7 +26,7 @@ export function addToChat(panel: string, p: Payload) {
   takers.get(panel)?.(p);
 }
 
-export const REF_ICON: Record<OutputRef["kind"], IconName> = { doc: "doc", diagram: "diagram", page: "page", poll: "poll", todo: "todo", thread: "thread" };
+export const REF_ICON: Record<OutputRef["kind"], IconName> = { doc: "doc", diagram: "diagram", page: "page", file: "file", poll: "poll", todo: "todo", thread: "thread" };
 
 /** Its current title, or that it is gone (taken off the 產出 list, or deleted). */
 function look(ws: Workspace | null, r: OutputRef): { title: string; gone: boolean } {
@@ -36,6 +36,7 @@ function look(ws: Workspace | null, r: OutputRef): { title: string; gone: boolea
     case "doc":
     case "diagram":
     case "page":
+    case "file":
       return found((ws.artifacts ?? []).find((a) => a.id === r.id && !a.removed)?.title);
     case "poll":
       return found((ws.polls ?? []).find((p) => p.id === r.id && !p.removed)?.question);

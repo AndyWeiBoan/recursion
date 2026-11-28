@@ -186,6 +186,10 @@ pub struct Message {
     /// Things from the chat's 產出 the human pointed at (dragged into the box).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<OutputRef>,
+    /// What the human asked the agents to make of it, from the composer's menu: "doc" (a
+    /// document, doc_write), "todo" (the chat's todo list).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub asks: Vec<String>,
     /// What the whole turn cost; set on the turn's first message when the turn ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<TurnUsage>,
@@ -213,6 +217,7 @@ pub enum RefKind {
     Doc,
     Diagram,
     Page,
+    File,
     Poll,
     Todo,
     Thread,
@@ -224,6 +229,7 @@ impl RefKind {
             RefKind::Doc => "document",
             RefKind::Diagram => "diagram",
             RefKind::Page => "web page",
+            RefKind::File => "file",
             RefKind::Poll => "poll",
             RefKind::Todo => "todo list",
             RefKind::Thread => "side thread",
@@ -594,6 +600,8 @@ pub enum ArtifactKind {
     Page,
     /// A diagram (a document drawn from JSON); `target` is its doc id.
     Diagram,
+    /// A file of the project an agent shared (file_share); `target` is its path.
+    File,
 }
 
 /// One entry in a chat's 產出 list. Same kind and target = the same artifact, updated in place.
@@ -623,7 +631,7 @@ impl Workspace {
     /// the chat has no such thing.
     pub fn resolve_ref(&self, r: &OutputRef) -> Option<OutputRef> {
         let title = match r.kind {
-            RefKind::Doc | RefKind::Diagram | RefKind::Page => self.artifacts.iter().find(|a| a.id == r.id && !a.removed).map(|a| a.title.clone())?,
+            RefKind::Doc | RefKind::Diagram | RefKind::Page | RefKind::File => self.artifacts.iter().find(|a| a.id == r.id && !a.removed).map(|a| a.title.clone())?,
             RefKind::Poll => self.polls.iter().find(|p| p.id == r.id && !p.removed).map(|p| p.question.clone())?,
             RefKind::Thread => self.threads.iter().find(|t| t.id == r.id && !t.removed).map(|t| t.quote.clone())?,
             RefKind::Todo => {
@@ -642,8 +650,9 @@ impl Workspace {
         const EXCERPT: usize = 600;
         let gone = || format!("(reference: {} \"{}\" — the human has since removed it; it is no longer available)", r.kind.word(), r.title);
         match r.kind {
-            RefKind::Doc | RefKind::Diagram | RefKind::Page => match self.artifacts.iter().find(|a| a.id == r.id && !a.removed) {
+            RefKind::Doc | RefKind::Diagram | RefKind::Page | RefKind::File => match self.artifacts.iter().find(|a| a.id == r.id && !a.removed) {
                 Some(a) if r.kind == RefKind::Page => format!("(reference: web page \"{}\" {})", a.title, a.target),
+                Some(a) if r.kind == RefKind::File => format!("(reference: file `{}` \"{}\" — read it yourself)", a.target, a.title),
                 Some(a) => format!("(reference: {} `{}` \"{}\" — read it with doc_read, id \"{}\")", r.kind.word(), a.target, a.title, a.target),
                 None => gone(),
             },
@@ -966,7 +975,7 @@ mod tests {
 
     #[test]
     fn message_roundtrip_flattens_body() {
-        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], usage: None, body: Body::Text { text: "hi".into() } };
+        let m = Message { id: "1".into(), ts: 1, from: "you".into(), seq: 1, to: vec![], streaming: false, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], asks: vec![], usage: None, body: Body::Text { text: "hi".into() } };
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["kind"], "text");
         assert_eq!(v["text"], "hi");

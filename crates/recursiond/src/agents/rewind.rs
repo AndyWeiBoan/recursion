@@ -21,7 +21,7 @@ impl Hub {
         let done = self.rewind_to(panel, target, &cwd).await;
         self.rt(panel, |r| r.rewinding = false);
         done?;
-        self.send(panel, text, cwd, None, reply_to, files, refs).await
+        self.send(panel, text, cwd, None, reply_to, files, refs, vec![]).await
     }
 
     async fn rewind_to(self: &Arc<Self>, panel: &str, target: &str, cwd: &str) -> Result<(), String> {

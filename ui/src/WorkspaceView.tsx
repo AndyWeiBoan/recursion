@@ -1,6 +1,7 @@
 // Group-chat panel. Chat layout: your messages on the right, agents on the left with avatar + name.
 import { ChatSettingsForm } from "./ScopeSettings";
 import { openSettings } from "./Settings";
+import { FloatMenu } from "./SessionTree";
 import { accountLabel } from "./Setup";
 import { FileChip, FilePicker, isImagePath } from "./Files";
 import { useDragWidth } from "./Layout";
@@ -21,7 +22,7 @@ import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, isMac, onChatRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { takeDrops } from "./drop";
 import { RefChip, takeRefs } from "./refs";
-import { chatsOf, leaves, PERM_MODES, type Account, type AgentDefaults, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
+import { chatsOf, leaves, PERM_MODES, type Account, type AgentDefaults, type AgentKind, type Ask, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
 import { markSeen } from "./seen";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -581,6 +582,28 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
   );
 }
 
+/** What can be asked of the agents from the composer's menu (said to them with the message). */
+const ASKS: { id: Ask; icon: IconName; label: string; hint: string }[] = [
+  { id: "doc", icon: "doc", get label() { return tr("ask.doc"); }, get hint() { return tr("ask.docHint"); } },
+  { id: "todo", icon: "todo", get label() { return tr("ask.todo"); }, get hint() { return tr("ask.todoHint"); } },
+];
+
+/** One of them on a message (or, with `onRemove`, in the composer). */
+function AskChip({ a, onRemove }: { a: Ask; onRemove?: () => void }) {
+  const it = ASKS.find((x) => x.id === a);
+  if (!it) return null;
+  return (
+    <span className="ask-chip" title={it.hint}>
+      <Icon name={it.icon} size={12} />→ {it.label}
+      {onRemove && (
+        <button onClick={onRemove} aria-label={tr("ask.remove", { what: it.label })}>
+          <Icon name="close" />
+        </button>
+      )}
+    </span>
+  );
+}
+
 /** The message a reply answers, quoted at the top of the reply's bubble; click to go to it. */
 function ReplyQuote({ r, byId }: { r: NonNullable<Msg["reply_to"]>; byId: Map<string, Member> }) {
   return (
@@ -1009,8 +1032,11 @@ const MessageView = memo(function MessageView({
             <div className="bubble you" data-msg={m.id}>
               {m.reply_to && <ReplyQuote r={m.reply_to} byId={byId} />}
               {m.text && <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.text, aliases) }} />}
-              {!!(m.files?.length || m.refs?.length) && (
+              {!!(m.files?.length || m.refs?.length || m.asks?.length) && (
                 <div className="bubble-files">
+                  {m.asks?.map((a) => (
+                    <AskChip key={a} a={a} />
+                  ))}
                   {m.files?.map((f) => (
                     <FileChip key={f} panel={panel} path={f} />
                   ))}
@@ -1282,6 +1308,9 @@ function Composer({
   }, [panel, disabled]);
   // Things from the 產出 drawer this message points at (dragged in, or added with ↳).
   const [refs, setRefs] = useState<OutputRef[]>([]);
+  // Asked of the agents from the composer's menu: a document, the todo list.
+  const [asks, setAsks] = useState<Ask[]>([]);
+  const [asking, setAsking] = useState<HTMLElement | null>(null);
   const sameRef = (a: OutputRef, b: OutputRef) => a.kind === b.kind && a.id === b.id && a.item === b.item;
   useEffect(() => {
     if (disabled) return;
@@ -1413,12 +1442,13 @@ function Composer({
     if (rewindId) {
       send({ t: "ws_rewind", panel, msg: rewindId, text, files, refs });
       leaveRewind(false);
-    } else send({ t: "ws_send", panel, text, reply_to: reply?.id, files, refs });
+    } else send({ t: "ws_send", panel, text, reply_to: reply?.id, files, refs, asks });
     setReplying(panel, null);
     setText("");
     setHist(null);
     setFiles([]);
     setRefs([]);
+    setAsks([]);
     setCaret(0);
   };
   const alias = (id: string) => "@" + (members.find((x) => x.id === id)?.alias ?? "?");
@@ -1508,6 +1538,24 @@ function Composer({
         <button className="cmp-tool" onClick={() => setPolling(true)} disabled={disabled} title={tr("poll.buttonHint")} aria-label={tr("poll.start")}>
           <Icon name="poll" />
         </button>
+        <button className={`cmp-tool${asking || asks.length ? " on" : ""}`} onMouseDown={(e) => e.preventDefault()} onClick={(e) => setAsking(asking ? null : e.currentTarget)} disabled={disabled} title={tr("ask.button")} aria-label={tr("ask.button")} aria-expanded={!!asking}>
+          <Icon name="asks" />
+        </button>
+        {asking && (
+          <FloatMenu anchor={asking} onClose={() => setAsking(null)}>
+            <span className="menu-label">{tr("ask.title")}</span>
+            {ASKS.map((a) => (
+              <button key={a.id} className={`menu-check ask-item${asks.includes(a.id) ? " on" : ""}`} onClick={() => (setAsks((x) => (x.includes(a.id) ? x.filter((y) => y !== a.id) : [...x, a.id])), setAsking(null), ref.current?.focus())}>
+                <Icon name={a.icon} size={14} />
+                <span className="ask-main">
+                  <b>{a.label}</b>
+                  <span className="dim">{a.hint}</span>
+                </span>
+                <code>/{a.id}</code>
+              </button>
+            ))}
+          </FloatMenu>
+        )}
       </div>
       {picking && (
         <FilePicker
@@ -1520,8 +1568,11 @@ function Composer({
           onClose={() => setPicking(false)}
         />
       )}
-      {files.length + refs.length > 0 && (
+      {files.length + refs.length + asks.length > 0 && (
         <div className="cmp-files">
+          {asks.map((a) => (
+            <AskChip key={a} a={a} onRemove={() => setAsks((x) => x.filter((y) => y !== a))} />
+          ))}
           {files.map((f) => (
             <FileChip key={f} panel={panel} path={f} onRemove={() => setFiles((x) => x.filter((y) => y !== f))} />
           ))}

@@ -947,7 +947,9 @@ button.link { padding: 0; border: 0; background: none; color: var(--or); text-de
 .td-more-menu button { text-align: left; padding: 6px 10px; border-radius: 6px; font-size: 12.5px; color: var(--fg); white-space: nowrap; }
 .td-more-menu button:hover { background: var(--hover); }
 .td-more-menu button.on { background: var(--sel); }
-.td-open.td-image { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+/* a picture's row lines up with the documents': its thumbnail takes the icon's column */
+.td-open.td-image { grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 6px; }
+.td-open.td-image .img-thumb { width: 30px; height: 30px; }
 
 /* the footer's sections (recently closed, agents, usage) each end in a line */
 /* recently closed: an icon at the right of the tab bar, its count on it, the list under it */
@@ -1316,3 +1318,38 @@ body.page-hidden .brand-mark { animation: none !important; }
 .pick-why { font-size: 11px; color: var(--dim); }
 .pick-why.own { color: #f0a27f; }
 .pick-has { font-size: 11px; }
+/* the drawer's Docs: documents and pictures, a chip each */
+.td-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 12px 8px; }
+.td-chips button { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 14px; font-size: 12px; color: var(--dim); }
+.td-chips button:hover { color: var(--fg); }
+.td-chips button.on { border-color: #6b6d76; background: var(--sel); color: var(--fg); }
+.td-chips .dim { font-size: 11px; }
+.td-tag { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 4px; background: #ffffff0d; font-size: 10.5px; }
+/* a CSV or TSV file as a table (Files.tsx): the header stays on top while it scrolls */
+.fv-fill { flex: 1; }
+.fv-mode { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line); border-radius: 7px; }
+.fv-bar .fv-mode button { padding: 1px 8px; border-radius: 5px; font-size: 11.5px; }
+.fv-bar .fv-mode button.on { background: var(--sel); color: var(--fg); }
+.fv-table { overflow: auto; font-size: 12.5px; }
+.fv-table table { border-collapse: separate; border-spacing: 0; min-width: 100%; }
+.fv-table th, .fv-table td { padding: 5px 10px; border-bottom: 1px solid #ffffff0a; border-right: 1px solid #ffffff08; text-align: left; white-space: nowrap; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+.fv-table th { position: sticky; top: 0; z-index: 1; background: #26272c; font-weight: 600; cursor: pointer; user-select: none; }
+.fv-table th:hover { background: #2f3037; }
+.fv-table .num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
+.fv-table th.num { font-family: var(--sans); font-size: 12.5px; }
+.fv-table tbody tr:hover td { background: #ffffff05; }
+.fv-table .fv-rownum { position: sticky; left: 0; background: #1d1e22; color: var(--dim); text-align: right; font: 11px var(--mono); min-width: 40px; }
+.fv-table th.fv-rownum { z-index: 2; background: #26272c; cursor: default; }
+.fv-sort { display: inline-block; width: 12px; margin-left: 4px; color: var(--or); }
+.fv-more { margin: 0; padding: 10px 12px; color: var(--dim); font-size: 12px; }
+/* the composer's "ask the agents to…" menu and its chips (on the message too) */
+.menu button.ask-item { display: grid; grid-template-columns: 16px 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-width: 260px; }
+.menu button.ask-item::before { width: 16px; }
+.ask-main { display: grid; }
+.ask-main b { font-weight: 500; }
+.ask-main .dim { font-size: 11.5px; white-space: normal; }
+.ask-item code { font: 11px var(--mono); color: var(--dim); }
+.ask-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid #e8714a55; background: #e8714a14; color: #f0a27f; border-radius: 12px; font-size: 12px; }
+.ask-chip button { display: grid; place-items: center; width: 16px; height: 16px; margin-right: -4px; border-radius: 50%; color: inherit; }
+.ask-chip button:hover { background: #ffffff14; }
+.ask-chip button svg { width: 11px; height: 11px; }

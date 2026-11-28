@@ -280,7 +280,7 @@ fn mid() -> String {
 }
 
 fn msg(from: &str, body: Body, streaming: bool) -> Message {
-    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], usage: None, body }
+    Message { id: mid(), ts: now_ms(), from: from.into(), seq: 0, to: vec![], streaming, turn: false, via: None, from_thread: None, reply_to: None, files: vec![], refs: vec![], asks: vec![], usage: None, body }
 }
 
 impl Hub {
@@ -1147,7 +1147,8 @@ impl Hub {
 
     /// A human message. It is shown right away and goes out once the human has been quiet for
     /// MERGE_WINDOW_MS and the agents it is for are free (see `Runtime`).
-    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>, files: Vec<String>, refs: Vec<crate::workspace::OutputRef>) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send(self: &Arc<Self>, panel: &str, text: String, cwd: String, via: Option<crate::workspace::DocVia>, reply_to: Option<&str>, files: Vec<String>, refs: Vec<crate::workspace::OutputRef>, asks: Vec<String>) -> Result<(), String> {
         let text = text.trim().to_string();
         // Only files in the project, or picked from the computer (granted).
         let files: Vec<String> = files.into_iter().filter(|f| self.usable_file(panel, &cwd, f).is_some()).collect();
@@ -1166,6 +1167,7 @@ impl Hub {
         m.to = if all { vec![] } else { targeted.clone() };
         m.files = files;
         m.refs = refs;
+        m.asks = asks.into_iter().filter(|a| a == "doc" || a == "todo").collect();
         m.via = via;
         m.reply_to = reply_to.and_then(|id| {
             self.with_ws(panel, |ws| {
@@ -1304,11 +1306,48 @@ impl Hub {
             let alias = self.with_ws(&panel, |ws| ws.members.iter().find(|m| m.id == member).map(|m| m.alias.clone())).unwrap_or_default();
             self.system(&panel, &member, tr!("agent.passed", alias = alias), false);
         }
+        if !passed {
+            self.share_mentioned_files(&panel, &member, &text, &cwd);
+        }
         let again = self.rt(&panel, |r| r.pending.remove(&member));
         if again {
             self.trigger(&panel, &member, &cwd).await;
         } else {
             self.member_done(&panel, &member, &cwd).await;
+        }
+    }
+
+    /// Files of the project a reply names that are for the human (data, documents, pictures, not
+    /// code) go into the chat's materials as that agent's, as if it had shared them: the human
+    /// finds them there without the agent having to know to.
+    fn share_mentioned_files(&self, panel: &str, member: &str, text: &str, cwd: &str) {
+        const KINDS: &[&str] = &["csv", "tsv", "xlsx", "xls", "pdf", "png", "jpg", "jpeg", "gif", "webp", "svg", "json", "md", "txt", "docx", "pptx"];
+        let root = std::path::Path::new(cwd);
+        let mut seen = HashSet::new();
+        for raw in text.split(|c: char| c.is_whitespace() || "`'\"()[]<>,;|*".contains(c)) {
+            let p = raw.trim_end_matches(['.', ':', '!', '?']).trim_start_matches("./");
+            let Some((_, ext)) = p.rsplit_once('.') else { continue };
+            if !KINDS.contains(&ext.to_ascii_lowercase().as_str()) || p.contains("://") || !seen.insert(p.to_string()) {
+                continue;
+            }
+            // Inside the project, said as relative or as absolute.
+            let full = if std::path::Path::new(p).is_absolute() { std::path::PathBuf::from(p) } else { root.join(p) };
+            let (Ok(full), Ok(root)) = (full.canonicalize(), root.canonicalize()) else { continue };
+            let Ok(rel) = full.strip_prefix(&root) else { continue };
+            if !full.is_file() {
+                continue;
+            }
+            let rel = rel.to_string_lossy().to_string();
+            let name = full.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(rel.clone());
+            // The project's own guidance, which agents name all the time, isn't something made for the human.
+            if ["AGENTS.md", "AGENTS.override.md", "CLAUDE.md", "CLAUDE.local.md", "README.md"].contains(&name.as_str()) {
+                continue;
+            }
+            // Already there (shared, or named before): the same card, not another.
+            let known = self.with_ws(panel, |ws| ws.artifacts.iter().any(|a| a.kind == crate::workspace::ArtifactKind::File && a.target == rel && !a.removed));
+            if !known {
+                self.record_artifact(panel, crate::workspace::ArtifactKind::File, &rel, &name, member);
+            }
         }
     }
 
@@ -1531,6 +1570,14 @@ impl Hub {
                         for r in &x.refs {
                             files.push('\n');
                             files.push_str(&ws.ref_line(r));
+                        }
+                        // Picked from the composer's menu: what to make of it, said plainly.
+                        for a in &x.asks {
+                            files.push_str(match a.as_str() {
+                                "doc" => "\n(the human asks for this as a document: write it with the `doc_write` tool, then keep your chat reply short)",
+                                "todo" => "\n(the human asks for this in the chat's todo list: add the items with `todo_add`, take one with `todo_claim` before working on it, finish it with `todo_done`)",
+                                _ => "",
+                            });
                         }
                         Some(format!("[#{} human → {to}{}]: {text}{files}", x.seq, re(x)))
                     }
@@ -2152,6 +2199,8 @@ fn group_prompt(alias: &str) -> String {
          - For anything long or visual (reports, big tables, diagrams, dashboards), call the `doc_write` tool (Recursion MCP server) \
          to save an HTML document: the human gets a card that opens it in its own panel, and every agent in the chat can read it \
          with `doc_read`. Then keep your chat reply short. Revise a document by passing its id instead of making a new one.\n\
+         - To give the human a file (a CSV, a spreadsheet, a PDF…), save it in the project and call `file_share` with its path: \
+         it opens in the app's own viewer (a CSV as a sortable table). Don't wrap a file's contents in a document.\n\
          - For architecture, workflow or sequence diagrams, call `diagram_write` with the boxes and lines as JSON; the app lays \
          them out and draws them. Fix the layout problems it reports by moving boxes to other cells.\n\
          - Documents can talk back. Inside the page, `recursion.reply(data)` delivers `data` (string or JSON) to you as the \

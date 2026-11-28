@@ -159,7 +159,7 @@ enum In {
     WsRemoveAllAgents { panel: String },
     WsRenameAgent { panel: String, member: String, alias: String },
     WsAgentSettings { panel: String, member: String, alias: String, model: Option<String>, effort: Option<String>, #[serde(default)] prompt: String, mode: workspace::PermMode, #[serde(default)] guides: workspace::Overrides, #[serde(default)] mcp: workspace::Overrides, #[serde(default)] skills: workspace::Overrides, #[serde(default)] rule_picks: workspace::Overrides },
-    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
+    WsSend { panel: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef>, #[serde(default)] asks: Vec<String> },
     /// Start the chat again from the human's message `msg`: it and everything after are deleted,
     /// the agents' conversations go back to before it, and `text` is sent in its place.
     WsRewind { panel: String, msg: String, text: String, #[serde(default)] reply_to: Option<String>, #[serde(default)] files: Vec<String>, #[serde(default)] refs: Vec<workspace::OutputRef> },
@@ -665,6 +665,11 @@ impl App {
                     workspace::ArtifactKind::Doc | workspace::ArtifactKind::Diagram => {
                         st.open_doc(&panel, &a.target, true).map_err(e)?;
                     }
+                    workspace::ArtifactKind::File => {
+                        drop(st);
+                        self.usable_file(&panel, &a.target).ok_or_else(|| i18n::t("file.err.outside"))?;
+                        self.state.lock().unwrap().open_file(&panel, &a.target, true).map_err(e)?;
+                    }
                     workspace::ArtifactKind::Page => {
                         let (p, _) = st.agent_browser(&panel, &a.by).map_err(e)?;
                         st.set_panel_url(&p, a.target).map_err(e)?;
@@ -858,9 +863,9 @@ impl App {
                 }
                 self.keep_removed(&panel, gone);
             }
-            WsSend { panel, text, reply_to, files, refs } => {
+            WsSend { panel, text, reply_to, files, refs, asks } => {
                 let cwd = self.state.lock().unwrap().panel_cwd(&panel).ok_or("panel not found")?;
-                self.hub.send(&panel, text, cwd, None, reply_to.as_deref(), files, refs).await?;
+                self.hub.send(&panel, text, cwd, None, reply_to.as_deref(), files, refs, asks).await?;
                 changed = false;
             }
             WsRewind { panel, msg, text, reply_to, files, refs } => {
