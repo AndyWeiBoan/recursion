@@ -259,7 +259,7 @@ function PanelView({ panel, ctx }: { panel: Panel; ctx: Ctx }) {
           >
             <Icon name="splitDown" />
           </button>
-          <button title={t("common.close") + "（⌘W）"} onClick={() => closeChecked(`panel:${panel.id}`, [panel.id], () => send({ t: "panel_close", panel: panel.id }))}><Icon name="close" /></button>
+          <button title={t("common.close") + "（⌘W）"} onClick={() => closeChecked(`panel:${panel.id}`, [panel.id], () => send({ t: "panel_close", panel: panel.id }))}><Icon name="close" size={18} /></button>
         </span>
         {menu && <PanelContextMenu p={panel} at={menu} onRename={() => setRenaming(true)} onClose={() => setMenu(null)} />}
       </header>

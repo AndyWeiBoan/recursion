@@ -33,7 +33,7 @@ export function AgentsPanel({ state, chats, roster }: { state: State; chats: Rec
       return !v;
     });
   const all: Entry[] = state.sessions.flatMap((s) =>
-    (chats[s.id] ?? []).flatMap((c) => (roster[c.panel] ?? []).map((m) => ({ m, panel: c.panel, where: `${s.name} · ${c.label}` }))),
+    (chats[s.id] ?? []).flatMap((c) => (roster[c.panel] ?? []).map((m) => ({ m, panel: c.panel, where: `${s.name} › ${c.label}` }))),
   );
   // Replies from before this list first saw a chat aren't news.
   useEffect(() => {

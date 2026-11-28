@@ -80,6 +80,13 @@ pub struct Session {
     /// The human's MCP servers (by name, from `mcp.json`) this session's agents get.
     #[serde(default)]
     pub mcp: Vec<String>,
+    /// What every agent of the project is told (see guides.rs); a chat's rules go above it.
+    #[serde(default)]
+    pub prompt: String,
+    /// The guidance files in the folder ticked for the agents; None = not chosen yet, the folder's
+    /// own AGENTS.md and CLAUDE.md (and the human's own files), as the CLIs would read them.
+    #[serde(default)]
+    pub guides: Option<Vec<String>>,
 }
 
 /// Starting values for agents added in a session; empty fields keep the form's own defaults.
@@ -368,6 +375,8 @@ impl State {
             docs: vec![],
             defaults: AgentDefaults::default(),
             mcp: vec![],
+            prompt: String::new(),
+            guides: None,
         };
         self.sessions.push(session);
         self.active_session = Some(id.clone());
@@ -430,7 +439,7 @@ impl State {
                     Some(s) => s.id.clone(),
                     None => {
                         let id = new_id();
-                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default(), mcp: vec![] });
+                        self.sessions.push(Session { id: id.clone(), group: group_from_cwd(&cwd), name: session_name, cwd, windows: vec![], active_window: None, docs: vec![], defaults: AgentDefaults::default(), mcp: vec![], prompt: String::new(), guides: None });
                         id
                     }
                 };

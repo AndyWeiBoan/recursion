@@ -7,6 +7,7 @@ import { accountName, requestAddAgent, requestChatSettings, send, useAccounts } 
 import { Avatar, isRunning, modelLabel, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon, type IconName } from "./icons";
+import { openAgentInfo } from "./AgentInfo";
 import { closeChecked } from "./closing";
 
 function k(n: number) {
@@ -43,6 +44,7 @@ function ContextBar({ m }: { m: Member }) {
 function AgentRow({ m, panel }: { m: Member; panel: string }) {
   const acct = accountName(useAccounts(), m);
   const [menu, setMenu] = useState(false);
+  const more = useRef<HTMLButtonElement>(null);
   const [editing, setEditing] = useState(false);
   const busy = m.status !== "idle";
   const running = isRunning(m);
@@ -97,6 +99,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
       )}
       {!editing && !busy && (
         <button
+          ref={more}
           className="sess-more"
           aria-label={t("agent.menu", { alias: m.alias })}
           onClick={(e) => {
@@ -108,7 +111,8 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
         </button>
       )}
       {menu && (
-        <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(false)}>
+        <FloatMenu anchor={more.current} onClose={() => setMenu(false)}>
+          <button onClick={() => (setMenu(false), openAgentInfo({ panel, member: m.id }))}>{t("info.open")}</button>
           <button onClick={() => (setMenu(false), setEditing(true))}>{t("common.rename")}</button>
           <button disabled={!m.cli_session_id} title={t("agent.compactHint")} onClick={() => (setMenu(false), send({ t: "ws_compact", panel, member: m.id }))}>
             {t("agent.compact")}
@@ -124,7 +128,7 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
           <button className="danger" onClick={() => (setMenu(false), send({ t: "ws_remove_agent", panel, member: m.id }))}>
             {t("agent.remove", { alias: m.alias })}
           </button>
-        </div>
+        </FloatMenu>
       )}
     </div>
   );
@@ -205,6 +209,49 @@ export function describe(p: Panel, n: number, docs: Doc[], terms: Record<string,
   return { icon: ICON.browser, cls: "browser", label: named("kind.browser"), detail: p.url ? host(p.url) : t("browser.newTab") };
 }
 
+/** A ⋯ button's menu, drawn above everything at the button (not inside the scrolling sidebar,
+ * which would cut it off near its bottom) and opening upward when there is no room below. */
+export function FloatMenu({ anchor, onClose, children }: { anchor: HTMLElement | null; onClose: () => void; children: React.ReactNode }) {
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    const restore = overlay();
+    const away = (e: Event) => {
+      const el = e.target as HTMLElement;
+      if (!el.closest?.(".float-menu") && !anchor?.contains(el)) close.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") (e.stopPropagation(), close.current());
+    };
+    window.addEventListener("mousedown", away, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("blur", close.current);
+    return () => {
+      window.removeEventListener("mousedown", away, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", close.current);
+      restore();
+    };
+  }, [anchor]);
+  if (!anchor) return null;
+  const r = anchor.getBoundingClientRect();
+  return createPortal(
+    <div
+      className="menu float-menu"
+      style={{ top: r.bottom + 4, right: window.innerWidth - r.right }}
+      ref={(el) => {
+        if (el && r.bottom + 4 + el.offsetHeight > window.innerHeight - 8) el.style.top = `${Math.max(8, r.top - 4 - el.offsetHeight)}px`;
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+      onMouseLeave={() => close.current()}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 /** A panel's menu: the same from its ⋯, from a right-click on its sidebar row, and on its tab. */
 function PanelMenuItems({ p, close, onRename }: { p: Panel; close: () => void; onRename: () => void }) {
   return (
@@ -263,6 +310,7 @@ export function PanelContextMenu({ p, at, onRename, onClose }: { p: Panel; at: {
 function PanelRow({
   p,
   n,
+  shown,
   docs,
   terms,
   members,
@@ -271,6 +319,8 @@ function PanelRow({
 }: {
   p: Panel;
   n: number;
+  /** It is the panel on screen. */
+  shown: boolean;
   docs: Doc[];
   terms: Record<string, TermInfo>;
   members: Member[];
@@ -285,7 +335,12 @@ function PanelRow({
       {at && <PanelContextMenu p={p} at={at} onRename={() => setEditing(true)} onClose={() => setAt(null)} />}
       <div
         className="tree-row"
-        onClick={() => send({ t: "panel_focus", panel: p.id })}
+        // A chat with agents: the first click shows it (unfolding it), the next ones fold it.
+        onClick={() => {
+          if (shown && members.length) return onFold();
+          send({ t: "panel_focus", panel: p.id });
+          if (folded) onFold();
+        }}
         onContextMenu={(e) => (e.preventDefault(), setAt({ x: e.clientX, y: e.clientY }))}
       >
         {members.length > 0 ? (
@@ -335,9 +390,11 @@ function WindowGroup({ on, children }: { on: boolean; children: React.ReactNode 
 /** "⋯" at the end of a row, opening the menu `children` draws (given a way to close it). */
 function RowMenu({ label, children }: { label: string; children: (close: () => void) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const more = useRef<HTMLButtonElement>(null);
   return (
     <span className="tree-menu-wrap">
       <button
+        ref={more}
         className="sess-more tree-more"
         aria-label={label}
         onClick={(e) => {
@@ -349,9 +406,9 @@ function RowMenu({ label, children }: { label: string; children: (close: () => v
         <Icon name="more" />
       </button>
       {open && (
-        <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setOpen(false)}>
+        <FloatMenu anchor={more.current} onClose={() => setOpen(false)}>
           {children(() => setOpen(false))}
-        </div>
+        </FloatMenu>
       )}
     </span>
   );
@@ -395,7 +452,7 @@ export function SessionTree({ session, state, terms, roster }: { session: Sessio
           {leaves(w.root)
             .filter((id) => state.panels[id])
             .map((id) => (
-              <PanelRow key={id} p={state.panels[id]} n={nth.get(id) ?? 1} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
+              <PanelRow key={id} p={state.panels[id]} n={nth.get(id) ?? 1} shown={session.id === state.active_session && w.id === session.active_window && w.focus === id} docs={docs} terms={terms} members={roster[id] ?? []} folded={folded.has(id)} onFold={() => fold(id)} />
             ))}
         </WindowGroup>
       ))}

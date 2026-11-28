@@ -22,7 +22,7 @@ export function StatusDot({ status }: { status?: McpStatus }) {
   return <span className={`mcp-dot ${cls}`} aria-hidden="true" />;
 }
 
-function statusLine(s?: McpStatus) {
+export function statusLine(s?: McpStatus) {
   if (!s) return t("mcp.untested");
   if (s.state === "testing") return t("mcp.testing");
   if (s.state === "ok") return t("mcp.ok", { n: s.tools ?? 0 });
@@ -253,30 +253,3 @@ export function McpPane() {
 }
 
 /** A session's MCP servers: tick the ones its agents get. */
-export function McpChecks({ value, onChange, onManage }: { value: string[]; onChange: (v: string[]) => void; onManage: () => void }) {
-  const m = useMcp();
-  const names = Object.keys(m?.servers ?? {});
-  return (
-    <div className="field">
-      <span>{t("mcp.session")}</span>
-      <span className="field-hint">{t("mcp.sessionHint")}</span>
-      {names.length ? (
-        <div className="mcp-checks">
-          {names.map((n) => (
-            <label key={n} className="mcp-check">
-              <input type="checkbox" checked={value.includes(n)} onChange={(e) => onChange(e.target.checked ? [...value, n] : value.filter((x) => x !== n))} />
-              <StatusDot status={m!.status[n]} />
-              <b>{n}</b>
-              <span className="dim">{statusLine(m!.status[n])}</span>
-            </label>
-          ))}
-        </div>
-      ) : (
-        <p className="dim mcp-none">{t("mcp.noneYet")}</p>
-      )}
-      <button type="button" className="acct-new" onClick={onManage}>
-        {t("mcp.manage")}
-      </button>
-    </div>
-  );
-}

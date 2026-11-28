@@ -196,6 +196,18 @@ export async function connect() {
           fileContent.set(`${m.panel}/${m.path}`, m.file);
           fileSubs.forEach((f) => f());
           break;
+        case "guides":
+          guideLists.set(m.session, { found: m.found, picks: m.picks });
+          guideSubs.forEach((f) => f());
+          break;
+        case "agent_info":
+          agentInfo.set(`${m.panel}/${m.member}`, m as AgentInfo);
+          guideSubs.forEach((f) => f());
+          break;
+        case "guide":
+          guideText.set(`${m.session}/${m.path}`, m.text);
+          guideSubs.forEach((f) => f());
+          break;
         case "files_granted":
           grantWaiters.get(m.panel)?.(m.paths);
           grantWaiters.delete(m.panel);
@@ -526,6 +538,46 @@ function requestInChat(panel: string, what: ChatAsk) {
 }
 export const requestAddAgent = (panel: string) => requestInChat(panel, "addAgent");
 export const requestChatSettings = (panel: string) => requestInChat(panel, "settings");
+
+// ---------- a project's guidance files (AGENTS.md, CLAUDE.md…; see guides.rs) ----------
+export type GuideFile = { path: string; lines: number };
+const guideLists = new Map<string, { found: GuideFile[]; picks: string[] }>();
+const guideText = new Map<string, string>();
+const guideSubs = new Set<() => void>();
+const useGuideStore = <T,>(get: () => T) =>
+  useSyncExternalStore(
+    (f) => (guideSubs.add(f), () => guideSubs.delete(f)),
+    get,
+  );
+/** The files found in the session's folder and which are ticked; looked up afresh on open. */
+export function useGuides(session: string) {
+  useEffect(() => send({ t: "guides_list", session }), [session]);
+  return useGuideStore(() => guideLists.get(session));
+}
+/** One of them, for its preview card. */
+export function useGuide(session: string, path: string | null) {
+  useEffect(() => {
+    if (path) send({ t: "guide_read", session, path });
+  }, [session, path]);
+  return useGuideStore(() => (path ? guideText.get(`${session}/${path}`) : undefined));
+}
+
+// ---------- one agent's info card (agents/info.rs) ----------
+export type AgentInfo = {
+  kind: AgentKind;
+  account: string;
+  /** Its CLI has started (and said what it has) since the daemon did. */
+  running: boolean;
+  cli: Record<string, unknown> | null;
+  mcp: string[];
+  parts: { id: "system" | "project" | "rules" | "members" | "todos"; text: string; how?: string }[];
+};
+const agentInfo = new Map<string, AgentInfo>();
+/** Asked afresh on open and on `refresh` changing. */
+export function useAgentInfo(panel: string, member: string, refresh: number) {
+  useEffect(() => send({ t: "agent_info", panel, member }), [panel, member, refresh]);
+  return useGuideStore(() => agentInfo.get(`${panel}/${member}`));
+}
 
 // ---------- accounts ----------
 /** The human's MCP servers (keys hidden), their last connection test, and what the CLIs have. */

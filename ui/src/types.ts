@@ -48,6 +48,10 @@ export interface Session {
   defaults?: AgentDefaults;
   /** The human's MCP servers this session's agents get. */
   mcp?: string[];
+  /** What every agent of the project is told (a chat's rules go above it). */
+  prompt?: string;
+  /** Guidance files ticked for the agents; absent = not chosen yet (the daemon's defaults). */
+  guides?: string[] | null;
 }
 
 /** An HTML document an agent wrote for the session; browser panels show it at `doc:<id>`. */
@@ -116,7 +120,10 @@ export type Cmd =
   | { t: "ws_add_agent"; panel: string; kind: AgentKind; alias: string; model?: string | null; account?: string | null; mode: PermMode }
   | { t: "ws_set_mode"; panel: string; member: string; mode: PermMode }
   | { t: "set_lang"; lang: string | null }
-  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults; mcp?: string[] }
+  | { t: "session_settings"; session: string; cwd: string; defaults: AgentDefaults; mcp?: string[]; prompt?: string; guides?: string[] }
+  | { t: "guides_list"; session: string }
+  | { t: "agent_info"; panel: string; member: string }
+  | { t: "guide_read"; session: string; path: string }
   | { t: "ws_settings"; panel: string; settings: ChatSettings }
   | { t: "ws_compact"; panel: string; member: string }
   | { t: "accounts_list" }

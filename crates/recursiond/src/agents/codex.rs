@@ -104,7 +104,8 @@ impl Hub {
         let dir = if std::path::Path::new(cwd).is_dir() { cwd.to_string() } else { dirs::home_dir().unwrap_or_default().to_string_lossy().to_string() };
         let enabled = self.session_mcp(panel);
         let mut cmd = Command::new(bin);
-        cmd.arg("app-server").current_dir(&dir).env("PATH", &env.path);
+        // Guidance files reach it from Recursion, only those the human ticked (guides.rs).
+        cmd.args(["-c", crate::guides::CODEX_NO_DOCS, "app-server"]).current_dir(&dir).env("PATH", &env.path);
         self.accounts.apply(&mut cmd, m.kind, m.account.as_deref());
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.update_member(panel, &m.id, |m| m.status = MemberStatus::Starting);
@@ -197,6 +198,7 @@ impl Hub {
             None => rpc.call(self, panel, &m.id, "thread/start", params.clone()).await?,
         };
         let tid = result["thread"]["id"].as_str().ok_or("Codex returned no thread id")?.to_string();
+        self.codex_started(panel, &m.id, &result, enabled.clone());
         if let Some(model) = result["model"].as_str().filter(|s| !s.is_empty()) {
             let model = model.to_string();
             self.update_member(panel, &m.id, |m| m.running_model = Some(model));

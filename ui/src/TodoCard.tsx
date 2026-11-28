@@ -25,15 +25,7 @@ const useOpen = () =>
     () => open,
   );
 
-const KEY = "recursion.todoCard";
 type Place = { x: number; y: number; w: number; h: number };
-function savedPlace(): Place {
-  try {
-    const p = JSON.parse(localStorage.getItem(KEY) ?? "null");
-    if (p && [p.x, p.y, p.w, p.h].every(Number.isFinite)) return p;
-  } catch {}
-  return { x: Math.max(16, window.innerWidth / 2 - 190), y: 80, w: 380, h: 300 };
-}
 // Not too big (a long card scrolls inside), and on screen however the window changed since.
 const MAX_W = 720,
   MAX_H = 600;
@@ -42,10 +34,55 @@ const fit = (p: Place): Place => {
   const h = Math.min(Math.max(p.h, 180), MAX_H, window.innerHeight - 16);
   return { w, h, x: Math.min(Math.max(p.x, 8), window.innerWidth - w - 8), y: Math.min(Math.max(p.y, 8), window.innerHeight - h - 8) };
 };
-function savePlace(p: Place) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(p));
-  } catch {}
+
+/** A floating card's place: moved by its title bar (`drag`), resized by its corner grip
+ *  (`resize`), both remembered under `key`. Shared by the todo cards and the guidance-file
+ *  previews. */
+export function useCardPlace(key: string) {
+  const [place, setPlace] = useState<Place>(() => {
+    try {
+      const p = JSON.parse(localStorage.getItem(key) ?? "null");
+      if (p && [p.x, p.y, p.w, p.h].every(Number.isFinite)) return fit(p);
+    } catch {}
+    return fit({ x: Math.max(16, window.innerWidth / 2 - 190), y: 80, w: 380, h: 300 });
+  });
+  const follow = (cls: string, to: (ev: PointerEvent) => Place) => {
+    let last = place;
+    const move = (ev: PointerEvent) => setPlace((last = to(ev)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove(cls);
+      try {
+        localStorage.setItem(key, JSON.stringify(last));
+      } catch {}
+    };
+    document.body.classList.add(cls);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  const drag = (e: React.PointerEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
+    e.preventDefault();
+    const x0 = e.clientX - place.x,
+      y0 = e.clientY - place.y;
+    follow("card-dragging", (ev) => fit({ ...place, x: ev.clientX - x0, y: ev.clientY - y0 }));
+  };
+  // Our own corner grip: CSS `resize` does nothing in macOS's WebView, whose scrolling body
+  // covers the corner. Growing stops at the window's edge rather than moving the card.
+  const resize = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const x0 = e.clientX - place.w,
+      y0 = e.clientY - place.h;
+    follow("card-resizing", (ev) => ({
+      ...place,
+      w: Math.min(Math.max(ev.clientX - x0, 280), MAX_W, window.innerWidth - place.x - 8),
+      h: Math.min(Math.max(ev.clientY - y0, 180), MAX_H, window.innerHeight - place.y - 8),
+    }));
+  };
+  return { place, drag, resize };
 }
 
 /** The open card, if any. Mounted once, at the top of the app. */
@@ -59,7 +96,7 @@ function TodoCard({ panel, list, item }: Open) {
   const l = ws?.todo_lists?.find((x) => x.id === list);
   const todo = l?.items.find((x) => x.id === item);
   const note = todo?.note ?? "";
-  const [place, setPlace] = useState(() => fit(savedPlace()));
+  const { place, drag, resize } = useCardPlace("recursion.todoCard");
   const [editing, setEditing] = useState<string | null>(null);
   const [link, setLink] = useState<{ x: number; y: number; href: string } | null>(null);
   const card = useRef<HTMLDivElement>(null);
@@ -84,51 +121,6 @@ function TodoCard({ panel, list, item }: Open) {
   }, [editing, link]);
   if (!todo || !l) return null;
 
-  const drag = (e: React.PointerEvent) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    e.preventDefault();
-    const x0 = e.clientX - place.x,
-      y0 = e.clientY - place.y;
-    let last = place;
-    const move = (ev: PointerEvent) => {
-      last = fit({ ...place, x: ev.clientX - x0, y: ev.clientY - y0 });
-      setPlace(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.classList.remove("card-dragging");
-      savePlace(last);
-    };
-    document.body.classList.add("card-dragging");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-  // Our own corner grip: CSS `resize` does nothing in macOS's WebView, whose scrolling body
-  // covers the corner. Growing stops at the window's edge rather than moving the card.
-  const resize = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const x0 = e.clientX - place.w,
-      y0 = e.clientY - place.h;
-    let last = place;
-    const move = (ev: PointerEvent) => {
-      const w = Math.min(Math.max(ev.clientX - x0, 280), MAX_W, window.innerWidth - place.x - 8);
-      const h = Math.min(Math.max(ev.clientY - y0, 180), MAX_H, window.innerHeight - place.y - 8);
-      last = { ...place, w, h };
-      setPlace(last);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.classList.remove("card-resizing");
-      savePlace(last);
-    };
-    document.body.classList.add("card-resizing");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
   const save = () => {
     if (editing === null) return;
     send({ t: "todo_update", panel, list, id: item, note: editing });

@@ -6,18 +6,19 @@ import { LayoutView, useDragWidth } from "./Layout";
 import { closePicker, pickerOpen, registerPicker, requestKind } from "./picker";
 import { pruneTerminals } from "./terminals";
 import { TodoCardLayer } from "./TodoCard";
+import { AgentInfoLayer } from "./AgentInfo";
 import { listenZoomKeys, restoreZoom, zoom } from "./zoom";
 import { listenForDrops } from "./drop";
 import { overlay, pruneBrowsers, viewerPath, zoomBrowser } from "./browsers";
 import { startTabDrag, usePanelDrag } from "./panelDrag";
-import { describe, InlineEdit, PanelContextMenu, panelNumbers, SessionTree } from "./SessionTree";
+import { describe, FloatMenu, InlineEdit, PanelContextMenu, panelNumbers, SessionTree } from "./SessionTree";
 import { ago, openSettings, SettingsModal } from "./Settings";
 import { openSessionSettings, SessionSettingsModal } from "./ScopeSettings";
 import { UsagePanel } from "./Usage";
 import { UpdateNotice } from "./Update";
 import { Onboarding, SetupTerminal } from "./Setup";
 import { closeThreads, useZoomed } from "./threadsUI";
-import { chatsOf, leaves, type Closed, type PanelKind, type Session, type State, type TermInfo } from "./types";
+import { chatsOf, leaves, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon } from "./icons";
 import { closeChecked } from "./closing";
 import { AgentsPanel } from "./AgentsPanel";
@@ -228,6 +229,7 @@ export default function App() {
       {pick && <KindPicker req={pick} close={closePicker} />}
       <Toast />
       <TodoCardLayer />
+      <AgentInfoLayer />
       <UpdateNotice />
       <Onboarding />
       <SetupTerminal />
@@ -250,6 +252,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
   const groups: [string, Session[]][] = [["", state?.sessions ?? []]];
   const [editing, setEditing] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
+  const [menuAt, setMenuAt] = useState<HTMLElement | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -321,6 +324,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                       className="sess-more"
                       onClick={(e) => {
                         e.stopPropagation();
+                        setMenuAt(e.currentTarget);
                         setMenu(menu === s.id ? null : s.id);
                       }}
                       aria-label={t("common.more")}
@@ -328,7 +332,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                       <Icon name="more" />
                     </button>
                     {menu === s.id && (
-                      <div className="menu sess-menu" onClick={(e) => e.stopPropagation()} onMouseLeave={() => setMenu(null)}>
+                      <FloatMenu anchor={menuAt} onClose={() => setMenu(null)}>
                         <button
                           onClick={(e) => {
                             const anchor = e.currentTarget.getBoundingClientRect();
@@ -346,7 +350,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
                         <button onClick={() => (setMenu(null), send({ t: "session_close", session: s.id }))} title={t("session.closeHint")}>
                           {t("session.close")}
                         </button>
-                      </div>
+                      </FloatMenu>
                     )}
                   </div>
                   {state && !collapsed.has(s.id) && <SessionTree session={s} state={state} terms={terms} roster={roster} />}
@@ -357,7 +361,6 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
         ))}
       </nav>
       <div className="side-foot">
-        <ClosedList closed={state?.closed ?? []} />
         {state && <AgentsPanel state={state} chats={chats} roster={roster} />}
         <UsagePanel />
         <button className="side-accounts" onClick={() => openSettings()} title={`${t("settings.title")}（${isMac ? "⌘," : "Ctrl+,"}）`}>
@@ -372,48 +375,54 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
 }
 
 /** What was closed, to open again or delete for good. */
-function ClosedList({ closed }: { closed: Closed[] }) {
-  const [open, setOpen] = useState(false);
+/** What was closed, to open again or delete for good: an icon at the right end of the tab bar
+ * (one for the whole app), its count on it, the list in a menu under it. */
+function ClosedButton() {
+  const closed = useSnapshot().state?.closed ?? [];
+  const [at, setAt] = useState<HTMLElement | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   if (!closed.length) return null;
+  const close = () => (setAt(null), setConfirm(null));
   return (
-    <div className="closed">
-      <button className="side-accounts" onClick={() => (setOpen(!open), setConfirm(null))} aria-expanded={open}>
-        <Icon name="recent" size={14} /> {t("closed.title")}
-        <span className="dim">{closed.length}</span>
+    <>
+      <button className={`icon-btn closed-btn${at ? " on" : ""}`} onClick={(e) => (at ? close() : setAt(e.currentTarget))} title={t("closed.title")} aria-label={t("closed.title")} aria-expanded={!!at}>
+        <Icon name="recent" />
+        <span className="closed-n">{closed.length}</span>
       </button>
-      {open && (
-        <div className="menu closed-menu" onMouseLeave={() => (setOpen(false), setConfirm(null))}>
-          <div className="menu-label">{t("closed.hint")}</div>
-          {[...closed].reverse().map((c) => {
-            const name = c.kind === "session" ? c.session.name : c.panel.title || t("kind.workspace");
-            const where = c.kind === "session" ? c.session.cwd.replace(/^\/(Users|home)\/[^/]+/, "~") : c.session_name;
-            return (
-              <div key={c.id} className="closed-row">
-                <button className="closed-open" onClick={() => (setOpen(false), send({ t: "closed_reopen", id: c.id }))} title={t("closed.reopen")}>
-                  <span className="closed-ic"><Icon name={c.kind === "session" ? "folder" : "chat"} size={14} /></span>
-                  <span className="closed-main">
-                    <b>{name}</b>
-                    <span className="dim">
-                      {where} · {ago(c.at)}
+      {at && (
+        <FloatMenu anchor={at} onClose={close}>
+          <div className="closed-menu">
+            <div className="menu-label">{t("closed.hint")}</div>
+            {[...closed].reverse().map((c) => {
+              const name = c.kind === "session" ? c.session.name : c.panel.title || t("kind.workspace");
+              const where = c.kind === "session" ? c.session.cwd.replace(/^\/(Users|home)\/[^/]+/, "~") : c.session_name;
+              return (
+                <div key={c.id} className="closed-row">
+                  <button className="closed-open" onClick={() => (close(), send({ t: "closed_reopen", id: c.id }))} title={t("closed.reopen")}>
+                    <span className="closed-ic"><Icon name={c.kind === "session" ? "folder" : "chat"} size={14} /></span>
+                    <span className="closed-main">
+                      <b>{name}</b>
+                      <span className="dim">
+                        {where} · {ago(c.at)}
+                      </span>
                     </span>
-                  </span>
-                </button>
-                {confirm === c.id ? (
-                  <button className="danger closed-del" onClick={() => (setConfirm(null), send({ t: "closed_delete", id: c.id }))}>
-                    {t("closed.confirmDelete")}
                   </button>
-                ) : (
-                  <button className="closed-del" onClick={() => setConfirm(c.id)} title={t("closed.delete")} aria-label={t("closed.delete")}>
-                    <Icon name="close" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                  {confirm === c.id ? (
+                    <button className="danger closed-del" onClick={() => (setConfirm(null), send({ t: "closed_delete", id: c.id }))}>
+                      {t("closed.confirmDelete")}
+                    </button>
+                  ) : (
+                    <button className="closed-del" onClick={() => setConfirm(c.id)} title={t("closed.delete")} aria-label={t("closed.delete")}>
+                      <Icon name="close" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </FloatMenu>
       )}
-    </div>
+    </>
   );
 }
 
@@ -476,6 +485,7 @@ function Tabs({ session, state, terms }: { session: Session; state: State; terms
       </button>
       {drag && !drag.solo && <div className={`tab tab-ghost${drag.target?.kind === "new" ? " drop" : ""}`}><Icon name="add" size={14} /> {t("panel.ownWindow")}</div>}
       <div className="tabs-fill" data-tauri-drag-region />
+      <ClosedButton />
     </div>
   );
 }
@@ -507,6 +517,8 @@ function EmptyProject({ session }: { session: Session }) {
     <div className="empty">
       <div className="tabs" data-tauri-drag-region>
         <div className="tabs-fill" data-tauri-drag-region />
+        <ClosedButton />
+      <ClosedButton />
       </div>
       <div className="empty-body">
         <div className="ws-glyph"><Icon name="terminal" size={40} /></div>
@@ -526,6 +538,8 @@ function Empty({ status, error, hasState }: { status: string; error: string | nu
     <div className="empty">
       <div className="tabs" data-tauri-drag-region>
         <div className="tabs-fill" data-tauri-drag-region />
+        <ClosedButton />
+      <ClosedButton />
       </div>
       <div className="empty-body">
         {!hasState ? (

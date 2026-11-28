@@ -21,7 +21,7 @@ import { closeThreads, openThreads, useThreadsUI } from "./threadsUI";
 import { accountName, isMac, onChatRequest, toast, onReconnect, openExternal, grantComputerFiles, pasteImage, send, useAccounts, useModels, useRoster, useSnapshot, useWorkspace } from "./client";
 import { takeDrops } from "./drop";
 import { RefChip, takeRefs } from "./refs";
-import { chatsOf, leaves, PERM_MODES, type Account, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
+import { chatsOf, leaves, PERM_MODES, type Account, type AgentDefaults, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
 import { markSeen } from "./seen";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
@@ -257,7 +257,8 @@ export function Modal({ title, onClose, children, escape = true }: { title: stri
   useEffect(() => {
     const restore = overlay(); // native browser panels would draw on top of it
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && esc.current) {
+      // A card floating above it (a todo's, a guidance file's) takes Esc first.
+      if (e.key === "Escape" && esc.current && !document.querySelector(".todo-card")) {
         e.stopPropagation();
         close.current();
       }
@@ -294,11 +295,21 @@ export function ChatHead({ panel }: { panel: string }) {
   const accounts = useAccounts();
   const [adding, setAdding] = useState(false);
   const [setting, setSetting] = useState(false);
-  useEffect(() => onChatRequest(panel, (what) => (what === "settings" ? setSetting(true) : setAdding(true))), [panel]);
   const members = ws?.members ?? [];
   // The empty chat shows the big form instead; otherwise "add" must always be reachable,
   // including when every agent was removed from a chat that has history.
-  if (!ws || (members.length === 0 && ws.messages.length === 0)) return <span className="title" />;
+  const empty = !ws || (members.length === 0 && ws.messages.length === 0);
+  // Asked from the sidebar: an empty chat already shows the add-agent form, so a second one must
+  // not be left waiting to pop up once the first agent is in.
+  const emptyNow = useRef(empty);
+  emptyNow.current = empty;
+  useEffect(() => onChatRequest(panel, (what) => (what === "settings" ? setSetting(true) : !emptyNow.current && setAdding(true))), [panel]);
+  const settings = setting && (
+    <Modal title={tr("scope.chat")} onClose={() => setSetting(false)}>
+      <ChatSettingsForm panel={panel} onDone={() => setSetting(false)} />
+    </Modal>
+  );
+  if (empty) return <span className="title">{settings}</span>;
   const cost = members.reduce((s, m) => s + (m.cost_usd || 0), 0);
   // As the 產出 list counts them: no pages the agents opened, and the pictures the human attached.
   const pictures = ws.messages.reduce((n, m) => n + (m.from === "you" ? (m.files ?? []).filter(isImagePath).length : 0), 0);
@@ -354,11 +365,7 @@ export function ChatHead({ panel }: { panel: string }) {
       <button className={`chat-gear${ws.settings?.rules ? " has-rules" : ""}`} onClick={() => setSetting(true)} title={tr("scope.chat")} aria-label={tr("scope.chat")}>
         <Icon name="settings" />
       </button>
-      {setting && (
-        <Modal title={tr("scope.chat")} onClose={() => setSetting(false)}>
-          <ChatSettingsForm panel={panel} onDone={() => setSetting(false)} />
-        </Modal>
-      )}
+      {settings}
     </span>
   );
 }
@@ -368,11 +375,26 @@ const KIND_INFO: Record<AgentKind, { vendor: string; hint: string }> = {
   codex: { vendor: "OpenAI", get hint() { return tr("agent.kindHint", { cli: "codex" }); } },
 };
 
+// The add-agent form starts from what was picked the last time (kind, model per kind, mode).
+const LAST_AGENT = "recursion.lastAgent";
+function lastAgent(): AgentDefaults {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_AGENT) ?? "{}") ?? {};
+  } catch {
+    return {};
+  }
+}
+function rememberAgent(kind: AgentKind, model: string, mode: PermMode) {
+  const d = { ...lastAgent(), kind, mode, [kind === "claude" ? "claude_model" : "codex_model"]: model || undefined };
+  try {
+    localStorage.setItem(LAST_AGENT, JSON.stringify(d));
+  } catch {}
+}
+
 function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone?: () => void }) {
   // Any chat of this session can be the target; the one it was opened from is the default.
   const { state } = useSnapshot();
-  // The session's defaults (its settings) are where the form starts.
-  const defaults = state?.sessions.find((x) => x.windows.some((w) => leaves(w.root).includes(panel)))?.defaults ?? {};
+  const [defaults] = useState(lastAgent);
   const defaultModel = (k: AgentKind) => (k === "claude" ? defaults.claude_model : defaults.codex_model) ?? "";
   const [kind, setKind] = useState<AgentKind>(defaults.kind ?? "claude");
   const chats = useMemo(() => {
@@ -421,6 +443,7 @@ function AddAgent({ panel, big, onDone }: { panel: string; big?: boolean; onDone
         e.preventDefault();
         if (!pickedAccount) return;
         send({ t: "ws_add_agent", panel: target, kind, alias, model: model || null, account: pickedAccount.id, mode });
+        rememberAgent(kind, model, mode);
         if (target !== panel) send({ t: "panel_focus", panel: target });
         onDone?.();
       }}

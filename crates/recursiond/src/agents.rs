@@ -15,6 +15,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::broadcast;
 
 mod codex;
+mod info;
 mod models;
 mod polls;
 mod rewind;
@@ -126,6 +127,10 @@ struct Runtime {
     /// Bumped when the chat's rules change; each member gets them again once (see `deliver`).
     rules_version: u64,
     rules_seen: HashMap<String, u64>,
+    /// What each member's CLI said it has when it last started (see info.rs).
+    cli_info: HashMap<String, Value>,
+    /// What each member was last told about the project (see `project_lookup`).
+    project_seen: HashMap<String, String>,
     /// The todo list as each member last read it; it gets the list again when it changed.
     todos_seen: HashMap<String, String>,
     /// Members compacting their conversation → the chat's folder, to deliver what waited meanwhile.
@@ -243,6 +248,8 @@ pub struct Hub {
     pub mcps: crate::mcp::Mcps,
     /// A chat's session → the MCP servers it turned on (set by the app, which has the sessions).
     mcp_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Vec<String> + Send + Sync>>,
+    /// A chat → what its agents are told about its project (guides.rs `brief`), set by the app.
+    project_lookup: std::sync::OnceLock<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 }
 
 fn mid() -> String {
@@ -272,6 +279,7 @@ impl Hub {
             accounts: crate::accounts::Accounts::load(),
             mcps: crate::mcp::Mcps::load(),
             mcp_lookup: Default::default(),
+            project_lookup: Default::default(),
         })
     }
 
@@ -526,6 +534,10 @@ impl Hub {
 
     pub fn set_mcp_lookup(&self, f: impl Fn(&str) -> Vec<String> + Send + Sync + 'static) {
         let _ = self.mcp_lookup.set(Box::new(f));
+    }
+
+    pub fn set_project_lookup(&self, f: impl Fn(&str) -> Option<String> + Send + Sync + 'static) {
+        let _ = self.project_lookup.set(Box::new(f));
     }
 
     /// The MCP servers (of the human's) a chat's agents get: what its session turned on.
@@ -1321,6 +1333,18 @@ impl Hub {
             text.push_str(&format!("[Recursion] Members of this chat: {roster}. You are @{}.\n", m.alias));
             self.rt(panel, |r| r.roster_seen.insert(m.id.clone(), ver));
         }
+        // The project's prompt and chosen guidance files: again whenever they changed since this
+        // agent last got them (read now, so an edited file reaches it on its next turn).
+        let project = self.project_lookup.get().and_then(|f| f(panel)).unwrap_or_default();
+        let pseen = self.rt(panel, |r| r.project_seen.get(&m.id).cloned());
+        if pseen.as_ref() != Some(&project) {
+            if !project.is_empty() {
+                text.push_str(&project);
+            } else if pseen.is_some_and(|p| !p.is_empty()) {
+                text.push_str("[Recursion] The human removed this project's prompt and instructions files: follow them no more.\n");
+            }
+            self.rt(panel, |r| r.project_seen.insert(m.id.clone(), project.clone()));
+        }
         // The chat's rules: again whenever they changed since this agent last got them.
         let (rules, rver, rseen) = (self.with_ws(panel, |ws| ws.settings.rules.clone()), self.rt(panel, |r| r.rules_version), self.rt(panel, |r| r.rules_seen.get(&m.id).copied()));
         if rseen != Some(rver) {
@@ -1424,6 +1448,8 @@ impl Hub {
         let bin = env.claude.clone().ok_or_else(|| tr!("err.noCli", cli = "claude"))?;
         let prompt = group_prompt(&m.alias);
         let mut cmd = Command::new(bin);
+        // Guidance files reach it from Recursion, only those the human ticked (guides.rs).
+        cmd.env(crate::guides::CLAUDE_DISABLE.0, crate::guides::CLAUDE_DISABLE.1);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"])
             .args(["--permission-prompt-tool", "stdio", "--permission-mode", m.mode.claude()])
             .args(["--append-system-prompt", &prompt]);
@@ -1567,6 +1593,7 @@ impl ClaudeReader {
                 }
             }
             "system" if v["subtype"] == "init" => {
+                hub.claude_started(&panel, &member, &v);
                 if let Some(model) = v["model"].as_str().filter(|s| !s.is_empty()) {
                     let model = model.to_string();
                     hub.update_member(&panel, &member, |m| m.running_model = Some(model));

@@ -9,6 +9,7 @@ mod browse;
 mod diagram;
 mod docs;
 mod files;
+mod guides;
 mod i18n;
 mod mcp;
 mod model;
@@ -92,7 +93,13 @@ enum In {
     SessionRename { session: String, name: String },
     SessionGroup { session: String, group: String },
     /// A session's project folder and the defaults for agents added to it.
-    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults, #[serde(default)] mcp: Option<Vec<String>> },
+    SessionSettings { session: String, cwd: String, #[serde(default)] defaults: model::AgentDefaults, #[serde(default)] mcp: Option<Vec<String>>, #[serde(default)] prompt: Option<String>, #[serde(default)] guides: Option<Vec<String>> },
+    /// What one agent works with, for its info card (see agents/info.rs).
+    AgentInfo { panel: String, member: String },
+    /// The guidance files found in a session's folder, and which are ticked (see guides.rs).
+    GuidesList { session: String },
+    /// One of them, to preview.
+    GuideRead { session: String, path: String },
     /// The MCP settings page: our servers, their last test, what the CLIs have.
     McpList,
     /// Add or change a server (`old`: its name before, when editing).
@@ -400,7 +407,7 @@ impl App {
             }
             SessionRename { session, name } => self.state.lock().unwrap().rename_session(&session, name).map_err(e)?,
             SessionGroup { session, group } => self.state.lock().unwrap().set_group(&session, group).map_err(e)?,
-            SessionSettings { session, cwd, defaults, mcp } => {
+            SessionSettings { session, cwd, defaults, mcp, prompt, guides } => {
                 let cwd = cwd.trim().to_string();
                 if !std::path::Path::new(&cwd).is_dir() {
                     return Err(i18n::tr!("session.err.noFolder", path = cwd));
@@ -410,12 +417,42 @@ impl App {
                     return Err(i18n::tr!("session.err.folderOpen", name = other.name));
                 }
                 st.set_session_settings(&session, cwd, defaults).map_err(e)?;
+                if let Some(s) = st.sessions.iter_mut().find(|s| s.id == session) {
+                    if let Some(p) = prompt {
+                        s.prompt = p.trim().to_string();
+                    }
+                    if let Some(g) = guides {
+                        s.guides = Some(g);
+                    }
+                }
                 if let Some(names) = mcp {
                     let known = self.hub.mcps.names();
                     let names: Vec<String> = names.into_iter().filter(|n| known.contains(n)).collect();
                     self.hub.mcps.set_last(&names);
                     st.sessions.iter_mut().filter(|s| s.id == session).for_each(|s| s.mcp = names.clone());
                 }
+            }
+            AgentInfo { panel, member } => {
+                reply = Some(self.hub.agent_info(&panel, &member).ok_or_else(|| i18n::tr!("err.noMember"))?.to_string());
+                changed = false;
+            }
+            GuidesList { session } => {
+                let s = self.state.lock().unwrap().sessions.iter().find(|s| s.id == session).cloned().ok_or_else(|| i18n::tr!("err.noSession"))?;
+                let found = tokio::task::spawn_blocking(move || {
+                    let found = guides::scan(&s.cwd);
+                    let picks = s.guides.clone().unwrap_or_else(|| guides::default_picks(&found));
+                    (found, picks)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                reply = Some(serde_json::json!({ "t": "guides", "session": session, "found": found.0, "picks": found.1 }).to_string());
+                changed = false;
+            }
+            GuideRead { session, path } => {
+                let cwd = self.state.lock().unwrap().sessions.iter().find(|s| s.id == session).map(|s| s.cwd.clone()).ok_or_else(|| i18n::tr!("err.noSession"))?;
+                let text = guides::read(&cwd, &path).ok_or_else(|| i18n::tr!("err.noFile"))?;
+                reply = Some(serde_json::json!({ "t": "guide", "session": session, "path": path, "text": text }).to_string());
+                changed = false;
             }
             WsSettings { panel, settings } => {
                 self.state.lock().unwrap().set_panel_title(&panel, settings.name.trim().to_string()).map_err(e)?;
@@ -1050,8 +1087,15 @@ async fn main() -> anyhow::Result<()> {
     app.hub.set_port(port);
     {
         let app = Arc::downgrade(&app);
+        let a2 = app.clone();
         app.upgrade().unwrap().hub.set_mcp_lookup(move |panel| {
             app.upgrade().and_then(|a| a.state.lock().unwrap().session_of_panel(panel).map(|s| s.mcp.clone())).unwrap_or_default()
+        });
+        // What a chat's agents are told about its project: its prompt and ticked guidance files.
+        a2.upgrade().unwrap().hub.set_project_lookup(move |panel| {
+            let s = a2.upgrade().and_then(|a| a.state.lock().unwrap().session_of_panel(panel).cloned())?;
+            let picks = s.guides.clone().unwrap_or_else(|| guides::default_picks(&guides::scan(&s.cwd)));
+            Some(guides::brief(&s.cwd, &s.prompt, &picks))
         });
     }
 

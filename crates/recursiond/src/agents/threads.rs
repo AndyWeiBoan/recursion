@@ -231,6 +231,7 @@ fn earlier(messages: &[ThreadMsg], agent: &str) -> String {
 async fn claude_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
     let bin = env.claude.clone().ok_or_else(|| tr!("err.noCli", cli = "claude"))?;
     let mut cmd = Command::new(bin);
+    cmd.env(crate::guides::CLAUDE_DISABLE.0, crate::guides::CLAUDE_DISABLE.1);
     cmd.args(["-p", "--output-format", "json", "--permission-mode", "default", "--disallowedTools", "Bash,Edit,Write,MultiEdit,NotebookEdit"]);
     match fork {
         Some(sid) => cmd.args(["--resume", sid]),
@@ -263,7 +264,7 @@ async fn claude_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &M
 async fn codex_turn(env: &AgentEnv, accounts: &crate::accounts::Accounts, m: &Member, fork: Option<&str>, dir: &str, prompt: &str) -> Result<(String, String), String> {
     let bin = env.codex.clone().ok_or_else(|| tr!("err.noCli", cli = "codex"))?;
     let mut cmd = Command::new(bin);
-    cmd.arg("app-server").current_dir(dir).env("PATH", &env.path);
+    cmd.args(["-c", crate::guides::CODEX_NO_DOCS, "app-server"]).current_dir(dir).env("PATH", &env.path);
     accounts.apply(&mut cmd, m.kind, m.account.as_deref());
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| tr!("err.spawn", cli = "codex", error = e))?;
