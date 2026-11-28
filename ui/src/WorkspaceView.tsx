@@ -22,6 +22,7 @@ import { accountName, isMac, onChatRequest, toast, onReconnect, openExternal, gr
 import { takeDrops } from "./drop";
 import { RefChip, takeRefs } from "./refs";
 import { chatsOf, leaves, PERM_MODES, type Account, type AgentKind, type PermMode, type DocVia, type Member, type Msg, type OutputRef, type Poll, type Round, type Thread, type TurnUsage } from "./types";
+import { markSeen } from "./seen";
 
 // Code blocks get colours: the fence's language when it names one, otherwise a confident guess.
 // Its own instance: the shared `marked` would stack the extension on every hot reload.
@@ -194,6 +195,15 @@ export function WorkspaceView({ panel, focused }: { panel: string; focused: bool
     return new Map([...gone, ...members.map((m): [string, Member] => [m.id, m])]);
   }, [members, ws?.former]);
   const busy = members.filter((m) => m.status !== "idle");
+  // On screen (only the window shown is drawn) and the app in front: what is here has been seen.
+  const newest = ws?.messages.length ? ws.messages[ws.messages.length - 1].seq : 0;
+  useEffect(() => {
+    if (!newest) return;
+    const mark = () => !document.hidden && markSeen(panel, newest);
+    mark();
+    document.addEventListener("visibilitychange", mark);
+    return () => document.removeEventListener("visibilitychange", mark);
+  }, [panel, newest]);
   const ui = useThreadsUI(panel);
   const threadCounts = useMemo(() => {
     const c = new Map<string, number>();
@@ -229,9 +239,13 @@ export function modelLabel(m: Member) {
 }
 
 /** An agent: its maker's mark (Claude's, or OpenAI's for Codex). Its @name says which one. */
-export function Avatar({ m, size = 26 }: { m?: Member; size?: number }) {
-  return <span className="avatar" style={{ width: size, height: size }}>{m ? <BrandMark kind={m.kind} size={size} /> : "?"}</span>;
+/** `running`: it is working on this (its mark moves; see BrandMark). */
+export function Avatar({ m, size = 26, running = false }: { m?: Member; size?: number; running?: boolean }) {
+  return <span className="avatar" style={{ width: size, height: size }}>{m ? <BrandMark kind={m.kind} size={size} running={running} /> : "?"}</span>;
 }
+
+/** Working: answering, starting up or compacting (not waiting for the human, not idle). */
+export const isRunning = (m?: Member) => m?.status === "thinking" || m?.status === "starting" || m?.status === "compacting";
 
 /** Centered dialog over the whole app. Closes on ✕, Esc, or a click outside. */
 /** `escape: false` keeps Esc for what is inside (a terminal), and a click outside does not close it. */
@@ -308,7 +322,7 @@ export function ChatHead({ panel }: { panel: string }) {
             </button>
           ) : (
             <span key={m.id} className={`chat-face st-${m.status}`} title={`@${m.alias} · ${modelLabel(m)}`}>
-              <Avatar m={m} size={18} />
+              <Avatar m={m} size={18} running={isRunning(m)} />
             </span>
           );
         })}
@@ -734,6 +748,9 @@ function Transcript({
     return () => document.removeEventListener("selectionchange", onChange);
   }, []);
 
+  // Each agent's latest turn: its avatar moves while the agent is still at it, older ones don't.
+  const lastTurn = new Map<string, string>();
+  for (const m of messages) if (m.turn) lastTurn.set(m.from, m.id);
   const view = (m: Msg, i: number) => {
     const turn = turns.get(m.id);
     if (turn) {
@@ -747,7 +764,7 @@ function Transcript({
       ];
       const who = byId.get(m.from);
       return blocks.map((b, k) => (
-        <MessageView key={b.m.id} panel={panel} m={b.m} who={who} byId={byId} first={k === 0} head={turn[0]} aliases={aliases} threads={threadCounts.get(b.m.id) ?? 0} parts={b.parts} partThreads={threadCounts} group={b.group} />
+        <MessageView key={b.m.id} panel={panel} m={b.m} who={who} byId={byId} first={k === 0} live={k === 0 && isRunning(who) && lastTurn.get(m.from) === m.id} head={turn[0]} aliases={aliases} threads={threadCounts.get(b.m.id) ?? 0} parts={b.parts} partThreads={threadCounts} group={b.group} />
       ));
     }
     const prev = messages[i - 1];
@@ -931,6 +948,7 @@ const MessageView = memo(function MessageView({
   partThreads,
   head,
   queued,
+  live = false,
 }: {
   panel: string;
   m: Msg;
@@ -952,6 +970,8 @@ const MessageView = memo(function MessageView({
   head?: Msg;
   /** A human message still waiting for busy agents. */
   queued?: boolean;
+  /** The latest turn of an agent still at it: its avatar moves. */
+  live?: boolean;
 }) {
   const accounts = useAccounts();
 
@@ -1092,7 +1112,7 @@ const MessageView = memo(function MessageView({
   }
   return (
     <div className={`row agent${first ? " first" : ""}`}>
-      {first ? <Avatar m={who} /> : <span className="avatar-space" />}
+      {first ? <Avatar m={who} running={live} /> : <span className="avatar-space" />}
       <div className="agent-col">
         {first && (
           <div className="name">

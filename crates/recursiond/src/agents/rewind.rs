@@ -147,6 +147,20 @@ impl Hub {
                 t.end = Some(end);
             }
         });
+        // Its latest reply (not a [PASS]): new to the human if they haven't looked since.
+        let said = self.with_ws(panel, |ws| {
+            // Only this turn's: after what it was shown when the turn started.
+            let from = ws.turns.get(member).and_then(|v| v.last()).map_or(0, |t| t.upto);
+            ws.messages
+                .iter()
+                .rev()
+                .take_while(|m| m.seq > from)
+                .find(|m| m.from == member && matches!(&m.body, crate::workspace::Body::Text { text } if !text.trim_start().starts_with("[PASS]")))
+                .map(|m| m.seq)
+        });
+        if let Some(seq) = said {
+            self.update_member(panel, member, |m| m.replied = seq);
+        }
         self.mark_dirty(panel);
     }
 

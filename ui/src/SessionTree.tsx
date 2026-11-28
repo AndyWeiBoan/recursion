@@ -4,7 +4,7 @@ import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { accountName, requestAddAgent, requestChatSettings, send, useAccounts } from "./client";
-import { Avatar, modelLabel, STATUS_LABEL } from "./WorkspaceView";
+import { Avatar, isRunning, modelLabel, STATUS_LABEL } from "./WorkspaceView";
 import { leaves, PERM_MODES, type Doc, type Member, type Panel, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon, type IconName } from "./icons";
 import { closeChecked } from "./closing";
@@ -45,9 +45,10 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
   const [menu, setMenu] = useState(false);
   const [editing, setEditing] = useState(false);
   const busy = m.status !== "idle";
+  const running = isRunning(m);
   return (
     <div className={`tree-agent st-${m.status}${busy ? " busy" : ""}`} onClick={() => send({ t: "panel_focus", panel })} title={STATUS_LABEL[m.status]}>
-      <Avatar m={m} size={16} />
+      <Avatar m={m} size={16} running={running} />
       <span className="tree-agent-main">
         <span className="tree-agent-name">
           {editing ? (
@@ -57,15 +58,19 @@ function AgentRow({ m, panel }: { m: Member; panel: string }) {
               @{m.alias}
             </b>
           )}
+          {/* Working: its mark moves and three dots light in turn; the line stays as when idle.
+              Waiting for the human says so: nothing moves then. */}
+          {!editing && running && (
+            <span className="dots tree-dots" aria-hidden="true">
+              <i>.</i>
+              <i>.</i>
+              <i>.</i>
+            </span>
+          )}
           {!editing &&
-            (busy ? (
-              <span className="tree-agent-model tree-agent-busy">
-                {STATUS_LABEL[m.status]}
-                <span className="dots" aria-hidden="true">
-                  <i>.</i>
-                  <i>.</i>
-                  <i>.</i>
-                </span>
+            (m.status === "waiting_permission" ? (
+              <span className="tree-agent-waiting" title={m.waiting_for ?? undefined}>
+                {STATUS_LABEL.waiting_permission}
               </span>
             ) : (
               <span className="tree-agent-model" title={acct ? t("agent.account", { acct }) : undefined}>

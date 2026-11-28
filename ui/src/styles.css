@@ -77,7 +77,6 @@ body.dragging.dragging-col { cursor: row-resize; }
 .menu button.menu-check.on::before { visibility: visible; }
 /* at the end of the name line, right above the context numbers */
 .tree-mode { display: inline-flex; flex: none; margin-left: auto; color: var(--dim); }
-.tree-agent-busy + .tree-mode { margin-left: 0; }
 .field-label { font-size: 12px; color: var(--dim); }
 .mode-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 3px; border: 1px solid #3a3b42; border-radius: 10px; background: #1d1e22; }
 .mode-seg button { padding: 6px 4px; border-radius: 7px; font-size: 12.5px; color: var(--dim); }
@@ -648,7 +647,7 @@ body.panel-dragging, body.panel-dragging * { cursor: grabbing !important; user-s
 .chat-head { display: flex; align-items: center; gap: 10px; opacity: 1; min-width: 0; }
 .chat-faces { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .chat-face { position: relative; display: inline-flex; border-radius: 50%; }
-.chat-face.st-thinking, .chat-face.st-starting { box-shadow: 0 0 0 1.5px var(--or); animation: pulse 1.1s ease-in-out infinite; }
+/* working: its mark moves (BrandMark), no ring */
 .chat-face.st-waiting_permission { box-shadow: 0 0 0 1.5px #f6c177; }
 .chat-add { width: 20px; height: 20px; border-radius: 50%; border: 1px dashed #4a4b52; color: var(--dim); font-size: 12px; line-height: 1; padding: 0; display: grid; place-items: center; }
 .chat-add:hover { color: var(--fg); border-color: var(--dim); }
@@ -694,12 +693,13 @@ body.panel-dragging, body.panel-dragging * { cursor: grabbing !important; user-s
 
 /* An agent at work in the sidebar: "思考中..." with the dots lighting up in turn; ■ stops just it. */
 /* The model gives way first; the name only shortens when the model is gone. */
-.tree-agent-name .tree-agent-model:not(.tree-agent-busy) { flex: 0 1000 auto; }
-.tree-agent-busy { flex: none; margin-left: auto; color: var(--or); font-family: var(--sans); overflow: visible; }
-.tree-agent.st-waiting_permission .tree-agent-busy { color: #f6c177; }
+.tree-agent-name .tree-agent-model { flex: 0 1000 auto; }
 .dots i { font-style: normal; animation: dot 1.2s infinite; opacity: .2; }
 .dots i:nth-child(2) { animation-delay: .2s; }
 .dots i:nth-child(3) { animation-delay: .4s; }
+.tree-dots { flex: none; margin-left: -4px; color: var(--or); font-weight: 700; letter-spacing: 1px; }
+.tree-agent-waiting { flex: none; color: #f6c177; font-size: 11px; }
+body.page-hidden .dots i { animation: none; }
 @keyframes dot { 0%, 60%, 100% { opacity: .2; } 30% { opacity: 1; } }
 .tree-stop { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; padding: 0; font-size: 9px; color: var(--or); border: 1px solid #6b4a3a; }
 .tree-stop:hover { background: #3a2a22; color: #ffb46b; }
@@ -1077,7 +1077,17 @@ button.chat-face.expired:hover { opacity: 1; }
 
 /* Lucide icons (icons.tsx): sit on the text's baseline like the glyphs they replaced */
 .ic { flex: none; vertical-align: -0.16em; }
-.ic.brand { border-radius: 50%; object-fit: contain; }
+/* an agent's maker's badge (icons.tsx BrandMark): while it works, the mark moves inside its round,
+   only by transform, and only while on screen and the page is shown */
+.ic.brand { display: inline-grid; place-items: center; border-radius: 50%; overflow: hidden; vertical-align: middle; }
+.brand-mark { display: block; }
+.brand.run.on-screen .brand-mark { will-change: transform; }
+.brand.run.on-screen .brand-claude { animation: brand-breathe 1.6s ease-in-out infinite; }
+.brand.run.on-screen .brand-codex { animation: brand-turn 2.4s linear infinite; }
+@keyframes brand-breathe { 0%, 100% { transform: scale(.72); } 50% { transform: scale(1.06); } }
+@keyframes brand-turn { to { transform: rotate(360deg); } }
+body.page-hidden .brand-mark { animation: none !important; }
+@media (prefers-reduced-motion: reduce) { .brand-mark { animation: none !important; } }
 
 /* the chat's materials: an icon at the right, its count in a corner */
 .chat-outputs.icon-only { position: relative; flex: none; margin-left: auto; width: 22px; height: 22px; padding: 0; border-radius: 5px; display: grid; place-items: center; color: var(--dim); }
@@ -1088,3 +1098,26 @@ button.chat-face.expired:hover { opacity: 1; }
    buttons 2px apart, though they come from the chat and from the panel */
 .chat-outputs.icon-only + .chat-gear { margin-left: -11px; }
 .panel-head .chat-head + .tools, .panel-head .chat-head ~ .tools { margin-left: -6px; }
+
+/* the sidebar's Agents list (AgentsPanel.tsx): grouped by what they are doing; long lists scroll
+   inside it, up to about half the sidebar, so the projects below stay in sight */
+.agents { display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: 45vh; min-height: 0; }
+.agents-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 12.5px; color: var(--fg); text-align: left; }
+.agents-head:hover { background: var(--hover); }
+.agents-list { padding-bottom: 4px; }
+.agents-grp-head .dim:only-child, .agents-grp.empty .agents-grp-head { opacity: .7; }
+.agents-head .ic { color: var(--dim); }
+.agents-head .dim, .agents-grp-head .dim { margin-left: auto; font-size: 11.5px; }
+.agents-list { overflow-y: auto; min-height: 0; scrollbar-width: thin; }
+.agents-grp-head { display: flex; align-items: center; padding: 14px 8px 3px; font-size: 11px; color: var(--dim); }
+.agents-grp:first-child .agents-grp-head { padding-top: 6px; }
+.agents-grp.wait .agents-grp-head { color: #f6c177; }
+.agents-row { width: 100%; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 7px; text-align: left; }
+.agents-row:hover { background: var(--hover); }
+.agents-row.seen { opacity: .55; }
+.agents-who { display: grid; min-width: 0; }
+.agents-who b { font-weight: 500; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agents-who span { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agents-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+.agents-tag.wait { background: #f6c17726; color: #f6c177; }
+.agents-tag.new { background: #6ea3f026; color: #6ea3f0; }

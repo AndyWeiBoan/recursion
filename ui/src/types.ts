@@ -187,6 +187,10 @@ export interface Member {
   alias: string;
   mode?: PermMode;
   model?: string | null;
+  /** While waiting for the human's permission: what for. */
+  waiting_for?: string | null;
+  /** The `seq` of its latest reply (see seen.ts). */
+  replied?: number;
   /** What the CLI says it runs: `model`, or its own default when none was picked. */
   running_model?: string | null;
   /** Account id; absent = the default account of its kind. */
@@ -390,12 +394,13 @@ export interface Chat {
 }
 
 /** The chat panels of a session, in window then layout order. */
+/** A session's chats, named as the sidebar names them: their own name, else "Chat 2" (numbered
+ * across the session, like SessionTree's panelNumbers). */
 export function chatsOf(s: Session, state: State): Chat[] {
   const out: Chat[] = [];
-  s.windows.forEach((w, wi) => {
-    const ids = leaves(w.root).filter((p) => state.panels[p]?.kind === "workspace");
-    ids.forEach((p, i) => out.push({ panel: p, label: `${t("kind.workspace")} · window ${wi + 1}${ids.length > 1 ? ` (${i + 1})` : ""}${w.name && w.name !== String(wi + 1) ? ` ${w.name}` : ""}` }));
-  });
+  for (const w of s.windows)
+    for (const p of leaves(w.root).filter((p) => state.panels[p]?.kind === "workspace"))
+      out.push({ panel: p, label: state.panels[p].title || `${t("kind.workspace")} ${out.length + 1}` });
   return out;
 }
 

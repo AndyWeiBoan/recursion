@@ -603,6 +603,9 @@ impl Hub {
     fn update_member(&self, panel: &str, member: &str, f: impl FnOnce(&mut Member)) {
         let m = self.with_ws(panel, |ws| ws.member_mut(member).map(|m| {
             f(m);
+            if m.status != MemberStatus::WaitingPermission {
+                m.waiting_for = None;
+            }
             m.clone()
         }));
         if let Some(m) = m {
@@ -658,7 +661,7 @@ impl Hub {
         }
         let alias = self.check_alias(panel, &alias, None)?;
         let account = (account != crate::accounts::default_id(kind)).then_some(account);
-        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode };
+        let member = Member { id: mid(), kind, alias: alias.clone(), model: model.filter(|m| !m.is_empty()), running_model: None, account, cli_session_id: None, cost_usd: 0.0, status: MemberStatus::Idle, usage: Default::default(), context_used: 0, context_window: 0, seen: 0, mode, waiting_for: None, replied: 0 };
         self.with_ws(panel, |ws| ws.members.push(member.clone()));
         self.rt(panel, |r| r.roster_version += 1);
         self.emit(json!({ "t": "ws_member", "panel": panel, "member": member }));
@@ -1708,9 +1711,13 @@ impl ClaudeReader {
                     }
                     let tool = req["display_name"].as_str().or(req["tool_name"].as_str()).unwrap_or("tool").to_string();
                     let (summary, detail) = summarize_tool(req["tool_name"].as_str().unwrap_or(""), &req["input"], &self.cwd);
+                    let waiting = if summary.is_empty() { tool.clone() } else { summary.clone() };
                     let msg_id = self.new_msg(Body::Permission { request_id: request_id.clone(), tool, summary, detail, state: PermState::Pending }, false);
                     hub.perms.lock().unwrap().insert(request_id, PendingPerm { panel: panel.clone(), member: member.clone(), msg_id, input: req["input"].clone(), suggestions: req["permission_suggestions"].clone(), codex_request: None });
-                    hub.update_member(&panel, &member, |m| m.status = MemberStatus::WaitingPermission);
+                    hub.update_member(&panel, &member, |m| {
+                        m.status = MemberStatus::WaitingPermission;
+                        m.waiting_for = Some(waiting);
+                    });
                 }
             }
             "rate_limit_event" => {

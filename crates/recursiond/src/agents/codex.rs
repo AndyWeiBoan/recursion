@@ -283,12 +283,16 @@ impl Reader {
                         detail = if detail.is_empty() { reason.to_string() } else { format!("{reason}\n\n{detail}") };
                     }
                     let request_id = crate::model::new_id();
+                    let waiting = if summary.is_empty() { tool.clone() } else { summary.clone() };
                     let msg_id = hub.push_msg(&panel, msg(&member, Body::Permission { request_id: request_id.clone(), tool, summary, detail, state: PermState::Pending }, false)).id;
                     hub.perms.lock().unwrap().insert(
                         request_id,
                         PendingPerm { panel: panel.clone(), member: member.clone(), msg_id, input: Value::Null, suggestions: Value::Null, codex_request: Some(rpc_id) },
                     );
-                    hub.update_member(&panel, &member, |m| m.status = MemberStatus::WaitingPermission);
+                    hub.update_member(&panel, &member, |m| {
+                        m.status = MemberStatus::WaitingPermission;
+                        m.waiting_for = Some(waiting);
+                    });
                 }
                 // Codex asks before each MCP tool call. Our own server only touches this session's
                 // documents, and the others are the ones the human turned on for it: say yes.

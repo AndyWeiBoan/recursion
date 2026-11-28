@@ -20,6 +20,7 @@ import { closeThreads, useZoomed } from "./threadsUI";
 import { chatsOf, leaves, type Closed, type PanelKind, type Session, type State, type TermInfo } from "./types";
 import { Icon } from "./icons";
 import { closeChecked } from "./closing";
+import { AgentsPanel } from "./AgentsPanel";
 
 const VIM_LIKE = new Set(["nvim", "vim", "vi", "view", "nvim-qt"]);
 
@@ -156,6 +157,13 @@ export default function App() {
   useEffect(restoreZoom, []);
   useEffect(() => void listenZoomKeys(zoomBrowser), []);
   useEffect(() => void listenForDrops(), []);
+  // Nothing moves while the app is out of sight (see .brand in styles.css).
+  useEffect(() => {
+    const hidden = () => document.body.classList.toggle("page-hidden", document.hidden);
+    hidden();
+    document.addEventListener("visibilitychange", hidden);
+    return () => document.removeEventListener("visibilitychange", hidden);
+  }, []);
   // The webview's own menu (Back, Forward, Reload) means nothing here: keep it only where it
   // helps, on text being edited or selected (and in terminals, which have their own handling).
   useEffect(() => {
@@ -350,6 +358,7 @@ function Sidebar({ state, terms }: { state: State | null; terms: Record<string, 
       </nav>
       <div className="side-foot">
         <ClosedList closed={state?.closed ?? []} />
+        {state && <AgentsPanel state={state} chats={chats} roster={roster} />}
         <UsagePanel />
         <button className="side-accounts" onClick={() => openSettings()} title={`${t("settings.title")}（${isMac ? "⌘," : "Ctrl+,"}）`}>
           <Icon name="settings" size={14} /> {t("settings.title")}
